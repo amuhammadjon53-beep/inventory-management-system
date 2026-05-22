@@ -12,13 +12,15 @@ from dotenv import load_dotenv
 from pilmoji import Pilmoji
 import traceback
 from pathlib import Path
+import unicodedata
+from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
+import gc
+from discord.ext import tasks
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv()
 
-
-# FORMAT
 
 def format_time(seconds):
     seconds = int(seconds)
@@ -48,8 +50,6 @@ def format_message_count(count):
         return str(count)
 
 
-# DRAWING FUNCTIONS
-
 def draw_text_centered(draw, text, position, font, fill, max_width=None):
     bbox = draw.textbbox((0, 0), text, font=font)
     text_width = bbox[2] - bbox[0]
@@ -68,8 +68,9 @@ def draw_text_centered(draw, text, position, font, fill, max_width=None):
     draw.text((x, y), text, fill=fill, font=font)
 
 
-async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None):
-    template_path = BASE_DIR / "assets" / "images" / "server stats final png.png"
+async def create_message_stats_image(guild, stats_data, days_back=30, role_id=None, role_name=None):
+    template_path = BASE_DIR / "assets" / "images" / \
+        "server stats messages final png.png"
     try:
         image = Image.open(template_path)
     except FileNotFoundError:
@@ -78,88 +79,129 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
     draw = ImageDraw.Draw(image)
 
     # FONTS
-
     try:
         font_paths = [BASE_DIR / "assets" / "fonts" / "HorndonD.ttf"]
         font_loaded = False
+
         for font_path in font_paths:
             if os.path.exists(font_path):
                 try:
-                    font_large = ImageFont.truetype(font_path, 24)
-                    font_medium = ImageFont.truetype(font_path, 20)
-                    font_small = ImageFont.truetype(font_path, 16)
-                    font_larger = ImageFont.truetype(font_path, 30)
-                    font_huge = ImageFont.truetype(font_path, 40)
-                    font_horndon_medium = ImageFont.truetype(font_path, 20)
-                    arial_small = ImageFont.truetype("arial.ttf", 16)
-                    emoji_font = ImageFont.truetype("arial.ttf", 24)
+                    # Load HorndonD at all required sizes
+                    font_horndon_8 = ImageFont.truetype(str(font_path), 8)
+                    font_horndon_10 = ImageFont.truetype(str(font_path), 10)
+                    font_horndon_12 = ImageFont.truetype(str(font_path), 12)
+                    font_horndon_14 = ImageFont.truetype(str(font_path), 14)
+                    font_horndon_16 = ImageFont.truetype(str(font_path), 16)
+                    font_horndon_18 = ImageFont.truetype(str(font_path), 18)
+                    font_horndon_20 = ImageFont.truetype(str(font_path), 20)
+                    font_horndon_22 = ImageFont.truetype(str(font_path), 22)
+                    font_horndon_24 = ImageFont.truetype(str(font_path), 24)
+                    font_horndon_26 = ImageFont.truetype(str(font_path), 26)
+                    font_horndon_28 = ImageFont.truetype(str(font_path), 28)
+                    font_horndon_30 = ImageFont.truetype(str(font_path), 30)
+                    font_horndon_32 = ImageFont.truetype(str(font_path), 32)
+                    font_horndon_34 = ImageFont.truetype(str(font_path), 34)
+                    font_horndon_36 = ImageFont.truetype(str(font_path), 36)
+                    font_horndon_40 = ImageFont.truetype(str(font_path), 40)
 
-                    font_horndon_tiny = ImageFont.truetype(font_path, 8)
-                    font_horndon_extra_small = ImageFont.truetype(
-                        font_path, 10)
-                    font_horndon_small = ImageFont.truetype(font_path, 12)
-                    font_horndon_medium_small = ImageFont.truetype(
-                        font_path, 14)
-                    font_horndon_medium = ImageFont.truetype(font_path, 16)
-                    font_horndon_large = ImageFont.truetype(font_path, 18)
-                    font_horndon_larger = ImageFont.truetype(font_path, 20)
-                    font_horndon_xlarge = ImageFont.truetype(font_path, 22)
-                    font_horndon_xxlarge = ImageFont.truetype(font_path, 24)
-                    font_horndon_huge = ImageFont.truetype(font_path, 30)
-                    font_horndon_giant = ImageFont.truetype(font_path, 40)
+                    # Assign ALL font variables to use HorndonD
+                    font_small = font_horndon_16
+                    font_medium = font_horndon_20
+                    font_large = font_horndon_24
+                    font_larger = font_horndon_30
+                    font_huge = font_horndon_40
+                    font_horndon_medium = font_horndon_20
+                    arial_small = font_horndon_16  # Use HorndonD instead of Arial
+
                     font_loaded = True
                     break
-                except:
+
+                except Exception as e:
+                    print(f"Error loading HorndonD font at {font_path}: {e}")
                     continue
 
         if not font_loaded:
-            font_large = ImageFont.load_default()
-            font_medium = ImageFont.load_default()
-            font_small = ImageFont.load_default()
-            font_larger = ImageFont.load_default()
-            font_huge = ImageFont.load_default()
-            font_horndon_medium = ImageFont.load_default()
-            arial_small = ImageFont.load_default()
-            emoji_font = ImageFont.load_default()
+            # Fallback to system fonts if HorndonD not found
+            try:
+                font_small = ImageFont.truetype("arial.ttf", 16)
+                font_medium = ImageFont.truetype("arial.ttf", 20)
+                font_large = ImageFont.truetype("arial.ttf", 24)
+                font_larger = ImageFont.truetype("arial.ttf", 30)
+                font_huge = ImageFont.truetype("arial.ttf", 40)
+                font_horndon_medium = ImageFont.truetype("arial.ttf", 20)
+                arial_small = ImageFont.truetype("arial.ttf", 16)
 
-            font_horndon_tiny = ImageFont.load_default()
-            font_horndon_extra_small = ImageFont.load_default()
-            font_horndon_small = ImageFont.load_default()
-            font_horndon_medium_small = ImageFont.load_default()
-            font_horndon_medium = ImageFont.load_default()
-            font_horndon_large = ImageFont.load_default()
-            font_horndon_larger = ImageFont.load_default()
-            font_horndon_xlarge = ImageFont.load_default()
-            font_horndon_xxlarge = ImageFont.load_default()
-            font_horndon_huge = ImageFont.load_default()
-            font_horndon_giant = ImageFont.load_default()
+                # Set fallback for horndon variables
+                font_horndon_8 = ImageFont.truetype("arial.ttf", 8)
+                font_horndon_10 = ImageFont.truetype("arial.ttf", 10)
+                font_horndon_12 = ImageFont.truetype("arial.ttf", 12)
+                font_horndon_14 = ImageFont.truetype("arial.ttf", 14)
+                font_horndon_16 = ImageFont.truetype("arial.ttf", 16)
+                font_horndon_18 = ImageFont.truetype("arial.ttf", 18)
+                font_horndon_20 = ImageFont.truetype("arial.ttf", 20)
+                font_horndon_22 = ImageFont.truetype("arial.ttf", 22)
+                font_horndon_24 = ImageFont.truetype("arial.ttf", 24)
+                font_horndon_26 = ImageFont.truetype("arial.ttf", 26)
+                font_horndon_28 = ImageFont.truetype("arial.ttf", 28)
+                font_horndon_30 = ImageFont.truetype("arial.ttf", 30)
+                font_horndon_32 = ImageFont.truetype("arial.ttf", 32)
+                font_horndon_34 = ImageFont.truetype("arial.ttf", 34)
+                font_horndon_36 = ImageFont.truetype("arial.ttf", 36)
+                font_horndon_40 = ImageFont.truetype("arial.ttf", 40)
+            except:
+                # Ultimate fallback to default font
+                font_small = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
+                font_large = ImageFont.load_default()
+                font_larger = ImageFont.load_default()
+                font_huge = ImageFont.load_default()
+                font_horndon_medium = ImageFont.load_default()
+                arial_small = ImageFont.load_default()
+                font_horndon_8 = ImageFont.load_default()
+                font_horndon_10 = ImageFont.load_default()
+                font_horndon_12 = ImageFont.load_default()
+                font_horndon_14 = ImageFont.load_default()
+                font_horndon_16 = ImageFont.load_default()
+                font_horndon_18 = ImageFont.load_default()
+                font_horndon_20 = ImageFont.load_default()
+                font_horndon_22 = ImageFont.load_default()
+                font_horndon_24 = ImageFont.load_default()
+                font_horndon_26 = ImageFont.load_default()
+                font_horndon_28 = ImageFont.load_default()
+                font_horndon_30 = ImageFont.load_default()
+                font_horndon_32 = ImageFont.load_default()
+                font_horndon_34 = ImageFont.load_default()
+                font_horndon_36 = ImageFont.load_default()
+                font_horndon_40 = ImageFont.load_default()
 
-    except:
-        font_large = ImageFont.load_default()
-        font_medium = ImageFont.load_default()
+    except Exception as e:
+        print(f"Unexpected font error: {e}")
+        # Ultimate fallback to default font for everything
         font_small = ImageFont.load_default()
+        font_medium = ImageFont.load_default()
+        font_large = ImageFont.load_default()
         font_larger = ImageFont.load_default()
         font_huge = ImageFont.load_default()
         font_horndon_medium = ImageFont.load_default()
         arial_small = ImageFont.load_default()
-        emoji_font = ImageFont.load_default()
-
-        font_horndon_tiny = ImageFont.load_default()
-        font_horndon_extra_small = ImageFont.load_default()
-        font_horndon_small = ImageFont.load_default()
-        font_horndon_medium_small = ImageFont.load_default()
-        font_horndon_medium = ImageFont.load_default()
-        font_horndon_large = ImageFont.load_default()
-        font_horndon_larger = ImageFont.load_default()
-        font_horndon_xlarge = ImageFont.load_default()
-        font_horndon_xxlarge = ImageFont.load_default()
-        font_horndon_huge = ImageFont.load_default()
-        font_horndon_giant = ImageFont.load_default()
-
-    # INVISIBLE RECTANGLE FUNCTIONS
+        font_horndon_8 = ImageFont.load_default()
+        font_horndon_10 = ImageFont.load_default()
+        font_horndon_12 = ImageFont.load_default()
+        font_horndon_14 = ImageFont.load_default()
+        font_horndon_16 = ImageFont.load_default()
+        font_horndon_18 = ImageFont.load_default()
+        font_horndon_20 = ImageFont.load_default()
+        font_horndon_22 = ImageFont.load_default()
+        font_horndon_24 = ImageFont.load_default()
+        font_horndon_26 = ImageFont.load_default()
+        font_horndon_28 = ImageFont.load_default()
+        font_horndon_30 = ImageFont.load_default()
+        font_horndon_32 = ImageFont.load_default()
+        font_horndon_34 = ImageFont.load_default()
+        font_horndon_36 = ImageFont.load_default()
+        font_horndon_40 = ImageFont.load_default()
 
     def check_text_against_rectangle(text, font, text_x, text_y, rect_center_x, rect_center_y, rect_width, rect_height):
-
         rect_left = rect_center_x - (rect_width // 2)
         rect_right = rect_center_x + (rect_width // 2)
         rect_top = rect_center_y - (rect_height // 2)
@@ -177,6 +219,9 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
         return exceeds_width or exceeds_height
 
     def fit_text_to_rectangle(text, text_center_x, text_center_y, rect_center_x, rect_center_y, rect_width, rect_height, is_channel=False, is_username=False):
+        normalized_text = unicodedata.normalize('NFKD', text)
+        ascii_text = normalized_text.encode('ascii', 'ignore').decode('ascii')
+        text = ascii_text if ascii_text else text
 
         if is_username:
             font_sizes = [26, 24, 22, 20, 18, 16]
@@ -295,23 +340,14 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
         {"center": (325, 435), "width": 120, "height": 50}
     ]
 
-    voice_channel_rectangles_left = [
-        {"center": (70, 540), "width": 120, "height": 50},
-        {"center": (70, 595), "width": 120, "height": 50},
-        {"center": (70, 650), "width": 120, "height": 50}
-    ]
-
-    voice_channel_rectangles_right = [
-        {"center": (325, 540), "width": 120, "height": 50},
-        {"center": (325, 595), "width": 120, "height": 50},
-        {"center": (325, 650), "width": 120, "height": 50}
-    ]
-
     server_name_rectangle = {"center": (150, 30), "width": 183, "height": 35}
 
     with Pilmoji(image) as pilmoji:
-        # Server profile picture
         server_name = guild.name
+        normalized_server_name = unicodedata.normalize('NFKD', server_name)
+        ascii_server_name = normalized_server_name.encode(
+            'ascii', 'ignore').decode('ascii')
+        server_name = ascii_server_name if ascii_server_name else server_name
 
         try:
             if guild.icon:
@@ -339,6 +375,9 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
                 icon_with_bg.paste(icon_image, (0, 0), icon_image)
                 icon_area.paste(icon_with_bg, (0, 0), icon_with_bg)
                 image.paste(icon_area.convert('RGB'), (icon_x, icon_y))
+                icon_image.close()
+                del icon_image
+                del icon_data
 
                 server_name_font_sizes = [
                     40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16]
@@ -729,136 +768,65 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
                 pilmoji.text(final_pos, fitted_text, "white", server_name_font,
                              emoji_position_offset=(0, 0))
 
-        # CREATED ON
         current_date = datetime.now().strftime("%B %d, %Y")
         stroke_width = 1
         for dx in [-stroke_width, 0, stroke_width]:
             for dy in [-stroke_width, 0, stroke_width]:
                 if dx != 0 or dy != 0:
                     draw_text_centered(draw, current_date, (605 + dx, 45 + dy),
-                                       font_horndon_medium, "black", max_width=150)
+                                       font_small, "black", max_width=150)
 
         draw_text_centered(draw, current_date, (605, 45),
-                           font_horndon_medium, "white", max_width=150)
+                           font_small, "white", max_width=150)
 
-        # TIME PERIOD
         time_period_text = f"{days_back} days"
         stroke_width = 1
         for dx in [-stroke_width, 0, stroke_width]:
             for dy in [-stroke_width, 0, stroke_width]:
                 if dx != 0 or dy != 0:
-                    draw_text_centered(draw, time_period_text, (147 + dx, 713 + dy),
-                                       font_horndon_medium, "black", max_width=100)
+                    draw_text_centered(draw, time_period_text, (665 + dx, 420 + dy),
+                                       font_small, "black", max_width=100)
 
-        draw_text_centered(draw, time_period_text, (147, 713),
-                           font_horndon_medium, "white", max_width=100)
+        draw_text_centered(draw, time_period_text, (665, 420),
+                           font_small, "white", max_width=100)
 
-        # ROLE FILTER
-        role_text = "No Filter"
-        if role_id and role_id != "none":
-            try:
-                role = guild.get_role(int(role_id))
-                role_text = role.name if role else "Unknown Role"
-            except (ValueError, TypeError):
-                role_text = "Unknown Role"
+        # USE THE PASSED role_name INSTEAD OF DISCORD API
+        role_text = role_name if role_name else "No Filter"
 
         stroke_width = 1
         for dx in [-stroke_width, 0, stroke_width]:
             for dy in [-stroke_width, 0, stroke_width]:
                 if dx != 0 or dy != 0:
-                    draw_text_centered(draw, role_text, (357 + dx, 712 + dy),
-                                       font_horndon_medium, "black", max_width=150)
+                    draw_text_centered(draw, role_text, (613 + dx, 455 + dy),
+                                       font_small, "black", max_width=150)
 
-        draw_text_centered(draw, role_text, (357, 712),
-                           font_horndon_medium, "white", max_width=150)
+        draw_text_centered(draw, role_text, (613, 455),
+                           font_small, "white", max_width=150)
 
-        # TOP EMOJIS
-        top_emojis = stats_data.get('top_emojis', [])
-        emoji_positions = [(50, 155), (50, 195), (50, 235)]
-        uses_positions = [(155, 150), (155, 190), (155, 230)]
-
-        for i in range(3):
-            if i < len(top_emojis):
-                emoji_data = top_emojis[i]
-                emoji_str = emoji_data.get('emoji', '❓')
-                uses = emoji_data.get('uses', 0)
-
-                try:
-                    emoji_x = emoji_positions[i][0] - 15
-                    emoji_y = emoji_positions[i][1] - 15
-                    pilmoji.text((emoji_x, emoji_y), emoji_str,
-                                 (255, 255, 255), emoji_font)
-                except Exception:
-                    stroke_width = 1
-                    for dx in [-stroke_width, 0, stroke_width]:
-                        for dy in [-stroke_width, 0, stroke_width]:
-                            if dx != 0 or dy != 0:
-                                draw_text_centered(draw, emoji_str, (emoji_positions[i][0] + dx, emoji_positions[i][1] + dy),
-                                                   font_medium, "black", max_width=80)
-
-                    draw_text_centered(draw, emoji_str, emoji_positions[i],
-                                       font_medium, "white", max_width=80)
-
-                stroke_width = 1
-                uses_str = str(uses)
-                for dx in [-stroke_width, 0, stroke_width]:
-                    for dy in [-stroke_width, 0, stroke_width]:
-                        if dx != 0 or dy != 0:
-                            draw_text_centered(draw, uses_str, (uses_positions[i][0] + dx, uses_positions[i][1] + dy),
-                                               font_medium, "black", max_width=80)
-
-                draw_text_centered(draw, uses_str, uses_positions[i],
-                                   font_medium, "white", max_width=80)
-            else:
-                stroke_width = 1
-                placeholder = "-"
-                for dx in [-stroke_width, 0, stroke_width]:
-                    for dy in [-stroke_width, 0, stroke_width]:
-                        if dx != 0 or dy != 0:
-                            draw_text_centered(draw, placeholder, (emoji_positions[i][0] + dx, emoji_positions[i][1] + dy),
-                                               font_medium, "black", max_width=80)
-
-                draw_text_centered(draw, placeholder, emoji_positions[i],
-                                   font_medium, "white", max_width=80)
-
-                stroke_width = 1
-                zero_str = "0"
-                for dx in [-stroke_width, 0, stroke_width]:
-                    for dy in [-stroke_width, 0, stroke_width]:
-                        if dx != 0 or dy != 0:
-                            draw_text_centered(draw, zero_str, (uses_positions[i][0] + dx, uses_positions[i][1] + dy),
-                                               font_medium, "black", max_width=80)
-
-                draw_text_centered(draw, zero_str, uses_positions[i],
-                                   font_medium, "white", max_width=80)
-
-        # TOTALS
         total_messages = stats_data.get('total_messages', 0)
-        total_voice = stats_data.get('total_seconds', 0)
-
         total_messages_text = format_message_count(total_messages)
         stroke_width = 1
         for dx in [-stroke_width, 0, stroke_width]:
             for dy in [-stroke_width, 0, stroke_width]:
                 if dx != 0 or dy != 0:
-                    draw_text_centered(draw, total_messages_text, (450 + dx, 160 + dy),
-                                       font_large, "black", max_width=100)
+                    draw_text_centered(draw, total_messages_text, (390 + dx, 175 + dy),
+                                       font_huge, "black", max_width=100)
 
-        draw_text_centered(draw, total_messages_text, (450, 160),
-                           font_large, "white", max_width=100)
+        draw_text_centered(draw, total_messages_text, (390, 175),
+                           font_huge, "white", max_width=100)
 
-        total_voice_text = format_time(total_voice)
+        active_users = stats_data.get('active_message_users', 0)
+        active_users_text = str(active_users)
         stroke_width = 1
         for dx in [-stroke_width, 0, stroke_width]:
             for dy in [-stroke_width, 0, stroke_width]:
                 if dx != 0 or dy != 0:
-                    draw_text_centered(draw, total_voice_text, (450 + dx, 215 + dy),
-                                       font_large, "black", max_width=100)
+                    draw_text_centered(draw, active_users_text, (130 + dx, 175 + dy),
+                                       font_huge, "black", max_width=100)
 
-        draw_text_centered(draw, total_voice_text, (450, 215),
-                           font_large, "white", max_width=100)
+        draw_text_centered(draw, active_users_text, (130, 175),
+                           font_huge, "white", max_width=100)
 
-        # MESSAGES OVER TIME
         messages_over_time = stats_data.get('messages_over_time', {})
         message_time_positions = {
             1: (675, 160),
@@ -883,32 +851,6 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
             draw_text_centered(draw, count_text, pos,
                                font_large, "white", max_width=80)
 
-        # VOICE OVER TIME
-        voice_over_time = stats_data.get('voice_over_time', {})
-        voice_time_positions = {
-            1: (675, 475),
-            5: (675, 530),
-            10: (675, 590),
-            20: (675, 645),
-            30: (675, 695)
-        }
-
-        for days, pos in voice_time_positions.items():
-            seconds = voice_over_time.get(
-                days, voice_over_time.get(f'{days}d', 0))
-            voice_time_text = format_time(seconds)
-
-            stroke_width = 1
-            for dx in [-stroke_width, 0, stroke_width]:
-                for dy in [-stroke_width, 0, stroke_width]:
-                    if dx != 0 or dy != 0:
-                        draw_text_centered(draw, voice_time_text, (pos[0] + dx, pos[1] + dy),
-                                           font_large, "black", max_width=80)
-
-            draw_text_centered(draw, voice_time_text, pos,
-                               font_large, "white", max_width=80)
-
-        # TOP USERS BY MESSAGES
         top_users_messages = stats_data.get('top_users_messages', [])
         user_msg_positions = [(65, 325), (65, 380), (65, 435)]
         user_msg_count_positions = [(190, 325), (190, 380), (190, 435)]
@@ -983,82 +925,6 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
                 draw_text_centered(draw, zero_str, user_msg_count_positions[i],
                                    font_large, "white", max_width=80)
 
-        # TOP USERS BY VOICE
-        top_users_voice = stats_data.get('top_users_voice', [])
-        user_voice_positions = [(65, 540), (65, 595), (65, 650)]
-        user_voice_time_positions = [(190, 540), (190, 595), (190, 650)]
-
-        for i in range(3):
-            if i < len(top_users_voice):
-                user_data = top_users_voice[i]
-                username = user_data.get('name', 'Unknown')
-                voice_time = user_data.get('voice_time', 0)
-
-                rect_info = voice_channel_rectangles_left[i]
-                fitted_text, user_font, user_pos = fit_text_to_rectangle(
-                    username,
-                    user_voice_positions[i][0],
-                    user_voice_positions[i][1],
-                    rect_info["center"][0],
-                    rect_info["center"][1],
-                    rect_info["width"],
-                    rect_info["height"],
-                    is_channel=False,
-                    is_username=True
-                )
-
-                if fitted_text:
-                    stroke_width = 1
-                    for dx in [-stroke_width, 0, stroke_width]:
-                        for dy in [-stroke_width, 0, stroke_width]:
-                            if dx != 0 or dy != 0:
-                                pilmoji.text((user_pos[0] + dx, user_pos[1] + dy),
-                                             fitted_text, "black", user_font,
-                                             emoji_position_offset=(0, 0))
-
-                    pilmoji.text(user_pos, fitted_text, "white", user_font,
-                                 emoji_position_offset=(0, 0))
-
-                voice_time_text = format_time(voice_time)
-                stroke_width = 1
-                for dx in [-stroke_width, 0, stroke_width]:
-                    for dy in [-stroke_width, 0, stroke_width]:
-                        if dx != 0 or dy != 0:
-                            draw_text_centered(draw, voice_time_text,
-                                               (user_voice_time_positions[i][0] + dx,
-                                                user_voice_time_positions[i][1] + dy),
-                                               font_large, "black", max_width=80)
-
-                draw_text_centered(draw, voice_time_text, user_voice_time_positions[i],
-                                   font_large, "white", max_width=80)
-            else:
-                stroke_width = 1
-                placeholder = "-"
-                for dx in [-stroke_width, 0, stroke_width]:
-                    for dy in [-stroke_width, 0, stroke_width]:
-                        if dx != 0 or dy != 0:
-                            draw_text_centered(draw, placeholder,
-                                               (user_voice_positions[i][0] + dx,
-                                                user_voice_positions[i][1] + dy),
-                                               font_large, "black", max_width=120)
-
-                draw_text_centered(draw, placeholder, user_voice_positions[i],
-                                   font_large, "white", max_width=120)
-
-                stroke_width = 1
-                zero_str = "0s"
-                for dx in [-stroke_width, 0, stroke_width]:
-                    for dy in [-stroke_width, 0, stroke_width]:
-                        if dx != 0 or dy != 0:
-                            draw_text_centered(draw, zero_str,
-                                               (user_voice_time_positions[i][0] + dx,
-                                                user_voice_time_positions[i][1] + dy),
-                                               font_large, "black", max_width=80)
-
-                draw_text_centered(draw, zero_str, user_voice_time_positions[i],
-                                   font_large, "white", max_width=80)
-
-        # TOP TEXT CHANNELS
         top_text_channels = stats_data.get('top_text_channels', [])
         text_channel_positions = [(325, 325), (325, 380), (325, 435)]
         text_channel_msg_positions = [(450, 325), (450, 380), (450, 435)]
@@ -1137,15 +1003,886 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
 
                 draw_text_centered(draw, zero_str, text_channel_msg_positions[i],
                                    font_large, "white", max_width=80)
+    gc.collect()
 
-        # TOP VOICE CHANNELS
+    return image
+
+
+async def create_voice_stats_image(guild, stats_data, days_back=30, role_id=None, role_name=None):
+    template_path = BASE_DIR / "assets" / \
+        "images" / "server stats voice final png.png"
+    try:
+        image = Image.open(template_path)
+    except FileNotFoundError:
+        image = Image.new('RGB', (800, 800), color='#2C2F33')
+
+    draw = ImageDraw.Draw(image)
+
+    # FONTS
+    try:
+        font_paths = [BASE_DIR / "assets" / "fonts" / "HorndonD.ttf"]
+        font_loaded = False
+
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    # Load HorndonD at all required sizes
+                    font_horndon_8 = ImageFont.truetype(str(font_path), 8)
+                    font_horndon_10 = ImageFont.truetype(str(font_path), 10)
+                    font_horndon_12 = ImageFont.truetype(str(font_path), 12)
+                    font_horndon_14 = ImageFont.truetype(str(font_path), 14)
+                    font_horndon_16 = ImageFont.truetype(str(font_path), 16)
+                    font_horndon_18 = ImageFont.truetype(str(font_path), 18)
+                    font_horndon_20 = ImageFont.truetype(str(font_path), 20)
+                    font_horndon_22 = ImageFont.truetype(str(font_path), 22)
+                    font_horndon_24 = ImageFont.truetype(str(font_path), 24)
+                    font_horndon_26 = ImageFont.truetype(str(font_path), 26)
+                    font_horndon_28 = ImageFont.truetype(str(font_path), 28)
+                    font_horndon_30 = ImageFont.truetype(str(font_path), 30)
+                    font_horndon_32 = ImageFont.truetype(str(font_path), 32)
+                    font_horndon_34 = ImageFont.truetype(str(font_path), 34)
+                    font_horndon_36 = ImageFont.truetype(str(font_path), 36)
+                    font_horndon_40 = ImageFont.truetype(str(font_path), 40)
+
+                    # Assign ALL font variables to use HorndonD
+                    font_small = font_horndon_16
+                    font_medium = font_horndon_20
+                    font_large = font_horndon_24
+                    font_larger = font_horndon_30
+                    font_huge = font_horndon_40
+                    font_horndon_medium = font_horndon_20
+                    arial_small = font_horndon_16  # Use HorndonD instead of Arial
+
+                    font_loaded = True
+                    break
+
+                except Exception as e:
+                    print(f"Error loading HorndonD font at {font_path}: {e}")
+                    continue
+
+        if not font_loaded:
+            # Fallback to system fonts if HorndonD not found
+            try:
+                font_small = ImageFont.truetype("arial.ttf", 16)
+                font_medium = ImageFont.truetype("arial.ttf", 20)
+                font_large = ImageFont.truetype("arial.ttf", 24)
+                font_larger = ImageFont.truetype("arial.ttf", 30)
+                font_huge = ImageFont.truetype("arial.ttf", 40)
+                font_horndon_medium = ImageFont.truetype("arial.ttf", 20)
+                arial_small = ImageFont.truetype("arial.ttf", 16)
+
+                # Set fallback for horndon variables
+                font_horndon_8 = ImageFont.truetype("arial.ttf", 8)
+                font_horndon_10 = ImageFont.truetype("arial.ttf", 10)
+                font_horndon_12 = ImageFont.truetype("arial.ttf", 12)
+                font_horndon_14 = ImageFont.truetype("arial.ttf", 14)
+                font_horndon_16 = ImageFont.truetype("arial.ttf", 16)
+                font_horndon_18 = ImageFont.truetype("arial.ttf", 18)
+                font_horndon_20 = ImageFont.truetype("arial.ttf", 20)
+                font_horndon_22 = ImageFont.truetype("arial.ttf", 22)
+                font_horndon_24 = ImageFont.truetype("arial.ttf", 24)
+                font_horndon_26 = ImageFont.truetype("arial.ttf", 26)
+                font_horndon_28 = ImageFont.truetype("arial.ttf", 28)
+                font_horndon_30 = ImageFont.truetype("arial.ttf", 30)
+                font_horndon_32 = ImageFont.truetype("arial.ttf", 32)
+                font_horndon_34 = ImageFont.truetype("arial.ttf", 34)
+                font_horndon_36 = ImageFont.truetype("arial.ttf", 36)
+                font_horndon_40 = ImageFont.truetype("arial.ttf", 40)
+            except:
+                # Ultimate fallback to default font
+                font_small = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
+                font_large = ImageFont.load_default()
+                font_larger = ImageFont.load_default()
+                font_huge = ImageFont.load_default()
+                font_horndon_medium = ImageFont.load_default()
+                arial_small = ImageFont.load_default()
+                font_horndon_8 = ImageFont.load_default()
+                font_horndon_10 = ImageFont.load_default()
+                font_horndon_12 = ImageFont.load_default()
+                font_horndon_14 = ImageFont.load_default()
+                font_horndon_16 = ImageFont.load_default()
+                font_horndon_18 = ImageFont.load_default()
+                font_horndon_20 = ImageFont.load_default()
+                font_horndon_22 = ImageFont.load_default()
+                font_horndon_24 = ImageFont.load_default()
+                font_horndon_26 = ImageFont.load_default()
+                font_horndon_28 = ImageFont.load_default()
+                font_horndon_30 = ImageFont.load_default()
+                font_horndon_32 = ImageFont.load_default()
+                font_horndon_34 = ImageFont.load_default()
+                font_horndon_36 = ImageFont.load_default()
+                font_horndon_40 = ImageFont.load_default()
+
+    except Exception as e:
+        print(f"Unexpected font error: {e}")
+        # Ultimate fallback to default font for everything
+        font_small = ImageFont.load_default()
+        font_medium = ImageFont.load_default()
+        font_large = ImageFont.load_default()
+        font_larger = ImageFont.load_default()
+        font_huge = ImageFont.load_default()
+        font_horndon_medium = ImageFont.load_default()
+        arial_small = ImageFont.load_default()
+        font_horndon_8 = ImageFont.load_default()
+        font_horndon_10 = ImageFont.load_default()
+        font_horndon_12 = ImageFont.load_default()
+        font_horndon_14 = ImageFont.load_default()
+        font_horndon_16 = ImageFont.load_default()
+        font_horndon_18 = ImageFont.load_default()
+        font_horndon_20 = ImageFont.load_default()
+        font_horndon_22 = ImageFont.load_default()
+        font_horndon_24 = ImageFont.load_default()
+        font_horndon_26 = ImageFont.load_default()
+        font_horndon_28 = ImageFont.load_default()
+        font_horndon_30 = ImageFont.load_default()
+        font_horndon_32 = ImageFont.load_default()
+        font_horndon_34 = ImageFont.load_default()
+        font_horndon_36 = ImageFont.load_default()
+        font_horndon_40 = ImageFont.load_default()
+
+    def format_number_with_suffix(num):
+        """Format a number with K, M suffix (e.g., 1300 -> 1.3K, 1100000 -> 1.1M)"""
+        num = int(num)
+        if num >= 1000000:
+            return f"{num/1000000:.1f}M"
+        elif num >= 1000:
+            return f"{num/1000:.1f}K"
+        else:
+            return str(num)
+
+    def check_text_against_rectangle(text, font, text_x, text_y, rect_center_x, rect_center_y, rect_width, rect_height):
+        rect_left = rect_center_x - (rect_width // 2)
+        rect_right = rect_center_x + (rect_width // 2)
+        rect_top = rect_center_y - (rect_height // 2)
+        rect_bottom = rect_center_y + (rect_height // 2)
+
+        bbox = draw.textbbox((text_x, text_y), text, font=font)
+        text_left = bbox[0]
+        text_right = bbox[2]
+        text_top = bbox[1]
+        text_bottom = bbox[3]
+
+        exceeds_width = (text_left < rect_left) or (text_right > rect_right)
+        exceeds_height = (text_top < rect_top) or (text_bottom > rect_bottom)
+
+        return exceeds_width or exceeds_height
+
+    def fit_text_to_rectangle(text, text_center_x, text_center_y, rect_center_x, rect_center_y, rect_width, rect_height, is_channel=False, is_username=False):
+        normalized_text = unicodedata.normalize('NFKD', text)
+        ascii_text = normalized_text.encode('ascii', 'ignore').decode('ascii')
+        text = ascii_text if ascii_text else text
+
+        if is_username:
+            font_sizes = [26, 24, 22, 20, 18, 16]
+        elif is_channel:
+            font_sizes = [24, 22, 20, 18, 16, 14, 12, 10, 8]
+        else:
+            font_sizes = [24, 22, 20, 18, 16, 14, 12, 10, 8]
+
+        for font_size in font_sizes:
+            try:
+                font = ImageFont.truetype(font_paths[0], font_size) if os.path.exists(
+                    font_paths[0]) else ImageFont.load_default()
+            except:
+                font = ImageFont.load_default()
+
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            text_x = text_center_x - (text_width // 2)
+            text_y = text_center_y - (text_height // 2)
+
+            vertical_offset = 0
+
+            if is_username:
+                if font_size <= 26:
+                    vertical_offset += 1
+                if font_size <= 20:
+                    vertical_offset += 1
+                if font_size <= 16:
+                    vertical_offset += 1
+            elif is_channel:
+                if font_size <= 20:
+                    vertical_offset += 1
+                if font_size <= 16:
+                    vertical_offset += 1
+            else:
+                if font_size <= 12:
+                    vertical_offset += 1
+
+            text_y += vertical_offset
+
+            if not check_text_against_rectangle(text, font, text_x, text_y, rect_center_x, rect_center_y, rect_width, rect_height):
+                return text, font, (text_x, text_y)
+
+        smallest_font = font_sizes[-1]
+        try:
+            font = ImageFont.truetype(font_paths[0], smallest_font) if os.path.exists(
+                font_paths[0]) else ImageFont.load_default()
+        except:
+            font = ImageFont.load_default()
+
+        truncated_text = text
+        while len(truncated_text) > 3:
+            truncated_text = truncated_text[:-4] + "..."
+            bbox = draw.textbbox((0, 0), truncated_text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            text_x = text_center_x - (text_width // 2)
+            text_y = text_center_y - (text_height // 2)
+
+            vertical_offset = 0
+            if is_username:
+                if smallest_font <= 26:
+                    vertical_offset += 1
+                if smallest_font <= 20:
+                    vertical_offset += 1
+                if smallest_font <= 16:
+                    vertical_offset += 1
+            elif is_channel:
+                if smallest_font <= 20:
+                    vertical_offset += 1
+                if smallest_font <= 16:
+                    vertical_offset += 1
+            else:
+                if smallest_font <= 12:
+                    vertical_offset += 1
+
+            text_y += vertical_offset
+
+            if not check_text_against_rectangle(truncated_text, font, text_x, text_y, rect_center_x, rect_center_y, rect_width, rect_height):
+                return truncated_text, font, (text_x, text_y)
+
+        if len(text) > 3:
+            final_text = text[:3] + "..."
+        elif text:
+            final_text = text
+        else:
+            final_text = "-"
+
+        bbox = draw.textbbox((0, 0), final_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        text_x = text_center_x - (text_width // 2)
+        text_y = text_center_y - (text_height // 2)
+
+        vertical_offset = 0
+        if is_channel and smallest_font <= 20:
+            vertical_offset += 1
+        if is_channel and smallest_font <= 16:
+            vertical_offset += 1
+        text_y += vertical_offset
+
+        return final_text, font, (text_x, text_y)
+
+    text_channel_rectangles_left = [
+        {"center": (70, 325), "width": 120, "height": 50},
+        {"center": (70, 380), "width": 120, "height": 50},
+        {"center": (70, 435), "width": 120, "height": 50}
+    ]
+
+    text_channel_rectangles_right = [
+        {"center": (325, 325), "width": 120, "height": 50},
+        {"center": (325, 380), "width": 120, "height": 50},
+        {"center": (325, 435), "width": 120, "height": 50}
+    ]
+
+    server_name_rectangle = {"center": (150, 30), "width": 183, "height": 35}
+
+    with Pilmoji(image) as pilmoji:
+        server_name = guild.name
+        normalized_server_name = unicodedata.normalize('NFKD', server_name)
+        ascii_server_name = normalized_server_name.encode(
+            'ascii', 'ignore').decode('ascii')
+        server_name = ascii_server_name if ascii_server_name else server_name
+
+        try:
+            if guild.icon:
+                icon_url = guild.icon.url
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(icon_url) as response:
+                        icon_data = await response.read()
+
+                icon_image = Image.open(io.BytesIO(icon_data))
+                icon_size = (60, 60)
+                icon_image = icon_image.resize(
+                    icon_size, Image.Resampling.LANCZOS).convert('RGBA')
+
+                mask = Image.new('L', icon_size, 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.ellipse((0, 0, icon_size[0], icon_size[1]), fill=255)
+                icon_image.putalpha(mask)
+
+                icon_x = 7
+                icon_y = 25 - 20
+
+                icon_area = image.crop(
+                    (icon_x, icon_y, icon_x + icon_size[0], icon_y + icon_size[1])).convert('RGBA')
+                icon_with_bg = Image.new('RGBA', icon_size, (0, 0, 0, 0))
+                icon_with_bg.paste(icon_image, (0, 0), icon_image)
+                icon_area.paste(icon_with_bg, (0, 0), icon_with_bg)
+                image.paste(icon_area.convert('RGB'), (icon_x, icon_y))
+                icon_image.close()
+                del icon_image
+                del icon_data
+
+                server_name_font_sizes = [
+                    40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16]
+
+                fitted_text = server_name
+                server_name_font = None
+                final_pos = None
+
+                rect_center_x = server_name_rectangle["center"][0]
+                rect_center_y = server_name_rectangle["center"][1]
+                rect_width = server_name_rectangle["width"]
+                rect_height = server_name_rectangle["height"]
+
+                text_start_x = 75
+                text_start_y = 25
+
+                for font_size in server_name_font_sizes:
+                    try:
+                        font = ImageFont.truetype(font_paths[0], font_size) if os.path.exists(
+                            font_paths[0]) else ImageFont.load_default()
+                    except:
+                        font = ImageFont.load_default()
+
+                    bbox = draw.textbbox((0, 0), server_name, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+
+                    text_x = text_start_x
+                    text_y = text_start_y - \
+                        (text_height // 2)
+
+                    vertical_offset = 0
+                    if font_size <= 40:
+                        vertical_offset += 1
+                    if font_size <= 30:
+                        vertical_offset += 1
+                    if font_size <= 20:
+                        vertical_offset += 1
+                    if font_size <= 16:
+                        vertical_offset += 1
+                    text_y += vertical_offset
+
+                    if not check_text_against_rectangle(server_name, font, text_x, text_y,
+                                                        rect_center_x, rect_center_y,
+                                                        rect_width, rect_height):
+                        fitted_text = server_name
+                        server_name_font = font
+                        final_pos = (text_x, text_y)
+                        break
+
+                if not server_name_font:
+                    smallest_font = server_name_font_sizes[-1]
+                    try:
+                        server_name_font = ImageFont.truetype(font_paths[0], smallest_font) if os.path.exists(
+                            font_paths[0]) else ImageFont.load_default()
+                    except:
+                        server_name_font = ImageFont.load_default()
+
+                    rect_left = rect_center_x - (rect_width // 2)
+                    rect_right = rect_center_x + (rect_width // 2)
+
+                    truncated_text = server_name
+                    for i in range(len(server_name)):
+
+                        test_text = server_name[:len(server_name)-i] + "..."
+                        bbox = draw.textbbox(
+                            (0, 0), test_text, font=server_name_font)
+                        text_width = bbox[2] - bbox[0]
+                        text_height = bbox[3] - bbox[1]
+
+                        text_x = text_start_x
+                        text_y = text_start_y - (text_height // 2)
+
+                        vertical_offset = 0
+                        if smallest_font <= 40:
+                            vertical_offset += 1
+                        if smallest_font <= 30:
+                            vertical_offset += 1
+                        if smallest_font <= 20:
+                            vertical_offset += 1
+                        if smallest_font <= 16:
+                            vertical_offset += 1
+                        text_y += vertical_offset
+
+                        if (text_x >= rect_left) and ((text_x + text_width) <= rect_right):
+                            fitted_text = test_text
+                            final_pos = (text_x, text_y)
+                            break
+
+                    if not final_pos:
+                        if len(server_name) > 3:
+                            fitted_text = server_name[:3] + "..."
+                        elif server_name:
+                            fitted_text = server_name
+                        else:
+                            fitted_text = "-"
+
+                        bbox = draw.textbbox(
+                            (0, 0), fitted_text, font=server_name_font)
+                        text_width = bbox[2] - bbox[0]
+                        text_height = bbox[3] - bbox[1]
+
+                        text_x = text_start_x
+                        text_y = text_start_y - (text_height // 2)
+
+                        vertical_offset = 0
+                        if smallest_font <= 40:
+                            vertical_offset += 1
+                        if smallest_font <= 30:
+                            vertical_offset += 1
+                        if smallest_font <= 20:
+                            vertical_offset += 1
+                        if smallest_font <= 16:
+                            vertical_offset += 1
+                        text_y += vertical_offset
+
+                        final_pos = (text_x, text_y)
+
+                if fitted_text and final_pos:
+                    stroke_width = 1
+                    for dx in [-stroke_width, 0, stroke_width]:
+                        for dy in [-stroke_width, 0, stroke_width]:
+                            if dx != 0 or dy != 0:
+                                pilmoji.text((final_pos[0] + dx, final_pos[1] + dy),
+                                             fitted_text, "black", server_name_font,
+                                             emoji_position_offset=(0, 0))
+
+                    pilmoji.text(final_pos, fitted_text, "white", server_name_font,
+                                 emoji_position_offset=(0, 0))
+
+            else:
+
+                server_name_font_sizes = [
+                    40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16]
+
+                fitted_text = server_name
+                server_name_font = None
+                final_pos = None
+
+                rect_center_x = server_name_rectangle["center"][0]
+                rect_center_y = server_name_rectangle["center"][1]
+                rect_width = server_name_rectangle["width"]
+                rect_height = server_name_rectangle["height"]
+
+                text_start_x = 75
+                text_start_y = 25
+
+                for font_size in server_name_font_sizes:
+                    try:
+                        font = ImageFont.truetype(font_paths[0], font_size) if os.path.exists(
+                            font_paths[0]) else ImageFont.load_default()
+                    except:
+                        font = ImageFont.load_default()
+
+                    bbox = draw.textbbox((0, 0), server_name, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+
+                    text_x = text_start_x
+                    text_y = text_start_y - (text_height // 2)
+
+                    vertical_offset = 0
+                    if font_size <= 40:
+                        vertical_offset += 1
+                    if font_size <= 30:
+                        vertical_offset += 1
+                    if font_size <= 20:
+                        vertical_offset += 1
+                    if font_size <= 16:
+                        vertical_offset += 1
+                    text_y += vertical_offset
+
+                    if not check_text_against_rectangle(server_name, font, text_x, text_y,
+                                                        rect_center_x, rect_center_y,
+                                                        rect_width, rect_height):
+                        fitted_text = server_name
+                        server_name_font = font
+                        final_pos = (text_x, text_y)
+                        break
+
+                if not server_name_font:
+                    smallest_font = server_name_font_sizes[-1]
+                    try:
+                        server_name_font = ImageFont.truetype(font_paths[0], smallest_font) if os.path.exists(
+                            font_paths[0]) else ImageFont.load_default()
+                    except:
+                        server_name_font = ImageFont.load_default()
+
+                    rect_left = rect_center_x - (rect_width // 2)
+                    rect_right = rect_center_x + (rect_width // 2)
+
+                    truncated_text = server_name
+                    for i in range(len(server_name)):
+
+                        test_text = server_name[:len(server_name)-i] + "..."
+                        bbox = draw.textbbox(
+                            (0, 0), test_text, font=server_name_font)
+                        text_width = bbox[2] - bbox[0]
+                        text_height = bbox[3] - bbox[1]
+
+                        text_x = text_start_x
+                        text_y = text_start_y - (text_height // 2)
+
+                        vertical_offset = 0
+                        if smallest_font <= 40:
+                            vertical_offset += 1
+                        if smallest_font <= 30:
+                            vertical_offset += 1
+                        if smallest_font <= 20:
+                            vertical_offset += 1
+                        if smallest_font <= 16:
+                            vertical_offset += 1
+                        text_y += vertical_offset
+
+                        if (text_x >= rect_left) and ((text_x + text_width) <= rect_right):
+                            fitted_text = test_text
+                            final_pos = (text_x, text_y)
+                            break
+
+                    if not final_pos:
+                        if len(server_name) > 3:
+                            fitted_text = server_name[:3] + "..."
+                        elif server_name:
+                            fitted_text = server_name
+                        else:
+                            fitted_text = "-"
+
+                        bbox = draw.textbbox(
+                            (0, 0), fitted_text, font=server_name_font)
+                        text_width = bbox[2] - bbox[0]
+                        text_height = bbox[3] - bbox[1]
+
+                        text_x = text_start_x
+                        text_y = text_start_y - (text_height // 2)
+
+                        vertical_offset = 0
+                        if smallest_font <= 40:
+                            vertical_offset += 1
+                        if smallest_font <= 30:
+                            vertical_offset += 1
+                        if smallest_font <= 20:
+                            vertical_offset += 1
+                        if smallest_font <= 16:
+                            vertical_offset += 1
+                        text_y += vertical_offset
+
+                        final_pos = (text_x, text_y)
+
+                if fitted_text and final_pos:
+                    stroke_width = 1
+                    for dx in [-stroke_width, 0, stroke_width]:
+                        for dy in [-stroke_width, 0, stroke_width]:
+                            if dx != 0 or dy != 0:
+                                pilmoji.text((final_pos[0] + dx, final_pos[1] + dy),
+                                             fitted_text, "black", server_name_font,
+                                             emoji_position_offset=(0, 0))
+
+                    pilmoji.text(final_pos, fitted_text, "white", server_name_font,
+                                 emoji_position_offset=(0, 0))
+
+        except Exception as e:
+            print(f"Error with server icon/name: {e}")
+
+            server_name_font_sizes = [40, 38, 36, 34,
+                                      32, 30, 28, 26, 24, 22, 20, 18, 16]
+
+            fitted_text = server_name
+            server_name_font = None
+            final_pos = None
+
+            rect_center_x = server_name_rectangle["center"][0]
+            rect_center_y = server_name_rectangle["center"][1]
+            rect_width = server_name_rectangle["width"]
+            rect_height = server_name_rectangle["height"]
+
+            text_start_x = 75
+            text_start_y = 25
+
+            for font_size in server_name_font_sizes:
+                try:
+                    font = ImageFont.truetype(font_paths[0], font_size) if os.path.exists(
+                        font_paths[0]) else ImageFont.load_default()
+                except:
+                    font = ImageFont.load_default()
+
+                bbox = draw.textbbox((0, 0), server_name, font=font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+
+                text_x = text_start_x
+                text_y = text_start_y - (text_height // 2)
+
+                vertical_offset = 0
+                if font_size <= 40:
+                    vertical_offset += 1
+                if font_size <= 30:
+                    vertical_offset += 1
+                if font_size <= 20:
+                    vertical_offset += 1
+                if font_size <= 16:
+                    vertical_offset += 1
+                text_y += vertical_offset
+
+                if not check_text_against_rectangle(server_name, font, text_x, text_y,
+                                                    rect_center_x, rect_center_y,
+                                                    rect_width, rect_height):
+                    fitted_text = server_name
+                    server_name_font = font
+                    final_pos = (text_x, text_y)
+                    break
+
+            if not server_name_font:
+                smallest_font = server_name_font_sizes[-1]
+                try:
+                    server_name_font = ImageFont.truetype(font_paths[0], smallest_font) if os.path.exists(
+                        font_paths[0]) else ImageFont.load_default()
+                except:
+                    server_name_font = ImageFont.load_default()
+
+                rect_left = rect_center_x - (rect_width // 2)
+                rect_right = rect_center_x + (rect_width // 2)
+
+                for i in range(len(server_name)):
+
+                    test_text = server_name[:len(server_name)-i] + "..."
+                    bbox = draw.textbbox(
+                        (0, 0), test_text, font=server_name_font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+
+                    text_x = text_start_x
+                    text_y = text_start_y - (text_height // 2)
+
+                    vertical_offset = 0
+                    if smallest_font <= 40:
+                        vertical_offset += 1
+                    if smallest_font <= 30:
+                        vertical_offset += 1
+                    if smallest_font <= 20:
+                        vertical_offset += 1
+                    if smallest_font <= 16:
+                        vertical_offset += 1
+                    text_y += vertical_offset
+
+                    if (text_x >= rect_left) and ((text_x + text_width) <= rect_right):
+                        fitted_text = test_text
+                        final_pos = (text_x, text_y)
+                        break
+
+                if not final_pos:
+                    if len(server_name) > 3:
+                        fitted_text = server_name[:3] + "..."
+                    elif server_name:
+                        fitted_text = server_name
+                    else:
+                        fitted_text = "-"
+
+                    bbox = draw.textbbox(
+                        (0, 0), fitted_text, font=server_name_font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+
+                    text_x = text_start_x
+                    text_y = text_start_y - (text_height // 2)
+
+                    vertical_offset = 0
+                    if smallest_font <= 40:
+                        vertical_offset += 1
+                    if smallest_font <= 30:
+                        vertical_offset += 1
+                    if smallest_font <= 20:
+                        vertical_offset += 1
+                    if smallest_font <= 16:
+                        vertical_offset += 1
+                    text_y += vertical_offset
+
+                    final_pos = (text_x, text_y)
+
+            if fitted_text and final_pos:
+                stroke_width = 1
+                for dx in [-stroke_width, 0, stroke_width]:
+                    for dy in [-stroke_width, 0, stroke_width]:
+                        if dx != 0 or dy != 0:
+                            pilmoji.text((final_pos[0] + dx, final_pos[1] + dy),
+                                         fitted_text, "black", server_name_font,
+                                         emoji_position_offset=(0, 0))
+
+                pilmoji.text(final_pos, fitted_text, "white", server_name_font,
+                             emoji_position_offset=(0, 0))
+
+        current_date = datetime.now().strftime("%B %d, %Y")
+        stroke_width = 1
+        for dx in [-stroke_width, 0, stroke_width]:
+            for dy in [-stroke_width, 0, stroke_width]:
+                if dx != 0 or dy != 0:
+                    draw_text_centered(draw, current_date, (605 + dx, 45 + dy),
+                                       font_small, "black")
+
+        draw_text_centered(draw, current_date, (605, 45),
+                           font_small, "white")
+
+        time_period_text = f"{days_back} days"
+        stroke_width = 1
+        for dx in [-stroke_width, 0, stroke_width]:
+            for dy in [-stroke_width, 0, stroke_width]:
+                if dx != 0 or dy != 0:
+                    draw_text_centered(draw, time_period_text, (665 + dx, 420 + dy),
+                                       font_small, "black")
+
+        draw_text_centered(draw, time_period_text, (665, 420),
+                           font_small, "white")
+
+        # USE THE PASSED role_name INSTEAD OF DISCORD API
+        role_text = role_name if role_name else "No Filter"
+
+        stroke_width = 1
+        for dx in [-stroke_width, 0, stroke_width]:
+            for dy in [-stroke_width, 0, stroke_width]:
+                if dx != 0 or dy != 0:
+                    draw_text_centered(draw, role_text, (613 + dx, 455 + dy),
+                                       font_small, "black")
+
+        draw_text_centered(draw, role_text, (613, 455),
+                           font_small, "white")
+
+        total_seconds = stats_data.get('total_seconds', 0)
+        total_voice_text = format_time(total_seconds)
+        stroke_width = 1
+        for dx in [-stroke_width, 0, stroke_width]:
+            for dy in [-stroke_width, 0, stroke_width]:
+                if dx != 0 or dy != 0:
+                    draw_text_centered(draw, total_voice_text, (390 + dx, 175 + dy),
+                                       font_huge, "black")
+
+        draw_text_centered(draw, total_voice_text, (390, 175),
+                           font_huge, "white")
+
+        # Format active users with K/M suffix
+        active_users = stats_data.get('active_voice_users', 0)
+        active_users_text = format_number_with_suffix(active_users)
+        stroke_width = 1
+        for dx in [-stroke_width, 0, stroke_width]:
+            for dy in [-stroke_width, 0, stroke_width]:
+                if dx != 0 or dy != 0:
+                    draw_text_centered(draw, active_users_text, (130 + dx, 175 + dy),
+                                       font_huge, "black")
+
+        draw_text_centered(draw, active_users_text, (130, 175),
+                           font_huge, "white")
+
+        voice_over_time = stats_data.get('voice_over_time', {})
+        voice_time_positions = {
+            1: (675, 160),
+            5: (675, 215),
+            10: (675, 270),
+            20: (675, 320),
+            30: (675, 370)
+        }
+
+        for days, pos in voice_time_positions.items():
+            seconds = voice_over_time.get(
+                days, voice_over_time.get(f'{days}d', 0))
+            voice_time_text = format_time(seconds)
+
+            stroke_width = 1
+            for dx in [-stroke_width, 0, stroke_width]:
+                for dy in [-stroke_width, 0, stroke_width]:
+                    if dx != 0 or dy != 0:
+                        draw_text_centered(draw, voice_time_text, (pos[0] + dx, pos[1] + dy),
+                                           font_large, "black")
+
+            draw_text_centered(draw, voice_time_text, pos,
+                               font_large, "white")
+
+        top_users_voice = stats_data.get('top_users_voice', [])
+        user_voice_positions = [(65, 325), (65, 380), (65, 435)]
+        user_voice_time_positions = [(190, 325), (190, 380), (190, 435)]
+
+        for i in range(3):
+            if i < len(top_users_voice):
+                user_data = top_users_voice[i]
+                username = user_data.get('name', 'Unknown')
+                voice_time = user_data.get('voice_time', 0)
+
+                rect_info = text_channel_rectangles_left[i]
+                fitted_text, user_font, user_pos = fit_text_to_rectangle(
+                    username,
+                    user_voice_positions[i][0],
+                    user_voice_positions[i][1],
+                    rect_info["center"][0],
+                    rect_info["center"][1],
+                    rect_info["width"],
+                    rect_info["height"],
+                    is_channel=False,
+                    is_username=True
+                )
+
+                if fitted_text:
+                    stroke_width = 1
+                    for dx in [-stroke_width, 0, stroke_width]:
+                        for dy in [-stroke_width, 0, stroke_width]:
+                            if dx != 0 or dy != 0:
+                                pilmoji.text((user_pos[0] + dx, user_pos[1] + dy),
+                                             fitted_text, "black", user_font,
+                                             emoji_position_offset=(0, 0))
+
+                    pilmoji.text(user_pos, fitted_text, "white", user_font,
+                                 emoji_position_offset=(0, 0))
+
+                voice_time_text = format_time(voice_time)
+                stroke_width = 1
+                for dx in [-stroke_width, 0, stroke_width]:
+                    for dy in [-stroke_width, 0, stroke_width]:
+                        if dx != 0 or dy != 0:
+                            draw_text_centered(draw, voice_time_text,
+                                               (user_voice_time_positions[i][0] + dx,
+                                                user_voice_time_positions[i][1] + dy),
+                                               font_large, "black")
+
+                draw_text_centered(draw, voice_time_text, user_voice_time_positions[i],
+                                   font_large, "white")
+            else:
+                stroke_width = 1
+                placeholder = "-"
+                for dx in [-stroke_width, 0, stroke_width]:
+                    for dy in [-stroke_width, 0, stroke_width]:
+                        if dx != 0 or dy != 0:
+                            draw_text_centered(draw, placeholder,
+                                               (user_voice_positions[i][0] + dx,
+                                                user_voice_positions[i][1] + dy),
+                                               font_large, "black")
+
+                draw_text_centered(draw, placeholder, user_voice_positions[i],
+                                   font_large, "white")
+
+                stroke_width = 1
+                zero_str = "0s"
+                for dx in [-stroke_width, 0, stroke_width]:
+                    for dy in [-stroke_width, 0, stroke_width]:
+                        if dx != 0 or dy != 0:
+                            draw_text_centered(draw, zero_str,
+                                               (user_voice_time_positions[i][0] + dx,
+                                                user_voice_time_positions[i][1] + dy),
+                                               font_large, "black")
+
+                draw_text_centered(draw, zero_str, user_voice_time_positions[i],
+                                   font_large, "white")
+
         top_voice_channels = stats_data.get('top_voice_channels', [])
-        voice_channel_positions = [(325, 540), (325, 595), (325, 650)]
-        voice_channel_time_positions = [(450, 540), (450, 595), (450, 650)]
+        voice_channel_positions = [(325, 325), (325, 380), (325, 435)]
+        voice_channel_time_positions = [(450, 325), (450, 380), (450, 435)]
 
         for i in range(3):
             text_pos = voice_channel_positions[i]
-            rect_info = voice_channel_rectangles_right[i]
+            rect_info = text_channel_rectangles_right[i]
 
             if i < len(top_voice_channels):
                 channel_data = top_voice_channels[i]
@@ -1183,10 +1920,10 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
                             draw_text_centered(draw, time_text,
                                                (voice_channel_time_positions[i][0] + dx,
                                                 voice_channel_time_positions[i][1] + dy),
-                                               font_large, "black", max_width=80)
+                                               font_large, "black")
 
                 draw_text_centered(draw, time_text, voice_channel_time_positions[i],
-                                   font_large, "white", max_width=80)
+                                   font_large, "white")
             else:
                 placeholder_font = font_large
                 bbox = draw.textbbox((0, 0), "-", font=placeholder_font)
@@ -1213,77 +1950,104 @@ async def create_user_stats_image(guild, stats_data, days_back=30, role_id=None)
                             draw_text_centered(draw, zero_str,
                                                (voice_channel_time_positions[i][0] + dx,
                                                 voice_channel_time_positions[i][1] + dy),
-                                               font_large, "black", max_width=80)
+                                               font_large, "black")
 
                 draw_text_centered(draw, zero_str, voice_channel_time_positions[i],
-                                   font_large, "white", max_width=80)
+                                   font_large, "white")
+    gc.collect()
 
     return image
 
 
-# ROLE FILTER DROPDOWN MENU
-
-class ServerRoleSelectMenu(discord.ui.Select):
-    def __init__(self, guild: discord.Guild, current_role_id: str = None):
+class ServerRoleModal(discord.ui.Modal, title='Input Role ID'):
+    def __init__(self, cog_instance, original_message_id, guild):
+        super().__init__(timeout=300)
+        self.cog = cog_instance
+        self.original_message_id = original_message_id
         self.guild = guild
 
-        roles = [role for role in guild.roles if role.name != "@everyone"]
-        roles.sort(key=lambda x: x.position, reverse=True)
-        roles = roles[:25]
+    role_id = discord.ui.TextInput(
+        label='Enter Role ID',
+        placeholder='e.g., 123456789012345678',
+        min_length=1,
+        max_length=20,
+        required=True
+    )
 
-        options = [
-            discord.SelectOption(
-                label="No Filter",
-                value="none",
-                description="Show all users",
-                emoji="🌐",
-                default=(current_role_id == "none" or not current_role_id)
-            )
-        ]
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            role_id_str = self.role_id.value.strip()
 
-        for role in roles:
-            options.append(
-                discord.SelectOption(
-                    label=role.name[:25],
-                    value=str(role.id),
-                    description=f"Filter by {role.name}"[:50],
-                    default=(str(role.id) == current_role_id)
+            try:
+                role_id_int = int(role_id_str)
+            except ValueError:
+                embed = discord.Embed(
+                    title="❌ Invalid Role ID",
+                    description="Sorry! The role ID you inputted is not valid, please try again.",
+                    color=discord.Color.red()
                 )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            # Get role name from database instead of Discord API
+            role_name = None
+            db_cog = self.cog._get_db_cog()
+            if db_cog and hasattr(db_cog, 'get_role_name_from_db'):
+                role_name = await db_cog.get_role_name_from_db(self.guild.id, role_id_int)
+
+            if not role_name:
+                embed = discord.Embed(
+                    title="❌ Role Not Found",
+                    description="Sorry! The role ID you inputted is not valid, please try again.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            await interaction.response.defer()
+
+            view = self.cog.active_sessions.get(
+                self.original_message_id, {}).get('view')
+            if view:
+                view.selected_role_id = role_id_str
+                stats_data = await self.cog.get_server_stats(
+                    self.guild.id, view.current_days, view.selected_role_id, view.current_stat_type
+                )
+                if stats_data:
+                    if view.current_stat_type == "message":
+                        image_stats_data = self.cog._convert_to_message_format(
+                            stats_data, self.guild)
+                        image = await create_message_stats_image(self.guild, image_stats_data, view.current_days, view.selected_role_id, role_name)
+                    else:
+                        image_stats_data = self.cog._convert_to_voice_format(
+                            stats_data, self.guild)
+                        image = await create_voice_stats_image(self.guild, image_stats_data, view.current_days, view.selected_role_id, role_name)
+
+                    img_bytes = io.BytesIO()
+                    image.save(img_bytes, format='PNG')
+                    img_bytes.seek(0)
+
+                    file = discord.File(img_bytes, filename='server_stats.png')
+                    view._update_buttons()
+                    await interaction.edit_original_response(attachments=[file], view=view)
+                else:
+                    await interaction.edit_original_response(content="❌ Error generating stats image", view=view)
+
+        except Exception as e:
+            print(f"Error in role modal submit: {e}")
+            traceback.print_exc()
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while processing your request.",
+                color=discord.Color.red()
             )
-
-        super().__init__(
-            placeholder="Filter by role...",
-            options=options,
-            custom_id="server_role_filter_select",
-            min_values=1,
-            max_values=1,
-            row=0
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        view = self.view
-        if hasattr(view, 'selected_role_id'):
-            view.selected_role_id = self.values[0]
-
-            stats_data = await view.cog.get_server_stats(
-                view.guild.id, view.current_days, view.selected_role_id
-            )
-            if stats_data:
-                image_stats_data = view.cog._convert_to_image_format(
-                    stats_data, view.guild)
-                image = await create_user_stats_image(view.guild, image_stats_data, view.current_days, view.selected_role_id)
-
-                img_bytes = io.BytesIO()
-                image.save(img_bytes, format='PNG')
-                img_bytes.seek(0)
-
-                file = discord.File(img_bytes, filename='server_stats.png')
-                view._update_buttons()
-                await interaction.edit_original_response(attachments=[file], view=view)
-            else:
-                await interaction.edit_original_response(content="❌ Error generating stats image", view=view)
+            try:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            except:
+                try:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                except:
+                    pass
 
 
 class ServerTimeModal(discord.ui.Modal, title='Custom Time Period'):
@@ -1317,11 +2081,23 @@ class ServerTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 view.show_time_buttons = False
                 view._update_buttons()
 
-                stats_data = await self.cog.get_server_stats(self.guild.id, days)
+                # Get role name from database if a role is selected
+                role_name = None
+                if view.selected_role_id and view.selected_role_id != "none":
+                    db_cog = self.cog._get_db_cog()
+                    if db_cog and hasattr(db_cog, 'get_role_name_from_db'):
+                        role_name = await db_cog.get_role_name_from_db(self.guild.id, int(view.selected_role_id))
+
+                stats_data = await self.cog.get_server_stats(self.guild.id, days, view.selected_role_id, view.current_stat_type)
                 if stats_data:
-                    image_stats_data = self.cog._convert_to_image_format(
-                        stats_data, self.guild)
-                    image = await create_user_stats_image(self.guild, image_stats_data, days)
+                    if view.current_stat_type == "message":
+                        image_stats_data = self.cog._convert_to_message_format(
+                            stats_data, self.guild)
+                        image = await create_message_stats_image(self.guild, image_stats_data, days, view.selected_role_id, role_name)
+                    else:
+                        image_stats_data = self.cog._convert_to_voice_format(
+                            stats_data, self.guild)
+                        image = await create_voice_stats_image(self.guild, image_stats_data, days, view.selected_role_id, role_name)
 
                     img_bytes = io.BytesIO()
                     image.save(img_bytes, format='PNG')
@@ -1342,22 +2118,42 @@ class ServerTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 await interaction.response.send_message("❌ An error occurred while updating stats.", ephemeral=True)
 
 
-# MAIN VIEW
-
 class ServerStatsView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, selected_role_id: str = None):
+    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, selected_role_id: str = None, stat_type: str = "message"):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.current_days = days_back
         self.selected_role_id = selected_role_id
+        self.current_stat_type = stat_type
         self.show_time_buttons = False
         self._update_buttons()
 
     def _update_buttons(self):
         self.clear_items()
 
-        self.add_item(ServerRoleSelectMenu(self.guild, self.selected_role_id))
+        stat_type_select = discord.ui.Select(
+            placeholder=f"Select Stats Type: {self.current_stat_type.capitalize()}",
+            options=[
+                discord.SelectOption(
+                    label="Message Stats", value="message", description="View message statistics"),
+                discord.SelectOption(
+                    label="Voice Activity", value="voice", description="View voice activity statistics")
+            ],
+            custom_id="stat_type_select",
+            row=0
+        )
+        stat_type_select.callback = self.stat_type_callback
+        self.add_item(stat_type_select)
+
+        role_button = discord.ui.Button(
+            style=discord.ButtonStyle.primary,
+            label="Input Role Id",
+            custom_id="server_input_role",
+            row=1
+        )
+        role_button.callback = self.input_role_callback
+        self.add_item(role_button)
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
@@ -1372,7 +2168,7 @@ class ServerStatsView(discord.ui.View):
             style=discord.ButtonStyle.secondary,
             label="⏰ Time Settings" if not self.show_time_buttons else "⏰ Hide Settings",
             custom_id="server_time_settings",
-            row=1
+            row=2
         )
         time_settings_button.callback = self.time_settings_callback
         self.add_item(time_settings_button)
@@ -1382,7 +2178,7 @@ class ServerStatsView(discord.ui.View):
                 style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
                 custom_id="server_days_7",
-                row=2
+                row=3
             )
             days_7_button.callback = self.days_7_callback
             self.add_item(days_7_button)
@@ -1391,7 +2187,7 @@ class ServerStatsView(discord.ui.View):
                 style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
                 label="14 Days",
                 custom_id="server_days_14",
-                row=2
+                row=3
             )
             days_14_button.callback = self.days_14_callback
             self.add_item(days_14_button)
@@ -1400,7 +2196,7 @@ class ServerStatsView(discord.ui.View):
                 style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
                 label="30 Days",
                 custom_id="server_days_30",
-                row=2
+                row=3
             )
             days_30_button.callback = self.days_30_callback
             self.add_item(days_30_button)
@@ -1411,16 +2207,29 @@ class ServerStatsView(discord.ui.View):
                 style=discord.ButtonStyle.success,
                 label=custom_label,
                 custom_id="server_custom_days",
-                row=2
+                row=3
             )
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
+
+    async def stat_type_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        self.current_stat_type = interaction.data['values'][0]
+        await self.handle_button_click(interaction, refresh=True)
+
+    async def input_role_callback(self, interaction: discord.Interaction):
+        modal = ServerRoleModal(
+            self.cog, interaction.message.id, self.guild)
+        await interaction.response.send_modal(modal)
 
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
     async def time_settings_callback(self, interaction: discord.Interaction):
-        await self.handle_time_settings(interaction)
+        await interaction.response.defer()
+        self.show_time_buttons = not self.show_time_buttons
+        self._update_buttons()
+        await interaction.edit_original_response(view=self)
 
     async def days_7_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, days=7)
@@ -1437,27 +2246,44 @@ class ServerStatsView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
     async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, days: int = None):
-
         try:
-            await interaction.response.defer()
+            if interaction.response.is_done():
+                await interaction.followup.edit_message(interaction.message.id)
+            else:
+                await interaction.response.defer()
 
             if days:
                 self.current_days = days
                 self.show_time_buttons = False
 
+            # Get role name from database if a role is selected
+            role_name = None
+            if self.selected_role_id and self.selected_role_id != "none":
+                db_cog = self.cog._get_db_cog()
+                if db_cog and hasattr(db_cog, 'get_role_name_from_db'):
+                    role_name = await db_cog.get_role_name_from_db(self.guild.id, int(self.selected_role_id))
+
             stats_data = await self.cog.get_server_stats(
-                self.guild.id, self.current_days, self.selected_role_id
+                self.guild.id, self.current_days, self.selected_role_id, self.current_stat_type
             )
             if not stats_data:
                 await interaction.followup.send("❌ Error retrieving server statistics", ephemeral=True)
                 return
 
-            image_stats_data = self.cog._convert_to_image_format(
-                stats_data, self.guild
-            )
-            image = await create_user_stats_image(
-                self.guild, image_stats_data, self.current_days, self.selected_role_id
-            )
+            if self.current_stat_type == "message":
+                image_stats_data = self.cog._convert_to_message_format(
+                    stats_data, self.guild
+                )
+                image = await create_message_stats_image(
+                    self.guild, image_stats_data, self.current_days, self.selected_role_id, role_name
+                )
+            else:
+                image_stats_data = self.cog._convert_to_voice_format(
+                    stats_data, self.guild
+                )
+                image = await create_voice_stats_image(
+                    self.guild, image_stats_data, self.current_days, self.selected_role_id, role_name
+                )
 
             self._update_buttons()
             img_bytes = io.BytesIO()
@@ -1469,62 +2295,111 @@ class ServerStatsView(discord.ui.View):
 
         except Exception as e:
             print(f"Error handling button click: {e}")
+            traceback.print_exc()
             try:
                 await interaction.followup.send("❌ An error occurred while updating the stats.", ephemeral=True)
             except:
                 pass
 
-    async def handle_time_settings(self, interaction: discord.Interaction):
-
-        try:
-            await interaction.response.defer()
-            self.show_time_buttons = not self.show_time_buttons
-            self._update_buttons()
-            await interaction.edit_original_response(view=self)
-
-        except Exception as e:
-            print(f"Error handling time settings: {e}")
-            try:
-                await interaction.followup.send("❌ An error occurred while updating time settings.", ephemeral=True)
-            except:
-                pass
-
-
-# INITIALIZATION
 
 class ServerStats(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.active_sessions = {}
+        self.rate_limiter = get_rate_limiter()
+        self.user_cache = {}  # Cache for fetched users to avoid repeated API calls
+        # Start cache cleanup task
+        self.clean_cache_task.start()
+
+    def cog_unload(self):
+        """Cancel the cache cleanup task when cog is unloaded"""
+        self.clean_cache_task.cancel()
+
+    @tasks.loop(hours=1)
+    async def clean_cache_task(self):
+        """Periodically clean the user cache to prevent memory bloat"""
+        self.user_cache.clear()
+        gc.collect()
+
+    @rate_limited(RateLimitType.API, timeout=1.0)  # 1 second per request
+    async def _fetch_user_with_rate_limit(self, user_id: int):
+        """Fetch user globally with rate limiting. Only used as fallback."""
+        # Check cache first
+        if user_id in self.user_cache:
+            return self.user_cache[user_id]
+
+        try:
+            user = await self.bot.fetch_user(user_id)
+            # Cache the user
+            self.user_cache[user_id] = user
+            return user
+        except discord.NotFound:
+            print(f"User {user_id} not found (account may be deleted)")
+            return None
+        except discord.HTTPException as e:
+            print(f"Failed to fetch user {user_id}: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error fetching user {user_id}: {e}")
+            return None
 
     server_group = app_commands.Group(
         name="server",
         description="server statistics commands"
     )
 
+    async def check_permission(self, interaction: discord.Interaction) -> bool:
+        """Check if user has permission to use the command based on guild settings."""
+        try:
+            # Get settings cog
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog or not settings_cog.initialized:
+                # If settings cog not available, allow all
+                return True
+
+            # Get guild settings
+            settings = await settings_cog.get_guild_settings(interaction.guild_id)
+            permission_level = settings.get('permission_level', 'Default')
+
+            # Always allow users with administrator permission
+            if interaction.user.guild_permissions.administrator:
+                return True
+
+            # Check permission level
+            if permission_level == 'All':
+                return True
+            elif permission_level == 'Default':
+                # For server stats, allow by default since there's no user parameter
+                return True
+            elif permission_level == 'User Restriction':
+                # Server stats doesn't have a user parameter, so allow
+                return True
+            elif permission_level == 'Admin':
+                # Only administrators allowed
+                return interaction.user.guild_permissions.administrator
+            elif permission_level == 'Moderator':
+                # Only users with Manage Server permission
+                return interaction.user.guild_permissions.manage_guild
+            else:
+                # Default fallback
+                return True
+
+        except Exception as e:
+            print(f"Error checking permission: {e}")
+            # Default to allowing if there's an error
+            return True
+
     def _get_db_cog(self):
         return self.bot.get_cog('DatabaseStats')
 
-    def _convert_to_image_format(self, stats_data_db, guild):
-
+    def _convert_to_message_format(self, stats_data_db, guild):
         stats_data_image = {
-            'top_emojis': [],
             'total_messages': stats_data_db.get('total_messages', 0),
-            'total_seconds': stats_data_db.get('total_seconds', 0),
+            'active_message_users': stats_data_db.get('unique_users', 0),
             'messages_over_time': stats_data_db.get('messages_over_time', {}),
-            'voice_over_time': stats_data_db.get('voice_over_time', {}),
             'top_users_messages': [],
-            'top_users_voice': [],
-            'top_text_channels': [],
-            'top_voice_channels': []
+            'top_text_channels': []
         }
-
-        emojis_data = stats_data_db.get('top_emojis', [])
-        for i, emoji_data in enumerate(emojis_data[:3]):
-            stats_data_image['top_emojis'].append({
-                'emoji': emoji_data.get('emoji_str', '❓'),
-                'uses': emoji_data.get('usage_count', 0)
-            })
 
         top_users_messages = stats_data_db.get('top_users_messages', [])
 
@@ -1532,6 +2407,7 @@ class ServerStats(commands.Cog):
             if i < len(top_users_messages):
                 user_data = top_users_messages[i]
                 user_id = user_data.get('user_id')
+                message_count = user_data.get('message_count', 0)
 
                 if user_id:
                     try:
@@ -1539,12 +2415,20 @@ class ServerStats(commands.Cog):
                         member = guild.get_member(user_id_int)
 
                         if member:
-                            username = member.name
+                            # Still in server - use guild member name
+                            normalized_username = unicodedata.normalize(
+                                'NFKD', member.name)
+                            ascii_username = normalized_username.encode(
+                                'ascii', 'ignore').decode('ascii')
+                            username = ascii_username if ascii_username else member.name
                         else:
+                            # Left the server - fetch global name with rate limiting
+                            # Note: This is async, but _convert_to_message_format is not async
+                            # We need to handle this differently - see note below
+                            # Placeholder, will be updated in async method
                             username = f"User {user_id_int}"
                     except (ValueError, TypeError):
                         username = f"User {user_id}"
-                    message_count = user_data.get('message_count', 0)
                 else:
                     username = "-"
                     message_count = 0
@@ -1558,35 +2442,6 @@ class ServerStats(commands.Cog):
                 'rank': i + 1
             })
 
-        top_users_voice = stats_data_db.get('top_users_voice', [])
-
-        for i in range(3):
-            if i < len(top_users_voice):
-                user_data = top_users_voice[i]
-                user_id = user_data.get('user_id', 0)
-
-                try:
-                    user_id_int = int(user_id)
-                    member = guild.get_member(user_id_int)
-
-                    if member:
-                        username = member.name
-                    else:
-                        username = f"User {user_id_int}"
-                except (ValueError, TypeError):
-                    username = f"User {user_id}"
-
-                voice_seconds = user_data.get('total_seconds', 0)
-            else:
-                username = "-"
-                voice_seconds = 0
-
-            stats_data_image['top_users_voice'].append({
-                'name': username,
-                'voice_time': voice_seconds,
-                'rank': i + 1
-            })
-
         top_text_channels = stats_data_db.get('top_text_channels', [])
 
         for i in range(3):
@@ -1597,7 +2452,14 @@ class ServerStats(commands.Cog):
                     try:
                         channel_id_int = int(channel_id)
                         channel = guild.get_channel(channel_id_int)
-                        channel_name = channel.name if channel else "[deleted channel]"
+                        if channel:
+                            normalized_channel_name = unicodedata.normalize(
+                                'NFKD', channel.name)
+                            ascii_channel_name = normalized_channel_name.encode(
+                                'ascii', 'ignore').decode('ascii')
+                            channel_name = ascii_channel_name if ascii_channel_name else channel.name
+                        else:
+                            channel_name = "[deleted channel]"
                     except (ValueError, TypeError):
                         channel_name = "[deleted channel]"
                 else:
@@ -1614,6 +2476,141 @@ class ServerStats(commands.Cog):
                 'rank': i + 1
             })
 
+        return stats_data_image
+
+    async def _convert_to_message_format_async(self, stats_data_db, guild):
+        """Async version of _convert_to_message_format that can fetch user data"""
+        stats_data_image = {
+            'total_messages': stats_data_db.get('total_messages', 0),
+            'active_message_users': stats_data_db.get('unique_users', 0),
+            'messages_over_time': stats_data_db.get('messages_over_time', {}),
+            'top_users_messages': [],
+            'top_text_channels': []
+        }
+
+        top_users_messages = stats_data_db.get('top_users_messages', [])
+
+        for i in range(3):
+            if i < len(top_users_messages):
+                user_data = top_users_messages[i]
+                user_id = user_data.get('user_id')
+                message_count = user_data.get('message_count', 0)
+
+                if user_id:
+                    try:
+                        user_id_int = int(user_id)
+                        member = guild.get_member(user_id_int)
+
+                        if member:
+                            # Still in server - use guild member name
+                            normalized_username = unicodedata.normalize(
+                                'NFKD', member.name)
+                            ascii_username = normalized_username.encode(
+                                'ascii', 'ignore').decode('ascii')
+                            username = ascii_username if ascii_username else member.name
+                        else:
+                            # Left the server - fetch global name with rate limiting
+                            user = await self._fetch_user_with_rate_limit(user_id_int)
+                            if user:
+                                normalized_username = unicodedata.normalize(
+                                    'NFKD', user.name)
+                                ascii_username = normalized_username.encode(
+                                    'ascii', 'ignore').decode('ascii')
+                                username = ascii_username if ascii_username else user.name
+                            else:
+                                username = f"User {user_id_int}"
+                    except (ValueError, TypeError):
+                        username = f"User {user_id}"
+                else:
+                    username = "-"
+                    message_count = 0
+            else:
+                username = "-"
+                message_count = 0
+
+            stats_data_image['top_users_messages'].append({
+                'name': username,
+                'messages': message_count,
+                'rank': i + 1
+            })
+
+        top_text_channels = stats_data_db.get('top_text_channels', [])
+
+        for i in range(3):
+            if i < len(top_text_channels):
+                channel_data = top_text_channels[i]
+                channel_id = channel_data.get('channel_id', 0)
+                if channel_id:
+                    try:
+                        channel_id_int = int(channel_id)
+                        channel = guild.get_channel(channel_id_int)
+                        if channel:
+                            normalized_channel_name = unicodedata.normalize(
+                                'NFKD', channel.name)
+                            ascii_channel_name = normalized_channel_name.encode(
+                                'ascii', 'ignore').decode('ascii')
+                            channel_name = ascii_channel_name if ascii_channel_name else channel.name
+                        else:
+                            channel_name = "[deleted channel]"
+                    except (ValueError, TypeError):
+                        channel_name = "[deleted channel]"
+                else:
+                    channel_name = "-"
+
+                messages = channel_data.get('message_count', 0)
+            else:
+                channel_name = "-"
+                messages = 0
+
+            stats_data_image['top_text_channels'].append({
+                'name': channel_name,
+                'messages': messages,
+                'rank': i + 1
+            })
+
+        return stats_data_image
+
+    def _convert_to_voice_format(self, stats_data_db, guild):
+        stats_data_image = {
+            'total_seconds': stats_data_db.get('total_seconds', 0),
+            'active_voice_users': stats_data_db.get('unique_users', 0),
+            'voice_over_time': stats_data_db.get('voice_over_time', {}),
+            'top_users_voice': [],
+            'top_voice_channels': []
+        }
+
+        top_users_voice = stats_data_db.get('top_users_voice', [])
+
+        for i in range(3):
+            if i < len(top_users_voice):
+                user_data = top_users_voice[i]
+                user_id = user_data.get('user_id', 0)
+                voice_seconds = user_data.get('total_seconds', 0)
+
+                try:
+                    user_id_int = int(user_id)
+                    member = guild.get_member(user_id_int)
+
+                    if member:
+                        normalized_username = unicodedata.normalize(
+                            'NFKD', member.name)
+                        ascii_username = normalized_username.encode(
+                            'ascii', 'ignore').decode('ascii')
+                        username = ascii_username if ascii_username else member.name
+                    else:
+                        username = f"User {user_id_int}"
+                except (ValueError, TypeError):
+                    username = f"User {user_id}"
+            else:
+                username = "-"
+                voice_seconds = 0
+
+            stats_data_image['top_users_voice'].append({
+                'name': username,
+                'voice_time': voice_seconds,
+                'rank': i + 1
+            })
+
         top_voice_channels = stats_data_db.get('top_voice_channels', [])
 
         for i in range(3):
@@ -1624,7 +2621,14 @@ class ServerStats(commands.Cog):
                     try:
                         channel_id_int = int(channel_id)
                         channel = guild.get_channel(channel_id_int)
-                        channel_name = channel.name if channel else "[deleted channel]"
+                        if channel:
+                            normalized_channel_name = unicodedata.normalize(
+                                'NFKD', channel.name)
+                            ascii_channel_name = normalized_channel_name.encode(
+                                'ascii', 'ignore').decode('ascii')
+                            channel_name = ascii_channel_name if ascii_channel_name else channel.name
+                        else:
+                            channel_name = "[deleted channel]"
                     except (ValueError, TypeError):
                         channel_name = "[deleted channel]"
                 else:
@@ -1643,10 +2647,96 @@ class ServerStats(commands.Cog):
 
         return stats_data_image
 
-    # QUERY FUNCTION
+    async def _convert_to_voice_format_async(self, stats_data_db, guild):
+        """Async version of _convert_to_voice_format that can fetch user data"""
+        stats_data_image = {
+            'total_seconds': stats_data_db.get('total_seconds', 0),
+            'active_voice_users': stats_data_db.get('unique_users', 0),
+            'voice_over_time': stats_data_db.get('voice_over_time', {}),
+            'top_users_voice': [],
+            'top_voice_channels': []
+        }
 
-    async def get_server_stats(self, guild_id: int, days_back: int, role_id: str = None):
+        top_users_voice = stats_data_db.get('top_users_voice', [])
 
+        for i in range(3):
+            if i < len(top_users_voice):
+                user_data = top_users_voice[i]
+                user_id = user_data.get('user_id', 0)
+                voice_seconds = user_data.get('total_seconds', 0)
+
+                try:
+                    user_id_int = int(user_id)
+                    member = guild.get_member(user_id_int)
+
+                    if member:
+                        # Still in server - use guild member name
+                        normalized_username = unicodedata.normalize(
+                            'NFKD', member.name)
+                        ascii_username = normalized_username.encode(
+                            'ascii', 'ignore').decode('ascii')
+                        username = ascii_username if ascii_username else member.name
+                    else:
+                        # Left the server - fetch global name with rate limiting
+                        user = await self._fetch_user_with_rate_limit(user_id_int)
+                        if user:
+                            normalized_username = unicodedata.normalize(
+                                'NFKD', user.name)
+                            ascii_username = normalized_username.encode(
+                                'ascii', 'ignore').decode('ascii')
+                            username = ascii_username if ascii_username else user.name
+                        else:
+                            username = f"User {user_id_int}"
+                except (ValueError, TypeError):
+                    username = f"User {user_id}"
+            else:
+                username = "-"
+                voice_seconds = 0
+
+            stats_data_image['top_users_voice'].append({
+                'name': username,
+                'voice_time': voice_seconds,
+                'rank': i + 1
+            })
+
+        top_voice_channels = stats_data_db.get('top_voice_channels', [])
+
+        for i in range(3):
+            if i < len(top_voice_channels):
+                channel_data = top_voice_channels[i]
+                channel_id = channel_data.get('channel_id', 0)
+                if channel_id:
+                    try:
+                        channel_id_int = int(channel_id)
+                        channel = guild.get_channel(channel_id_int)
+                        if channel:
+                            normalized_channel_name = unicodedata.normalize(
+                                'NFKD', channel.name)
+                            ascii_channel_name = normalized_channel_name.encode(
+                                'ascii', 'ignore').decode('ascii')
+                            channel_name = ascii_channel_name if ascii_channel_name else channel.name
+                        else:
+                            channel_name = "[deleted channel]"
+                    except (ValueError, TypeError):
+                        channel_name = "[deleted channel]"
+                else:
+                    channel_name = "-"
+
+                voice_time = channel_data.get('total_seconds', 0)
+            else:
+                channel_name = "-"
+                voice_time = 0
+
+            stats_data_image['top_voice_channels'].append({
+                'name': channel_name,
+                'voice_time': voice_time,
+                'rank': i + 1
+            })
+
+        return stats_data_image
+
+    async def get_server_stats(self, guild_id: int, days_back: int, role_id: str = None, stat_type: str = "message"):
+        """Get server statistics using aggregated tables"""
         db_cog = self._get_db_cog()
         if not db_cog:
             print("DatabaseStats cog not found")
@@ -1657,6 +2747,7 @@ class ServerStats(commands.Cog):
             if role_id and role_id != "none":
                 try:
                     role_ids = [int(role_id)]
+
                 except (ValueError, TypeError):
                     role_ids = None
                     print(f"Invalid role_id: {role_id}")
@@ -1667,133 +2758,318 @@ class ServerStats(commands.Cog):
             stats_data = {
                 'total_messages': 0,
                 'total_seconds': 0,
+                'unique_users': 0,
                 'messages_over_time': {},
                 'voice_over_time': {},
-                'top_emojis': [],
                 'top_users_messages': [],
                 'top_users_voice': [],
                 'top_text_channels': [],
                 'top_voice_channels': []
             }
 
-            messages_result = await db_cog.q_server_total_messages(
-                guild_id=guild_id,
-                role_filter_ids=role_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-            stats_data['total_messages'] = messages_result.get(
-                'total_messages', 0)
+            if stat_type == "message":
 
-            voice_result = await db_cog.q_server_total_voice(
-                guild_id=guild_id,
-                role_filter_ids=role_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-            stats_data['total_seconds'] = voice_result.get('total_seconds', 0)
+                messages_result = await db_cog.q_server_total_messages(
+                    guild_id=guild_id,
+                    role_filter_ids=role_ids,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                stats_data['total_messages'] = messages_result.get(
+                    'total_messages', 0)
+                stats_data['unique_users'] = messages_result.get(
+                    'unique_users', 0)
 
-            messages_over_time = await db_cog.q_server_timeseries_messages_1d_5d_10d_20d_30d(
-                guild_id=guild_id,
-                role_filter_ids=role_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-            stats_data['messages_over_time'] = messages_over_time
+                messages_over_time = await db_cog.q_server_timeseries_messages_1d_5d_10d_20d_30d(
+                    guild_id=guild_id,
+                    role_filter_ids=role_ids,
+                    start_time=start_time,
+                    end_time=end_time
+                )
 
-            voice_over_time = await db_cog.q_server_timeseries_voice_1d_5d_10d_20d_30d(
-                guild_id=guild_id,
-                role_filter_ids=role_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-            stats_data['voice_over_time'] = voice_over_time
+                stats_data['messages_over_time'] = messages_over_time
 
-            top_emojis = await db_cog.q_server_top3_emojis(
-                guild_id=guild_id,
-                role_filter_ids=role_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-            stats_data['top_emojis'] = top_emojis
+                top_users_messages = await db_cog.q_server_top3_users_messages(
+                    guild_id=guild_id,
+                    role_filter_ids=role_ids,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                stats_data['top_users_messages'] = top_users_messages
 
-            top_users_messages = await db_cog.q_server_top3_users_messages(
-                guild_id=guild_id,
-                role_filter_ids=role_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-            stats_data['top_users_messages'] = top_users_messages
+                top_text_channels = await db_cog.q_server_top3_text_channels(
+                    guild_id=guild_id,
+                    role_filter_ids=role_ids,
+                    start_time=start_time,
+                    end_time=end_time
+                )
 
-            top_users_voice = await db_cog.q_server_top3_users_voice(
-                guild_id=guild_id,
-                role_filter_ids=role_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-            stats_data['top_users_voice'] = top_users_voice
+                stats_data['top_text_channels'] = top_text_channels
 
-            top_text_channels = await db_cog.q_server_top3_text_channels(
-                guild_id=guild_id,
-                role_filter_ids=role_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-            stats_data['top_text_channels'] = top_text_channels
+            else:  # voice stats
 
-            top_voice_channels = await db_cog.q_server_top3_voice_channels(
-                guild_id=guild_id,
-                role_filter_ids=role_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-            stats_data['top_voice_channels'] = top_voice_channels
+                voice_result = await db_cog.q_server_total_voice(
+                    guild_id=guild_id,
+                    role_filter_ids=role_ids,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+
+                stats_data['total_seconds'] = voice_result.get(
+                    'total_seconds', 0)
+                stats_data['unique_users'] = voice_result.get(
+                    'unique_users', 0)
+
+                voice_over_time = await db_cog.q_server_timeseries_voice_1d_5d_10d_20d_30d(
+                    guild_id=guild_id,
+                    role_filter_ids=role_ids,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                stats_data['voice_over_time'] = voice_over_time
+
+                top_users_voice = await db_cog.q_server_top3_users_voice(
+                    guild_id=guild_id,
+                    role_filter_ids=role_ids,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                stats_data['top_users_voice'] = top_users_voice
+
+                top_voice_channels = await db_cog.q_server_top3_voice_channels(
+                    guild_id=guild_id,
+                    role_filter_ids=role_ids,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+
+                stats_data['top_voice_channels'] = top_voice_channels
 
             stats_data['timestamp'] = end_time.isoformat()
 
             return stats_data
 
         except Exception as e:
-            print(f"Error getting server stats: {e}")
+            print(f"❌ Error getting server stats: {e}")
             traceback.print_exc()
             return None
 
-    # COMMAND
+    # =========================================================
+    # INTERNAL FUNCTION FOR BOTH COMMANDS
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def _handle_server_stats_command(self, ctx_or_interaction, is_interaction=False):
+        """Internal function to handle server stats for both command types"""
+        try:
+            # Get context parameters
+            if is_interaction:
+                user = ctx_or_interaction.user
+                guild = ctx_or_interaction.guild
+                send_method = ctx_or_interaction.followup.send
+                original_message = None
+            else:
+                user = ctx_or_interaction.author
+                guild = ctx_or_interaction.guild
+                # Try to delete the command message
+                try:
+                    await ctx_or_interaction.message.delete()
+                except:
+                    pass
+                send_method = ctx_or_interaction.send
+                original_message = await ctx_or_interaction.original_response() if hasattr(ctx_or_interaction, 'original_response') else None
 
+            if guild is None:
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ This command can only be used in a server.", delete_after=5)
+                return
+
+            # Check permission before processing
+            has_permission = await self.check_permission(ctx_or_interaction) if is_interaction else await self.check_permission_for_prefix(user, guild)
+            if not has_permission:
+                # Get settings to determine required permission
+                settings_cog = self.bot.get_cog('Settings')
+                if settings_cog:
+                    settings = await settings_cog.get_guild_settings(guild.id)
+                    permission_level = settings.get(
+                        'permission_level', 'Default')
+
+                    if permission_level == 'Admin':
+                        embed = discord.Embed(
+                            title="❌ Permission Denied",
+                            description="Sorry! You need the `Administrator` permission to access this command.",
+                            color=discord.Color.red()
+                        )
+                    elif permission_level == 'Moderator':
+                        embed = discord.Embed(
+                            title="❌ Permission Denied",
+                            description="Sorry! You need the `Manage Server` permission to access this command.",
+                            color=discord.Color.red()
+                        )
+                    else:
+                        embed = discord.Embed(
+                            title="❌ Permission Denied",
+                            description="Sorry! You don't have permission to access this command.",
+                            color=discord.Color.red()
+                        )
+                else:
+                    embed = discord.Embed(
+                        title="❌ Permission Denied",
+                        description="Sorry! You don't have permission to access this command.",
+                        color=discord.Color.red()
+                    )
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await ctx_or_interaction.send(embed=embed, delete_after=10)
+                return
+
+            if is_interaction:
+                await ctx_or_interaction.response.defer()
+
+            # Get stats data
+            stats_data = await self.get_server_stats(guild.id, 14, None, "message")
+            if not stats_data:
+                if is_interaction:
+                    await ctx_or_interaction.followup.send("❌ Error retrieving server statistics from database.")
+                else:
+                    await ctx_or_interaction.send("❌ Error retrieving server statistics from database.", delete_after=10)
+                return
+
+            # Generate stats image (no role filter on initial load) - Use async version
+            image_stats_data = await self._convert_to_message_format_async(
+                stats_data, guild)
+            image = await create_message_stats_image(guild, image_stats_data, 14)
+
+            img_bytes = io.BytesIO()
+            image.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            file = discord.File(img_bytes, filename='server_stats.png')
+
+            # Create view
+            view = ServerStatsView(
+                self, guild, days_back=14, stat_type="message")
+
+            # Send the image
+            if is_interaction:
+                msg = await send_method(file=file, view=view)
+            else:
+                msg = await send_method(file=file, view=view, delete_after=300)
+
+            # Store session
+            self.active_sessions[msg.id] = {
+                'guild_id': guild.id,
+                'user_id': user.id,
+                'current_days': 14,
+                'selected_role_id': None,
+                'stat_type': "message",
+                'view': view,
+                'message': msg
+            }
+
+        except Exception as e:
+            print(f"Error in _handle_server_stats_command: {e}")
+            traceback.print_exc()
+            if is_interaction:
+                try:
+                    await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
+                except:
+                    pass
+            else:
+                try:
+                    await ctx_or_interaction.send("❌ An error occurred while generating stats image.", delete_after=10)
+                except:
+                    pass
+
+    async def check_permission_for_prefix(self, user: discord.Member, guild: discord.Guild) -> bool:
+        """Check if user has permission to use the prefix command based on guild settings."""
+        try:
+            # Get settings cog
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog or not settings_cog.initialized:
+                # If settings cog not available, allow all
+                return True
+
+            # Get guild settings
+            settings = await settings_cog.get_guild_settings(guild.id)
+            permission_level = settings.get('permission_level', 'Default')
+
+            # Always allow users with administrator permission
+            if user.guild_permissions.administrator:
+                return True
+
+            # Check permission level
+            if permission_level == 'All':
+                return True
+            elif permission_level == 'Default':
+                # For server stats, allow by default since there's no user parameter
+                return True
+            elif permission_level == 'User Restriction':
+                # Server stats doesn't have a user parameter, so allow
+                return True
+            elif permission_level == 'Admin':
+                # Only administrators allowed
+                return user.guild_permissions.administrator
+            elif permission_level == 'Moderator':
+                # Only users with Manage Server permission
+                return user.guild_permissions.manage_guild
+            else:
+                # Default fallback
+                return True
+
+        except Exception as e:
+            print(f"Error checking permission for prefix: {e}")
+            # Default to allowing if there's an error
+            return True
+
+    # =========================================================
+    # SHORTCUT COMMAND - s
+    # =========================================================
+    @commands.command(name="s")
+    async def server_stats_shortcut(self, ctx: commands.Context):
+        """Shortcut command for server stats - same as server stats"""
+        await self._handle_server_stats_command(ctx, is_interaction=False)
+
+    # =========================================================
+    # SERVER GROUP COMMANDS (PREFIX)
+    # =========================================================
+
+    @commands.group(name="server", invoke_without_command=True)
+    async def server_group_prefix(self, ctx: commands.Context):
+        """Server statistics commands"""
+        await ctx.send("Available commands:\n- `server stats` - Show server statistics\n- `s` - Shortcut for server stats")
+
+    @server_group_prefix.command(name="stats")
+    async def server_stats_prefix(self, ctx: commands.Context):
+        """Display server stats via prefix command"""
+        await self._handle_server_stats_command(ctx, is_interaction=False)
+
+    # =========================================================
+    # SLASH COMMAND
+    # =========================================================
     @server_group.command(name="stats", description="Display the stats of the server")
     async def server_stats(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await self._handle_server_stats_command(interaction, is_interaction=True)
 
-        stats_data = await self.get_server_stats(interaction.guild.id, 14)
-        if not stats_data:
-            await interaction.followup.send("❌ Error retrieving server statistics from database.")
-            return
+    @server_stats.error
+    async def server_stats_error(self, interaction: discord.Interaction, error):
+        """Handle errors for the server stats command"""
+        if isinstance(error, app_commands.errors.CheckFailure):
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description="Sorry! You don't have permission to access this command.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred: {str(error)}",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        image_stats_data = self._convert_to_image_format(
-            stats_data, interaction.guild)
-        image = await create_user_stats_image(interaction.guild, image_stats_data, 14)
-
-        img_bytes = io.BytesIO()
-        image.save(img_bytes, format='PNG')
-        img_bytes.seek(0)
-
-        file = discord.File(img_bytes, filename='server_stats.png')
-
-        view = ServerStatsView(self, interaction.guild, days_back=14)
-
-        message = await interaction.followup.send(file=file, view=view)
-
-        self.active_sessions[message.id] = {
-            'guild_id': interaction.guild.id,
-            'user_id': interaction.user.id,
-            'current_days': 14,
-            'selected_role_id': None,
-            'view': view,
-            'message': message
-        }
-
-
-# SETUP
 
 async def setup(bot):
     await bot.add_cog(ServerStats(bot))

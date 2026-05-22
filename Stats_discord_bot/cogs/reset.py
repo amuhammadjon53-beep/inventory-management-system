@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import logging
 import traceback
 from pathlib import Path
-
+from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
 
 # CONFIGURATION
 
@@ -24,10 +24,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 class DatabaseManager:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
-        logger.info("DatabaseManager initialized")
 
     async def ensure_tables_exist(self, guild_id: int):
-
+        """Check if required tables exist."""
         async with self.pool.acquire() as conn:
             tables = await conn.fetch("""
                 SELECT table_name 
@@ -35,12 +34,19 @@ class DatabaseManager:
                 WHERE table_schema = 'public'
             """)
             table_names = [t['table_name'] for t in tables]
-            logger.info(f"Available tables in database: {table_names}")
 
             required_tables = [
-                'message_tracking', 'voice_session_history', 'voice_active_sessions',
-                'emoji_usage', 'user_mentions', 'invite_tracking',
-                'activity_active_sessions', 'activity_sessions'
+                'message_tracking_hourly',
+                'voice_session_history_hourly',
+                'emoji_usage_hourly',
+                'user_mentions_hourly',
+                'invite_tracking',
+                'activity_sessions_hourly',
+                'daily_activity_log',
+                'activity_streaks',
+                'role_growth_hourly',
+                'member_joins_hourly',
+                'member_leaves_hourly'
             ]
 
             missing_tables = [
@@ -50,15 +56,15 @@ class DatabaseManager:
                 return False
             return True
 
+    # ======================================================================
     # SERVER DELETION LOGIC
+    # ======================================================================
 
     async def delete_server_all(self, guild_id: int,
                                 channel_id: Optional[int] = None,
                                 category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_server_all: guild={guild_id}, channel={channel_id}, category={category_id}")
 
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
@@ -78,41 +84,40 @@ class DatabaseManager:
 
                     where_clause = " AND ".join(conditions)
 
-                    tables = [
-                        'message_tracking',
-                        'voice_session_history',
-                        'voice_active_sessions',
-                        'emoji_usage',
-                        'user_mentions'
+                    # Tables that can be filtered by channel/category
+                    tables_with_channel_category = [
+                        'message_tracking_hourly',
+                        'voice_session_history_hourly',
+                        'emoji_usage_hourly',
+                        'user_mentions_hourly'
                     ]
 
                     deleted_counts = {}
 
-                    for table in tables:
+                    for table in tables_with_channel_category:
                         try:
                             result = await conn.execute(f"DELETE FROM {table} WHERE {where_clause}", *params)
-
                             deleted_counts[table] = result.split()[-1]
-                            logger.info(
-                                f"Deleted from {table}: {deleted_counts[table]} rows")
                         except Exception as e:
                             logger.warning(f"Error deleting from {table}: {e}")
                             deleted_counts[table] = "0 (error)"
 
+                    # Delete from tables that don't have channel/category columns (server-wide only)
                     if not channel_id and not category_id:
-
                         server_tables = [
-                            'activity_active_sessions',
-                            'activity_sessions',
-                            'invite_tracking'
+                            'invite_tracking',
+                            'activity_sessions_hourly',
+                            'daily_activity_log',
+                            'activity_streaks',
+                            'role_growth_hourly',
+                            'member_joins_hourly',
+                            'member_leaves_hourly'
                         ]
 
                         for table in server_tables:
                             try:
                                 result = await conn.execute(f"DELETE FROM {table} WHERE guild_id = $1", guild_id)
                                 deleted_counts[table] = result.split()[-1]
-                                logger.info(
-                                    f"Deleted from {table}: {deleted_counts[table]} rows")
                             except Exception as e:
                                 logger.warning(
                                     f"Error deleting from {table}: {e}")
@@ -130,9 +135,6 @@ class DatabaseManager:
                                      category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_server_messages: guild={guild_id}, channel={channel_id}, category={category_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     conditions = ["guild_id = $1"]
@@ -150,11 +152,8 @@ class DatabaseManager:
                         param_counter += 1
 
                     where_clause = " AND ".join(conditions)
-                    result = await conn.execute(f"DELETE FROM message_tracking WHERE {where_clause}", *params)
-
+                    result = await conn.execute(f"DELETE FROM message_tracking_hourly WHERE {where_clause}", *params)
                     deleted_count = result.split()[-1]
-                    logger.info(
-                        f"Deleted {deleted_count} rows from message_tracking")
                     return int(deleted_count) if deleted_count.isdigit() else 0
 
         except Exception as e:
@@ -167,9 +166,6 @@ class DatabaseManager:
                                   category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_server_voice: guild={guild_id}, channel={channel_id}, category={category_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     conditions = ["guild_id = $1"]
@@ -189,14 +185,9 @@ class DatabaseManager:
                     where_clause = " AND ".join(conditions)
 
                     deleted_counts = {}
-
-                    result1 = await conn.execute(f"DELETE FROM voice_session_history WHERE {where_clause}", *params)
-                    deleted_counts['voice_session_history'] = result1.split()[-1]
-
-                    result2 = await conn.execute(f"DELETE FROM voice_active_sessions WHERE {where_clause}", *params)
-                    deleted_counts['voice_active_sessions'] = result2.split()[-1]
-
-                    logger.info(f"Deleted voice stats: {deleted_counts}")
+                    result1 = await conn.execute(f"DELETE FROM voice_session_history_hourly WHERE {where_clause}", *params)
+                    deleted_counts['voice_session_history_hourly'] = result1.split(
+                    )[-1]
                     return deleted_counts
 
         except Exception as e:
@@ -207,15 +198,10 @@ class DatabaseManager:
     async def delete_server_invites(self, guild_id: int):
 
         try:
-            logger.info(f"delete_server_invites: guild={guild_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     result = await conn.execute(f"DELETE FROM invite_tracking WHERE guild_id = $1", guild_id)
-
                     deleted_count = result.split()[-1]
-                    logger.info(
-                        f"Deleted {deleted_count} rows from invite_tracking")
                     return int(deleted_count) if deleted_count.isdigit() else 0
 
         except Exception as e:
@@ -228,9 +214,6 @@ class DatabaseManager:
                                   category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_server_emoji: guild={guild_id}, channel={channel_id}, category={category_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     conditions = ["guild_id = $1"]
@@ -248,11 +231,8 @@ class DatabaseManager:
                         param_counter += 1
 
                     where_clause = " AND ".join(conditions)
-                    result = await conn.execute(f"DELETE FROM emoji_usage WHERE {where_clause}", *params)
-
+                    result = await conn.execute(f"DELETE FROM emoji_usage_hourly WHERE {where_clause}", *params)
                     deleted_count = result.split()[-1]
-                    logger.info(
-                        f"Deleted {deleted_count} rows from emoji_usage")
                     return int(deleted_count) if deleted_count.isdigit() else 0
 
         except Exception as e:
@@ -263,20 +243,16 @@ class DatabaseManager:
     async def delete_server_activity(self, guild_id: int):
 
         try:
-            logger.info(f"delete_server_activity: guild={guild_id}")
-
-            async with self.db_pool.acquire() as conn:
+            async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     deleted_counts = {}
-
-                    result1 = await conn.execute(f"DELETE FROM activity_active_sessions WHERE guild_id = $1", guild_id)
-                    deleted_counts['activity_active_sessions'] = result1.split(
+                    result1 = await conn.execute(f"DELETE FROM activity_sessions_hourly WHERE guild_id = $1", guild_id)
+                    deleted_counts['activity_sessions_hourly'] = result1.split(
                     )[-1]
-
-                    result2 = await conn.execute(f"DELETE FROM activity_sessions WHERE guild_id = $1", guild_id)
-                    deleted_counts['activity_sessions'] = result2.split()[-1]
-
-                    logger.info(f"Deleted activity stats: {deleted_counts}")
+                    result2 = await conn.execute(f"DELETE FROM daily_activity_log WHERE guild_id = $1", guild_id)
+                    deleted_counts['daily_activity_log'] = result2.split()[-1]
+                    result3 = await conn.execute(f"DELETE FROM activity_streaks WHERE guild_id = $1", guild_id)
+                    deleted_counts['activity_streaks'] = result3.split()[-1]
                     return deleted_counts
 
         except Exception as e:
@@ -289,9 +265,6 @@ class DatabaseManager:
                                      category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_server_mentions: guild={guild_id}, channel={channel_id}, category={category_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     conditions = ["guild_id = $1"]
@@ -309,11 +282,8 @@ class DatabaseManager:
                         param_counter += 1
 
                     where_clause = " AND ".join(conditions)
-                    result = await conn.execute(f"DELETE FROM user_mentions WHERE {where_clause}", *params)
-
+                    result = await conn.execute(f"DELETE FROM user_mentions_hourly WHERE {where_clause}", *params)
                     deleted_count = result.split()[-1]
-                    logger.info(
-                        f"Deleted {deleted_count} rows from user_mentions")
                     return int(deleted_count) if deleted_count.isdigit() else 0
 
         except Exception as e:
@@ -321,16 +291,46 @@ class DatabaseManager:
             logger.error(traceback.format_exc())
             raise
 
-    # USER DELETION
+    async def delete_server_role_growth(self, guild_id: int):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    result = await conn.execute(f"DELETE FROM role_growth_hourly WHERE guild_id = $1", guild_id)
+                    deleted_count = result.split()[-1]
+                    return int(deleted_count) if deleted_count.isdigit() else 0
+
+        except Exception as e:
+            logger.error(f"Error in delete_server_role_growth: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def delete_server_member_growth(self, guild_id: int):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    deleted_counts = {}
+                    result1 = await conn.execute(f"DELETE FROM member_joins_hourly WHERE guild_id = $1", guild_id)
+                    deleted_counts['member_joins_hourly'] = result1.split()[-1]
+                    result2 = await conn.execute(f"DELETE FROM member_leaves_hourly WHERE guild_id = $1", guild_id)
+                    deleted_counts['member_leaves_hourly'] = result2.split()[-1]
+                    return deleted_counts
+
+        except Exception as e:
+            logger.error(f"Error in delete_server_member_growth: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    # ======================================================================
+    # USER DELETION LOGIC
+    # ======================================================================
 
     async def delete_user_all(self, guild_id: int, user_id: int,
                               channel_id: Optional[int] = None,
                               category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_user_all: guild={guild_id}, user={user_id}, channel={channel_id}, category={category_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     conditions = ["guild_id = $1", "user_id = $2"]
@@ -351,23 +351,22 @@ class DatabaseManager:
 
                     deleted_counts = {}
 
-                    tables = [
-                        'message_tracking',
-                        'voice_session_history',
-                        'voice_active_sessions',
-                        'emoji_usage'
+                    # Tables with user_id column that can be filtered by channel/category
+                    tables_with_user_and_channel = [
+                        'message_tracking_hourly',
+                        'voice_session_history_hourly',
+                        'emoji_usage_hourly'
                     ]
 
-                    for table in tables:
+                    for table in tables_with_user_and_channel:
                         try:
                             result = await conn.execute(f"DELETE FROM {table} WHERE {where_clause}", *params)
                             deleted_counts[table] = result.split()[-1]
-                            logger.info(
-                                f"Deleted from {table}: {deleted_counts[table]} rows")
                         except Exception as e:
                             logger.warning(f"Error deleting from {table}: {e}")
                             deleted_counts[table] = "0 (error)"
 
+                    # Tables with mentioner/mentioned relationships
                     mention_conditions = [
                         "guild_id = $1", "(mentioned_user_id = $2 OR mentioner_user_id = $2)"]
                     mention_params = [guild_id, user_id]
@@ -386,28 +385,50 @@ class DatabaseManager:
                         mention_counter += 1
 
                     mention_where = " AND ".join(mention_conditions)
-                    result = await conn.execute(f"DELETE FROM user_mentions WHERE {mention_where}", *mention_params)
-                    deleted_counts['user_mentions'] = result.split()[-1]
+                    result = await conn.execute(f"DELETE FROM user_mentions_hourly WHERE {mention_where}", *mention_params)
+                    deleted_counts['user_mentions_hourly'] = result.split()[-1]
 
+                    # Tables that only have user_id (server-wide only)
                     if not channel_id and not category_id:
+                        # Role growth (server-wide only)
+                        result = await conn.execute(f"DELETE FROM role_growth_hourly WHERE guild_id = $1 AND user_id = $2",
+                                                    guild_id, user_id)
+                        deleted_counts['role_growth_hourly'] = result.split(
+                        )[-1]
 
+                        # Invite tracking
                         result = await conn.execute(f"""
                             DELETE FROM invite_tracking 
                             WHERE guild_id = $1 AND (inviter_id = $2 OR invitee_id = $2)
                         """, guild_id, user_id)
                         deleted_counts['invite_tracking'] = result.split()[-1]
 
-                        result1 = await conn.execute(f"DELETE FROM activity_active_sessions WHERE guild_id = $1 AND user_id = $2",
+                        # Activity tracking (server-wide only)
+                        result1 = await conn.execute(f"DELETE FROM activity_sessions_hourly WHERE guild_id = $1 AND user_id = $2",
                                                      guild_id, user_id)
-                        deleted_counts['activity_active_sessions'] = result1.split(
+                        deleted_counts['activity_sessions_hourly'] = result1.split(
                         )[-1]
 
-                        result2 = await conn.execute(f"DELETE FROM activity_sessions WHERE guild_id = $1 AND user_id = $2",
+                        result2 = await conn.execute(f"DELETE FROM daily_activity_log WHERE guild_id = $1 AND user_id = $2",
                                                      guild_id, user_id)
-                        deleted_counts['activity_sessions'] = result2.split(
+                        deleted_counts['daily_activity_log'] = result2.split(
                         )[-1]
 
-                    logger.info(f"Deleted user stats: {deleted_counts}")
+                        result3 = await conn.execute(f"DELETE FROM activity_streaks WHERE guild_id = $1 AND user_id = $2",
+                                                     guild_id, user_id)
+                        deleted_counts['activity_streaks'] = result3.split()[-1]
+
+                        # Member joins/leaves (server-wide only)
+                        result4 = await conn.execute(f"DELETE FROM member_joins_hourly WHERE guild_id = $1 AND user_id = $2",
+                                                     guild_id, user_id)
+                        deleted_counts['member_joins_hourly'] = result4.split(
+                        )[-1]
+
+                        result5 = await conn.execute(f"DELETE FROM member_leaves_hourly WHERE guild_id = $1 AND user_id = $2",
+                                                     guild_id, user_id)
+                        deleted_counts['member_leaves_hourly'] = result5.split(
+                        )[-1]
+
                     return deleted_counts
 
         except Exception as e:
@@ -420,9 +441,6 @@ class DatabaseManager:
                                    category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_user_messages: guild={guild_id}, user={user_id}, channel={channel_id}, category={category_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     conditions = ["guild_id = $1", "user_id = $2"]
@@ -440,11 +458,8 @@ class DatabaseManager:
                         param_counter += 1
 
                     where_clause = " AND ".join(conditions)
-                    result = await conn.execute(f"DELETE FROM message_tracking WHERE {where_clause}", *params)
-
+                    result = await conn.execute(f"DELETE FROM message_tracking_hourly WHERE {where_clause}", *params)
                     deleted_count = result.split()[-1]
-                    logger.info(
-                        f"Deleted {deleted_count} rows from message_tracking for user {user_id}")
                     return int(deleted_count) if deleted_count.isdigit() else 0
 
         except Exception as e:
@@ -457,9 +472,6 @@ class DatabaseManager:
                                 category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_user_voice: guild={guild_id}, user={user_id}, channel={channel_id}, category={category_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     conditions = ["guild_id = $1", "user_id = $2"]
@@ -477,16 +489,10 @@ class DatabaseManager:
                         param_counter += 1
 
                     where_clause = " AND ".join(conditions)
-
                     deleted_counts = {}
-                    result1 = await conn.execute(f"DELETE FROM voice_session_history WHERE {where_clause}", *params)
-                    deleted_counts['voice_session_history'] = result1.split()[-1]
-
-                    result2 = await conn.execute(f"DELETE FROM voice_active_sessions WHERE {where_clause}", *params)
-                    deleted_counts['voice_active_sessions'] = result2.split()[-1]
-
-                    logger.info(
-                        f"Deleted voice stats for user {user_id}: {deleted_counts}")
+                    result1 = await conn.execute(f"DELETE FROM voice_session_history_hourly WHERE {where_clause}", *params)
+                    deleted_counts['voice_session_history_hourly'] = result1.split(
+                    )[-1]
                     return deleted_counts
 
         except Exception as e:
@@ -497,19 +503,13 @@ class DatabaseManager:
     async def delete_user_invites(self, guild_id: int, user_id: int):
 
         try:
-            logger.info(
-                f"delete_user_invites: guild={guild_id}, user={user_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     result = await conn.execute(f"""
                         DELETE FROM invite_tracking 
                         WHERE guild_id = $1 AND (inviter_id = $2 OR invitee_id = $2)
                     """, guild_id, user_id)
-
                     deleted_count = result.split()[-1]
-                    logger.info(
-                        f"Deleted {deleted_count} invite records for user {user_id}")
                     return int(deleted_count) if deleted_count.isdigit() else 0
 
         except Exception as e:
@@ -522,9 +522,6 @@ class DatabaseManager:
                                 category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_user_emoji: guild={guild_id}, user={user_id}, channel={channel_id}, category={category_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     conditions = ["guild_id = $1", "user_id = $2"]
@@ -542,11 +539,8 @@ class DatabaseManager:
                         param_counter += 1
 
                     where_clause = " AND ".join(conditions)
-                    result = await conn.execute(f"DELETE FROM emoji_usage WHERE {where_clause}", *params)
-
+                    result = await conn.execute(f"DELETE FROM emoji_usage_hourly WHERE {where_clause}", *params)
                     deleted_count = result.split()[-1]
-                    logger.info(
-                        f"Deleted {deleted_count} emoji records for user {user_id}")
                     return int(deleted_count) if deleted_count.isdigit() else 0
 
         except Exception as e:
@@ -557,24 +551,19 @@ class DatabaseManager:
     async def delete_user_activity(self, guild_id: int, user_id: int):
 
         try:
-            logger.info(
-                f"delete_user_activity: guild={guild_id}, user={user_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     deleted_counts = {}
-
-                    result1 = await conn.execute(f"DELETE FROM activity_active_sessions WHERE guild_id = $1 AND user_id = $2",
+                    result1 = await conn.execute(f"DELETE FROM activity_sessions_hourly WHERE guild_id = $1 AND user_id = $2",
                                                  guild_id, user_id)
-                    deleted_counts['activity_active_sessions'] = result1.split(
+                    deleted_counts['activity_sessions_hourly'] = result1.split(
                     )[-1]
-
-                    result2 = await conn.execute(f"DELETE FROM activity_sessions WHERE guild_id = $1 AND user_id = $2",
+                    result2 = await conn.execute(f"DELETE FROM daily_activity_log WHERE guild_id = $1 AND user_id = $2",
                                                  guild_id, user_id)
-                    deleted_counts['activity_sessions'] = result2.split()[-1]
-
-                    logger.info(
-                        f"Deleted activity stats for user {user_id}: {deleted_counts}")
+                    deleted_counts['daily_activity_log'] = result2.split()[-1]
+                    result3 = await conn.execute(f"DELETE FROM activity_streaks WHERE guild_id = $1 AND user_id = $2",
+                                                 guild_id, user_id)
+                    deleted_counts['activity_streaks'] = result3.split()[-1]
                     return deleted_counts
 
         except Exception as e:
@@ -587,9 +576,6 @@ class DatabaseManager:
                                    category_id: Optional[int] = None):
 
         try:
-            logger.info(
-                f"delete_user_mentions: guild={guild_id}, user={user_id}, channel={channel_id}, category={category_id}")
-
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
                     conditions = [
@@ -608,11 +594,8 @@ class DatabaseManager:
                         param_counter += 1
 
                     where_clause = " AND ".join(conditions)
-                    result = await conn.execute(f"DELETE FROM user_mentions WHERE {where_clause}", *params)
-
+                    result = await conn.execute(f"DELETE FROM user_mentions_hourly WHERE {where_clause}", *params)
                     deleted_count = result.split()[-1]
-                    logger.info(
-                        f"Deleted {deleted_count} mention records involving user {user_id}")
                     return int(deleted_count) if deleted_count.isdigit() else 0
 
         except Exception as e:
@@ -620,12 +603,47 @@ class DatabaseManager:
             logger.error(traceback.format_exc())
             raise
 
+    async def delete_user_role_growth(self, guild_id: int, user_id: int):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    result = await conn.execute(f"DELETE FROM role_growth_hourly WHERE guild_id = $1 AND user_id = $2",
+                                                guild_id, user_id)
+                    deleted_count = result.split()[-1]
+                    return int(deleted_count) if deleted_count.isdigit() else 0
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_role_growth: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def delete_user_member_growth(self, guild_id: int, user_id: int):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    deleted_counts = {}
+                    result1 = await conn.execute(f"DELETE FROM member_joins_hourly WHERE guild_id = $1 AND user_id = $2",
+                                                 guild_id, user_id)
+                    deleted_counts['member_joins_hourly'] = result1.split()[-1]
+                    result2 = await conn.execute(f"DELETE FROM member_leaves_hourly WHERE guild_id = $1 AND user_id = $2",
+                                                 guild_id, user_id)
+                    deleted_counts['member_leaves_hourly'] = result2.split()[-1]
+                    return deleted_counts
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_member_growth: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    # ======================================================================
+    # RESET METHODS
+    # ======================================================================
+
     async def reset_server_stats(self, guild_id: int, stat_type: str,
                                  channel_id: Optional[int] = None,
                                  category_id: Optional[int] = None):
-
-        logger.info(
-            f"RESET SERVER STATS: guild={guild_id}, type={stat_type}, channel={channel_id}, category={category_id}")
 
         try:
             stat_type_lower = stat_type.lower()
@@ -645,8 +663,11 @@ class DatabaseManager:
                 result = await self.delete_server_activity(guild_id)
             elif stat_type_lower == "mentions":
                 result = await self.delete_server_mentions(guild_id, channel_id, category_id)
+            elif stat_type_lower == "role growth":
+                result = await self.delete_server_role_growth(guild_id)
+            elif stat_type_lower == "member growth":
+                result = await self.delete_server_member_growth(guild_id)
 
-            logger.info(f"Reset server stats completed: {result}")
             return result
 
         except Exception as e:
@@ -657,9 +678,6 @@ class DatabaseManager:
     async def reset_user_stats(self, guild_id: int, user_id: int, stat_type: str,
                                channel_id: Optional[int] = None,
                                category_id: Optional[int] = None):
-
-        logger.info(
-            f"RESET USER STATS: guild={guild_id}, user={user_id}, type={stat_type}, channel={channel_id}, category={category_id}")
 
         try:
             stat_type_lower = stat_type.lower()
@@ -679,8 +697,11 @@ class DatabaseManager:
                 result = await self.delete_user_activity(guild_id, user_id)
             elif stat_type_lower == "mentions":
                 result = await self.delete_user_mentions(guild_id, user_id, channel_id, category_id)
+            elif stat_type_lower == "role growth":
+                result = await self.delete_user_role_growth(guild_id, user_id)
+            elif stat_type_lower == "member growth":
+                result = await self.delete_user_member_growth(guild_id, user_id)
 
-            logger.info(f"Reset user stats completed: {result}")
             return result
 
         except Exception as e:
@@ -689,7 +710,9 @@ class DatabaseManager:
             raise
 
 
+# =========================================================
 # INPUT ID BUTTON
+# =========================================================
 
 class IDInputModal(Modal, title="Enter Channel/Category ID"):
 
@@ -760,8 +783,9 @@ class IDInputModal(Modal, title="Enter Channel/Category ID"):
             )
 
 
-# UI COMPONENETS
-
+# =========================================================
+# UI COMPONENTS
+# =========================================================
 
 class ResetView(View):
     def __init__(self, interaction: discord.Interaction, db_manager: DatabaseManager,
@@ -829,7 +853,6 @@ class ResetView(View):
                 await interaction.response.defer()
                 await self.show_page_3()
             else:
-
                 await interaction.response.defer()
                 await self.show_page_2()
 
@@ -968,9 +991,10 @@ class ResetView(View):
 
         embed = self.create_embed(title, description)
 
-        # reset server (server)
+        # Define options based on command type and scope
         if self.command_type == "server":
             if self.scope == "server":
+                # Server-wide reset options (all tables available)
                 options = [
                     discord.SelectOption(
                         label="All", value="all", description="Reset ALL statistics (irreversible!)", emoji="⚠️"),
@@ -982,12 +1006,17 @@ class ResetView(View):
                                          description="Reset invite tracking", emoji="📨"),
                     discord.SelectOption(
                         label="Emoji Stats", value="emoji stats", description="Reset emoji usage", emoji="😀"),
+                    discord.SelectOption(label="Activity", value="activity",
+                                         description="Reset activity tracking (sessions, streaks, logs)", emoji="🎮"),
                     discord.SelectOption(
-                        label="Activity", value="activity", description="Reset activity sessions", emoji="🎮"),
-                    discord.SelectOption(
-                        label="Mentions", value="mentions", description="Reset user mentions", emoji="📢")
+                        label="Mentions", value="mentions", description="Reset user mentions", emoji="📢"),
+                    discord.SelectOption(label="Role Growth", value="role growth",
+                                         description="Reset role growth tracking", emoji="👥"),
+                    discord.SelectOption(label="Member Growth", value="member growth",
+                                         description="Reset member join/leave tracking", emoji="📈")
                 ]
             else:
+                # Channel or category reset (NO role growth, NO member growth, NO activity, NO invite tracking)
                 options = [
                     discord.SelectOption(
                         label="All", value="all", description="Reset ALL statistics", emoji="⚠️"),
@@ -1001,9 +1030,9 @@ class ResetView(View):
                         label="Mentions", value="mentions", description="Reset user mentions", emoji="📢")
                 ]
         else:
-            # Reset user (server)
+            # Reset user stats
             if self.scope == "server":
-
+                # User stats server-wide (all tables with user_id)
                 options = [
                     discord.SelectOption(
                         label="All", value="all", description="Reset ALL statistics", emoji="⚠️"),
@@ -1011,17 +1040,21 @@ class ResetView(View):
                         label="Messages", value="messages", description="Reset message tracking", emoji="💬"),
                     discord.SelectOption(label="Voice Activity", value="voice activity",
                                          description="Reset voice activity", emoji="🔊"),
-                    discord.SelectOption(
-                        label="Activity", value="activity", description="Reset activity sessions", emoji="🎮"),
+                    discord.SelectOption(label="Activity", value="activity",
+                                         description="Reset activity tracking (sessions, streaks, logs)", emoji="🎮"),
                     discord.SelectOption(label="Invite Tracking", value="invite tracking",
                                          description="Reset invite tracking", emoji="📨"),
                     discord.SelectOption(
                         label="Emoji Stats", value="emoji stats", description="Reset emoji usage", emoji="😀"),
                     discord.SelectOption(
-                        label="Mentions", value="mentions", description="Reset mentions", emoji="📢")
+                        label="Mentions", value="mentions", description="Reset mentions", emoji="📢"),
+                    discord.SelectOption(label="Role Growth", value="role growth",
+                                         description="Reset role growth tracking", emoji="👥"),
+                    discord.SelectOption(label="Member Growth", value="member growth",
+                                         description="Reset member join/leave tracking", emoji="📈")
                 ]
             else:
-
+                # User stats in channel/category (NO role growth, NO member growth, NO activity, NO invite tracking)
                 options = [
                     discord.SelectOption(
                         label="All", value="all", description="Reset ALL statistics", emoji="⚠️"),
@@ -1029,8 +1062,6 @@ class ResetView(View):
                         label="Messages", value="messages", description="Reset message tracking", emoji="💬"),
                     discord.SelectOption(label="Voice Activity", value="voice activity",
                                          description="Reset voice activity", emoji="🔊"),
-                    discord.SelectOption(
-                        label="Activity", value="activity", description="Reset activity sessions", emoji="🎮"),
                     discord.SelectOption(
                         label="Emoji Stats", value="emoji stats", description="Reset emoji usage", emoji="😀"),
                     discord.SelectOption(
@@ -1136,7 +1167,6 @@ class ResetView(View):
                     success_embed = self.create_embed(
                         "✅ Reset Successful!",
                         f"Successfully deleted **{self.stat_type}** from **{scope_text}**!\n\n" +
-                        f"**Results:**\n{result_text}\n\n" +
                         f"✅ **Total: {total} records deleted.**"
                     )
                 else:
@@ -1164,7 +1194,6 @@ class ResetView(View):
                     success_embed = self.create_embed(
                         "✅ Reset Successful!",
                         f"Successfully deleted **{self.stat_type}** for {user_text} stats from **{scope_text}**!\n\n" +
-                        f"**Results:**\n{result_text}\n\n" +
                         f"✅ **Total: {total} records deleted.**"
                     )
 
@@ -1200,7 +1229,179 @@ class ResetView(View):
         await self.interaction.edit_original_response(embed=embed, view=self)
 
 
+# =========================================================
+# INTERNAL FUNCTION FOR BOTH COMMAND TYPES
+# =========================================================
+@rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+async def _handle_reset_command(self, ctx_or_interaction, command_type: str, target_user: Optional[discord.User] = None, is_interaction: bool = False):
+    """Internal function to handle reset commands for both command types"""
+    try:
+        # Get context parameters
+        if is_interaction:
+            user = ctx_or_interaction.user
+            guild = ctx_or_interaction.guild
+            send_method = ctx_or_interaction.response.send_message
+        else:
+            user = ctx_or_interaction.author
+            guild = ctx_or_interaction.guild
+            send_method = ctx_or_interaction.send
+
+        # Check database connection
+        if not self.db_manager or not self.db_pool:
+            if is_interaction:
+                await send_method(
+                    "⚠️ Database connection not ready. Please try again in a moment.\n"
+                    "If this persists, contact the bot administrator.",
+                    ephemeral=True
+                )
+            else:
+                await send_method(
+                    "⚠️ Database connection not ready. Please try again in a moment.\n"
+                    "If this persists, contact the bot administrator.",
+                    delete_after=10
+                )
+            return
+
+        # Test database connection
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.fetchval('SELECT 1')
+        except Exception as e:
+            if is_interaction:
+                await send_method(
+                    f"❌ Database connection error: {str(e)[:200]}\n"
+                    "Please contact the bot administrator.",
+                    ephemeral=True
+                )
+            else:
+                await send_method(
+                    f"❌ Database connection error: {str(e)[:200]}\n"
+                    "Please contact the bot administrator.",
+                    delete_after=10
+                )
+            return
+
+        # Check permissions
+        has_permission = await self.check_reset_permissions(ctx_or_interaction if is_interaction else guild, user, command_type, target_user)
+        if not has_permission:
+            # Get required permission based on server settings
+            settings_cog = self.bot.get_cog("Settings")
+            if settings_cog:
+                settings = await settings_cog.get_guild_settings(guild.id)
+                permission_level = settings.get('permission_level', 'Default')
+
+                if permission_level == "Moderator":
+                    required_permission = "Manage Server"
+                else:
+                    required_permission = "Administrator"
+
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description=f"Sorry! You need the `{required_permission}` permission to access this command.",
+                    color=discord.Color.red()
+                )
+                if is_interaction:
+                    await send_method(embed=embed, ephemeral=True)
+                else:
+                    await send_method(embed=embed, delete_after=10)
+                return
+            else:
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="Sorry! You need the `Administrator` permission to access this command.",
+                    color=discord.Color.red()
+                )
+                if is_interaction:
+                    await send_method(embed=embed, ephemeral=True)
+                else:
+                    await send_method(embed=embed, delete_after=10)
+                return
+
+        # For user reset command with target user
+        target_user_id = None
+        if command_type == "user":
+            target_user_id = target_user.id if target_user else user.id
+
+        # For prefix commands, we need to create a fake interaction
+        if not is_interaction:
+            # Create a message to use as the base for the view
+            embed = discord.Embed(
+                title=f"🔧 {'Server' if command_type == 'server' else 'User'} Stats Reset",
+                description="This command allows you to reset statistics. Please follow the 4-step process.\n\n"
+                "**Note:** This action is irreversible!",
+                color=0xff0000
+            )
+            embed.set_footer(text="Stats Reset System")
+
+            # Send initial message
+            message = await send_method(embed=embed)
+
+            # Create a fake interaction object for the view
+            class FakeInteraction:
+                def __init__(self, guild, user, message):
+                    self.guild = guild
+                    self.user = user
+                    self.response = type('obj', (object,), {
+                                         'edit_message': lambda **kwargs: message.edit(**kwargs)})()
+                    self.edit_original_response = message.edit
+                    self.original_response = lambda: message
+
+            fake_interaction = FakeInteraction(guild, user, message)
+
+            # Create view
+            view = ResetView(fake_interaction, self.db_manager,
+                             command_type, target_user_id)
+
+            # Store session
+            self.active_sessions[message.id] = {
+                'guild_id': guild.id,
+                'user_id': user.id,
+                'target_user_id': target_user_id,
+                'command_type': command_type,
+                'view': view
+            }
+
+            await view.show_page_1()
+
+        else:
+            # For slash commands
+            view = ResetView(ctx_or_interaction, self.db_manager,
+                             command_type, target_user_id)
+            embed = view.create_embed(
+                f"🔧 {'Server' if command_type == 'server' else 'User'} Stats Reset",
+                "This command allows you to reset statistics. Please follow the 4-step process.\n\n"
+                "**Note:** This action is irreversible!"
+            )
+            await send_method(embed=embed, view=view, ephemeral=True)
+
+            await view.show_page_1()
+
+            message = await ctx_or_interaction.original_response()
+            self.active_sessions[message.id] = {
+                'guild_id': guild.id,
+                'user_id': user.id,
+                'target_user_id': target_user_id,
+                'command_type': command_type,
+                'view': view
+            }
+
+    except Exception as e:
+        logger.error(f"Error in _handle_reset_command: {e}")
+        if is_interaction:
+            try:
+                await ctx_or_interaction.followup.send("❌ An error occurred while setting up the reset command.", ephemeral=True)
+            except:
+                pass
+        else:
+            try:
+                await ctx_or_interaction.send("❌ An error occurred while setting up the reset command.", delete_after=10)
+            except:
+                pass
+
+
+# =========================================================
 # INITIALIZATION
+# =========================================================
 
 class ResetStats(commands.Cog):
     def __init__(self, bot):
@@ -1208,21 +1409,16 @@ class ResetStats(commands.Cog):
         self.db_pool = None
         self.db_manager = None
         self.active_sessions = {}
-        logger.info("ResetStats cog initialized")
+        self.rate_limiter = get_rate_limiter()
 
     async def create_db_pool(self):
 
         try:
-            logger.info("Attempting to create database pool...")
-
             db_host = os.getenv('DB_HOST', 'localhost')
             db_port = int(os.getenv('DB_PORT', 5432))
             db_user = os.getenv('DB_USER')
             db_password = os.getenv('DB_PASSWORD')
             db_name = os.getenv('DB_NAME')
-
-            logger.info(
-                f"DB Config - Host: {db_host}, Port: {db_port}, User: {db_user}, DB: {db_name}")
 
             if not all([db_user, db_password, db_name]):
                 logger.error("Missing database environment variables!")
@@ -1241,12 +1437,9 @@ class ResetStats(commands.Cog):
 
             async with self.db_pool.acquire() as conn:
                 version = await conn.fetchval('SELECT version()')
-                logger.info(f"Database connected: {version.split()[0]}")
 
             self.db_manager = DatabaseManager(self.db_pool)
 
-            logger.info(
-                "✅ ResetStats: Database connection established and verified!")
             return True
 
         except Exception as e:
@@ -1258,165 +1451,151 @@ class ResetStats(commands.Cog):
 
     async def cog_load(self):
 
-        logger.info("ResetStats cog loading...")
         success = await self.create_db_pool()
         if not success:
             logger.error("Failed to establish database connection!")
 
     async def cog_unload(self):
 
-        logger.info("ResetStats cog unloading...")
         if self.db_pool:
             await self.db_pool.close()
-            logger.info("ResetStats: Database connection closed.")
 
-    # COMMANDS
+    # PERMISSION CHECKING METHODS
 
+    async def check_reset_permissions(self, interaction_or_guild, user: discord.Member, command_type: str, target_user: Optional[discord.User] = None) -> bool:
+        """Check if user has permission to use reset commands based on server settings"""
+
+        # Extract guild from parameter
+        if isinstance(interaction_or_guild, discord.Interaction):
+            guild = interaction_or_guild.guild
+        else:
+            guild = interaction_or_guild
+
+        # Users with administrator permission can always use commands
+        if user.guild_permissions.administrator:
+            return True
+
+        # Get server settings
+        settings_cog = self.bot.get_cog("Settings")
+        if not settings_cog:
+            return False
+
+        settings = await settings_cog.get_guild_settings(guild.id)
+        permission_level = settings.get('permission_level', 'Default')
+
+        if command_type == "server":
+            # Server reset command permissions
+            if permission_level == "All":
+                return True
+            elif permission_level == "Default":
+                return False  # Server reset requires admin in default
+            elif permission_level == "User Restriction":
+                return False  # Server reset requires admin in user restriction
+            elif permission_level == "Admin":
+                return False  # Server reset requires admin
+            elif permission_level == "Moderator":
+                return user.guild_permissions.manage_guild
+            return False
+
+        elif command_type == "user":
+            # User reset command permissions
+            if permission_level == "All":
+                return True
+            elif permission_level == "Default":
+                # Can reset own stats only
+                if target_user and target_user.id != user.id:
+                    return False
+                return True
+            elif permission_level == "User Restriction":
+                # Can only reset own stats
+                if target_user and target_user.id != user.id:
+                    return False
+                return True
+            elif permission_level == "Admin":
+                return False  # User reset requires admin
+            elif permission_level == "Moderator":
+                return user.guild_permissions.manage_guild
+            return False
+
+        return False
+
+    # =========================================================
+    # PREFIX COMMAND GROUP
+    # =========================================================
+    @commands.group(name="reset", invoke_without_command=True)
+    async def reset_group_prefix(self, ctx: commands.Context):
+        """Reset statistics commands"""
+        await ctx.send("Available commands:\n- `reset server` - Reset server statistics\n- `reset user [member]` - Reset user statistics\n- `rs` - Shortcut for reset server\n- `ru [member]` - Shortcut for reset user")
+
+    # =========================================================
+    # PREFIX COMMAND - RESET SERVER
+    # =========================================================
+    @reset_group_prefix.command(name="server")
+    async def reset_server_prefix(self, ctx: commands.Context):
+        """Reset server statistics via prefix command"""
+        await _handle_reset_command(self, ctx, "server", is_interaction=False)
+
+    # =========================================================
+    # PREFIX COMMAND - RESET USER
+    # =========================================================
+    @reset_group_prefix.command(name="user")
+    async def reset_user_prefix(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+        """Reset user statistics via prefix command"""
+        await _handle_reset_command(self, ctx, "user", member, is_interaction=False)
+
+    # =========================================================
+    # SHORTCUT COMMAND - RS (RESET SERVER)
+    # =========================================================
+    @commands.command(name="rs")
+    async def reset_server_shortcut(self, ctx: commands.Context):
+        """Shortcut command for reset server - same as reset server"""
+        await _handle_reset_command(self, ctx, "server", is_interaction=False)
+
+    # =========================================================
+    # SHORTCUT COMMAND - RU (RESET USER)
+    # =========================================================
+    @commands.command(name="ru")
+    async def reset_user_shortcut(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+        """Shortcut command for reset user - same as reset user"""
+        await _handle_reset_command(self, ctx, "user", member, is_interaction=False)
+
+    # =========================================================
+    # SLASH COMMAND GROUP
+    # =========================================================
     reset_group = app_commands.Group(
         name="reset",
         description="Reset statistics commands"
     )
 
-    @reset_group.command(name="server", description="Reset server statistics (Admin only)")
-    @app_commands.checks.has_permissions(administrator=True)
+    # =========================================================
+    # SLASH COMMAND - RESET SERVER
+    # =========================================================
+    @reset_group.command(name="server", description="Reset server statistics")
     async def reset_server(self, interaction: discord.Interaction):
+        await _handle_reset_command(self, interaction, "server", is_interaction=True)
 
-        if not self.db_manager or not self.db_pool:
-            await interaction.response.send_message(
-                "⚠️ Database connection not ready. Please try again in a moment.\n"
-                "If this persists, contact the bot administrator.",
-                ephemeral=True
-            )
-            return
-
-        try:
-            async with self.db_pool.acquire() as conn:
-                await conn.fetchval('SELECT 1')
-        except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Database connection error: {str(e)[:200]}\n"
-                "Please contact the bot administrator.",
-                ephemeral=True
-            )
-            return
-
-        view = ResetView(interaction, self.db_manager, "server")
-        embed = view.create_embed(
-            "🔧 Server Stats Reset",
-            "This command allows you to reset server statistics. Please follow the 4-step process.\n\n"
-            "**Note:** This action is irreversible!"
-        )
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-        await view.show_page_1()
-
-        message = await interaction.original_response()
-        self.active_sessions[message.id] = {
-            'guild_id': interaction.guild.id,
-            'user_id': interaction.user.id,
-            'command_type': 'server',
-            'view': view
-        }
-
+    # =========================================================
+    # SLASH COMMAND - RESET USER
+    # =========================================================
     @reset_group.command(name="user", description="Reset user statistics")
-    @app_commands.describe(user="Optional: User to reset stats for (requires admin if not yourself)")
+    @app_commands.describe(user="Optional: User to reset stats for")
     async def reset_user(self, interaction: discord.Interaction, user: Optional[discord.User] = None):
-
-        if not self.db_manager or not self.db_pool:
-            await interaction.response.send_message(
-                "⚠️ Database connection not ready. Please try again in a moment.\n"
-                "If this persists, contact the bot administrator.",
-                ephemeral=True
-            )
-            return
-
-        try:
-            async with self.db_pool.acquire() as conn:
-                await conn.fetchval('SELECT 1')
-        except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Database connection error: {str(e)[:200]}\n"
-                "Please contact the bot administrator.",
-                ephemeral=True
-            )
-            return
-
-        if user and user.id != interaction.user.id:
-
-            if not interaction.user.guild_permissions.administrator:
-
-                if not (interaction.user.guild_permissions.manage_messages or
-                        interaction.user.guild_permissions.manage_guild):
-                    error_embed = discord.Embed(
-                        title="❌ Permission Denied",
-                        description="You need **administrator permissions** to reset another user's stats!\n\n"
-                        "You can only reset your own statistics.",
-                        color=0xff0000
-                    )
-                    await interaction.response.send_message(embed=error_embed, ephemeral=True)
-                    return
-
-        target_user_id = user.id if user else interaction.user.id
-
-        view = ResetView(interaction, self.db_manager, "user", target_user_id)
-
-        if user and user.id != interaction.user.id:
-
-            embed = view.create_embed(
-                f"Reset Stats for {user.display_name}",
-                f"**Admin Action**: Resetting statistics for {user.mention}\n\n"
-                f"Click the dropdown to begin the 4-step process."
-            )
-        elif user and user.id == interaction.user.id:
-
-            embed = view.create_embed(
-                "Reset Your Stats",
-                "Click the dropdown to begin the 4-step process."
-            )
-        else:
-            embed = view.create_embed(
-                "Reset Your Stats",
-                "Click the dropdown to begin the 4-step process."
-            )
-
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-        await view.show_page_1()
-
-        message = await interaction.original_response()
-        self.active_sessions[message.id] = {
-            'guild_id': interaction.guild.id,
-            'user_id': interaction.user.id,
-            'target_user_id': target_user_id,
-            'command_type': 'user',
-            'view': view
-        }
+        await _handle_reset_command(self, interaction, "user", user, is_interaction=True)
 
     # ERROR HANDLING
-
     @reset_server.error
     async def reset_server_error(self, interaction: discord.Interaction, error):
-
-        if isinstance(error, app_commands.MissingPermissions):
-            embed = discord.Embed(
-                title="❌ Permission Denied",
-                description="You need **administrator permissions** to use `/reset server` command!",
-                color=0xff0000
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        else:
-            logger.error(f"Reset server error: {error}")
-            logger.error(traceback.format_exc())
-            embed = discord.Embed(
-                title="❌ Error",
-                description=f"An error occurred: ```{str(error)[:500]}```",
-                color=0xff0000
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        logger.error(f"Reset server error: {error}")
+        logger.error(traceback.format_exc())
+        embed = discord.Embed(
+            title="❌ Error",
+            description=f"An error occurred: ```{str(error)[:500]}```",
+            color=0xff0000
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @reset_user.error
     async def reset_user_error(self, interaction: discord.Interaction, error):
-
         logger.error(f"Reset user error: {error}")
         logger.error(traceback.format_exc())
         embed = discord.Embed(
@@ -1427,7 +1606,9 @@ class ResetStats(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+# =========================================================
 # SETUP
+# =========================================================
 
 async def setup(bot):
     cog = ResetStats(bot)

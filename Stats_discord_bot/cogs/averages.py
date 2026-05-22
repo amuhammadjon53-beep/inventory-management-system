@@ -8,6 +8,9 @@ import io
 import textwrap
 import aiohttp
 from pathlib import Path
+import asyncio
+import gc
+from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -57,7 +60,6 @@ class TimePeriodSelect(discord.ui.Select):
 
             try:
                 if hasattr(view, 'is_user_stats') and view.is_user_stats:
-
                     image_file = await view.cog.generate_user_stats_image(
                         interaction,
                         view.current_days,
@@ -65,7 +67,6 @@ class TimePeriodSelect(discord.ui.Select):
                         view.selected_period
                     )
                 else:
-
                     image_file = await view.cog.generate_server_stats_image(
                         interaction,
                         view.current_days,
@@ -83,69 +84,95 @@ class TimePeriodSelect(discord.ui.Select):
                 await interaction.followup.send("❌ An error occurred while updating the image.", ephemeral=True)
 
 
-# ROLE DROPDOWN MENU
+# ROLE MODAL
 
-class AverageRoleSelectMenu(discord.ui.Select):
-    def __init__(self, guild: discord.Guild, current_role_id: str = None):
-        self.guild = guild
+class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
+    def __init__(self, cog_instance, current_days: int, selected_period: str = "day"):
+        super().__init__(timeout=300)
+        self.cog = cog_instance
+        self.current_days = current_days
+        self.selected_period = selected_period
 
-        roles = [role for role in guild.roles if role.name != "@everyone"]
-        roles.sort(key=lambda x: x.position, reverse=True)
-        roles = roles[:24]
+    role_id_input = discord.ui.TextInput(
+        label='Enter Role ID or "none"',
+        placeholder='e.g., 123456789012345678 or "none"',
+        min_length=1,
+        max_length=100,
+        required=True
+    )
 
-        options = [
-            discord.SelectOption(
-                label="No Filter",
-                value="none",
-                description="Show all users",
-                emoji="🌐",
-                default=(current_role_id == "none" or not current_role_id)
-            )
-        ]
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            role_input = self.role_id_input.value.strip()
 
-        for role in roles:
-            options.append(
-                discord.SelectOption(
-                    label=role.name,
-                    value=str(role.id),
-                    description=f"Filter by {role.name} role",
-                    default=(str(role.id) == current_role_id)
-                )
-            )
+            if role_input.lower() == "none":
+                role_id = "none"
+                role_name = "No Filter"
+            else:
+                try:
+                    role_id_int = int(role_input)
+                    role = interaction.guild.get_role(role_id_int)
+                    if not role:
+                        embed = discord.Embed(
+                            description="Sorry! The role id you inputted is not valid, please try again.",
+                            color=discord.Color.red()
+                        )
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
+                        return
 
-        super().__init__(
-            placeholder="Filter by role...",
-            options=options,
-            custom_id="average_role_filter_select",
-            min_values=1,
-            max_values=1
-        )
+                    role_id = str(role_id_int)
 
-    async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if hasattr(view, 'selected_role_id'):
-            view.selected_role_id = self.values[0]
+                    # Get role name from database
+                    role_name = None
+                    db_stats = self.cog.bot.get_cog('DatabaseStats')
+                    if db_stats and db_stats.pool:
+                        try:
+                            async with db_stats.pool.acquire() as conn:
+                                row = await conn.fetchrow("""
+                                    SELECT role_name FROM current_role_members 
+                                    WHERE role_id = $1 AND guild_id = $2 
+                                    LIMIT 1
+                                """, role_id_int, interaction.guild.id)
+                                if row:
+                                    role_name = row['role_name']
+                        except:
+                            pass
+
+                    if not role_name:
+                        role_name = role.name
+
+                except ValueError:
+                    embed = discord.Embed(
+                        description="Sorry! The role id you inputted is not valid, please try again.",
+                        color=discord.Color.red()
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+
             await interaction.response.defer()
 
-            try:
-                image_file = await view.cog.generate_server_stats_image(
-                    interaction,
-                    view.current_days,
-                    view.selected_role_id,
-                    view.selected_period
-                )
+            image_file = await self.cog.generate_server_stats_image(
+                interaction,
+                self.current_days,
+                role_id,
+                self.selected_period
+            )
 
-                if interaction.response.is_done():
-                    await interaction.edit_original_response(attachments=[image_file], view=view)
-                else:
-                    await interaction.response.edit_message(attachments=[image_file], view=view)
+            view = AverageServerStatsView(
+                self.cog,
+                self.current_days,
+                role_id,
+                self.selected_period
+            )
 
-            except Exception as e:
-                print(f"Error in role select: {e}")
-                await interaction.followup.send("❌ An error occurred while updating the image.", ephemeral=True)
+            await interaction.edit_original_response(attachments=[image_file], view=view)
 
+        except Exception as e:
+            print(f"Error in role id modal submit: {e}")
+            await interaction.followup.send("❌ An error occurred while updating the image.", ephemeral=True)
 
 # TIME MODAL
+
 
 class AverageTimeModal(discord.ui.Modal, title='Custom Time Period'):
     def __init__(self, cog_instance, current_days: int, selected_role_id: str = None, selected_period: str = "day", is_user_stats: bool = False, user_id: int = None):
@@ -210,8 +237,13 @@ class AverageServerStatsView(discord.ui.View):
         self.clear_items()
 
         self.add_item(TimePeriodSelect(self.selected_period))
-        self.add_item(AverageRoleSelectMenu(
-            self.cog.current_guild, self.selected_role_id))
+
+        role_button = discord.ui.Button(
+            style=discord.ButtonStyle.primary,
+            label="Input Role Id",
+            custom_id="average_input_role_id"
+        )
+        role_button.callback = self.role_id_callback
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
@@ -227,6 +259,7 @@ class AverageServerStatsView(discord.ui.View):
         )
         time_settings_button.callback = self.time_settings_callback
 
+        self.add_item(role_button)
         self.add_item(refresh_button)
         self.add_item(time_settings_button)
 
@@ -265,6 +298,15 @@ class AverageServerStatsView(discord.ui.View):
             self.add_item(days_30_button)
             self.add_item(custom_button)
 
+    async def role_id_callback(self, interaction: discord.Interaction):
+        try:
+            modal = RoleIdModal(self.cog, self.current_days,
+                                self.selected_period)
+            await interaction.response.send_modal(modal)
+        except Exception as e:
+            print(f"Error handling role id button: {e}")
+            await interaction.followup.send("❌ An error occurred while opening role id modal.", ephemeral=True)
+
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
             await self.handle_time_period_change(interaction, days)
@@ -280,9 +322,7 @@ class AverageServerStatsView(discord.ui.View):
         await self.handle_custom_days(interaction)
 
     async def handle_time_settings(self, interaction: discord.Interaction):
-
         try:
-
             self.show_time_buttons = not self.show_time_buttons
             self._update_buttons()
 
@@ -296,7 +336,6 @@ class AverageServerStatsView(discord.ui.View):
             await interaction.followup.send("❌ An error occurred while updating time settings.", ephemeral=True)
 
     async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
-
         try:
             self.current_days = days
             self.show_time_buttons = False
@@ -306,7 +345,6 @@ class AverageServerStatsView(discord.ui.View):
             await interaction.followup.send("❌ An error occurred while updating the image.", ephemeral=True)
 
     async def handle_refresh(self, interaction: discord.Interaction):
-
         try:
             await self.update_message(interaction)
         except Exception as e:
@@ -314,7 +352,6 @@ class AverageServerStatsView(discord.ui.View):
             await interaction.followup.send("❌ An error occurred while refreshing the image.", ephemeral=True)
 
     async def handle_custom_days(self, interaction: discord.Interaction):
-
         try:
             modal = AverageTimeModal(
                 self.cog, self.current_days, self.selected_role_id, self.selected_period, False, None)
@@ -324,7 +361,6 @@ class AverageServerStatsView(discord.ui.View):
             await interaction.followup.send("❌ An error occurred while opening custom days modal.", ephemeral=True)
 
     async def update_message(self, interaction: discord.Interaction):
-
         try:
             image_file = await self.cog.generate_server_stats_image(
                 interaction, self.current_days, self.selected_role_id, self.selected_period
@@ -427,9 +463,7 @@ class AverageUserStatsView(discord.ui.View):
         await self.handle_custom_days(interaction)
 
     async def handle_time_settings(self, interaction: discord.Interaction):
-
         try:
-
             self.show_time_buttons = not self.show_time_buttons
             self._update_buttons()
 
@@ -443,7 +477,6 @@ class AverageUserStatsView(discord.ui.View):
             await interaction.followup.send("❌ An error occurred while updating time settings.", ephemeral=True)
 
     async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
-
         try:
             self.current_days = days
             self.show_time_buttons = False
@@ -453,7 +486,6 @@ class AverageUserStatsView(discord.ui.View):
             await interaction.followup.send("❌ An error occurred while updating the image.", ephemeral=True)
 
     async def handle_refresh(self, interaction: discord.Interaction):
-
         try:
             await self.update_message(interaction)
         except Exception as e:
@@ -461,7 +493,6 @@ class AverageUserStatsView(discord.ui.View):
             await interaction.followup.send("❌ An error occurred while refreshing the image.", ephemeral=True)
 
     async def handle_custom_days(self, interaction: discord.Interaction):
-
         try:
             modal = AverageTimeModal(
                 self.cog, self.current_days, None, self.selected_period, True, self.user_id)
@@ -471,7 +502,6 @@ class AverageUserStatsView(discord.ui.View):
             await interaction.followup.send("❌ An error occurred while opening custom days modal.", ephemeral=True)
 
     async def update_message(self, interaction: discord.Interaction):
-
         try:
             image_file = await self.cog.generate_user_stats_image(
                 interaction, self.current_days, self.user_id, self.selected_period
@@ -495,8 +525,10 @@ class AverageStats(commands.Cog):
         self.bot = bot
         self.db_cog = None
         self.activity_cog = None
+        self.settings_cog = None
         self.current_guild = None
         self.active_sessions = {}
+        self.rate_limiter = get_rate_limiter()
 
         self.font_path = BASE_DIR / "assets" / "fonts" / "HorndonD.ttf"
         self.server_background_path = BASE_DIR / "assets" / \
@@ -504,30 +536,385 @@ class AverageStats(commands.Cog):
         self.user_background_path = BASE_DIR / "assets" / \
             "images" / "averages user final png.png"
 
+        # POSITIONS
+        self.SERVER_UI_POSITIONS = {
+            'avatar': {'x': 7, 'y': 10, 'size': (60, 60)},
+            'text_start': {'x': 75, 'y': 30},
+            'username_rectangle': {'center': (120, 30), 'width': 183, 'height': 35}
+        }
+
         self.COMPATIBILITY_UI_POSITIONS = {
             'avatar': {'x': 7, 'y': 7, 'size': (60, 60)},
-            'text_start': {'x': 85, 'y': 27},
-            'username_rectangle': {'center': (150, 27), 'width': 183, 'height': 35}
+            'text_start': {'x': 75, 'y': 27},
+            'username_rectangle': {'center': (130, 27), 'width': 183, 'height': 35}
         }
 
     async def cog_load(self):
-
         self.db_cog = self.bot.get_cog('DatabaseStats')
+        self.activity_cog = self.bot.get_cog('ActivityTracker')
         if not self.db_cog:
             print(
                 "❌ DatabaseStats cog not found! AverageStats requires DatabaseStats to function.")
-        else:
-            print("✅ DatabaseStats cog loaded successfully")
-
-        self.activity_cog = self.bot.get_cog('ActivityTracker')
         if not self.activity_cog:
             print(
-                "⚠️ ActivityTracker cog not found! Activity stats will not be available.")
+                "⚠️ ActivityTracker cog not found! Activity stats will not work properly.")
+
+    # =========================================================
+    # INTERNAL FUNCTION FOR BOTH USER COMMAND TYPES
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def _handle_user_stats_command(self, ctx_or_interaction, user=None, is_interaction=False):
+        """Internal function to handle user stats for both command types"""
+        try:
+            # Get context parameters
+            if is_interaction:
+                interaction = ctx_or_interaction
+                author = interaction.user
+                guild = interaction.guild
+                send_method = interaction.followup.send
+                original_message = None
+            else:
+                ctx = ctx_or_interaction
+                author = ctx.author
+                guild = ctx.guild
+                try:
+                    await ctx.message.delete()
+                except:
+                    pass
+                send_method = ctx.send
+                original_message = None
+
+            # Handle user parameter
+            if user is None:
+                user = author
+
+            if guild is None:
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ This command can only be used in a server.", delete_after=5)
+                return
+
+            # Check permission
+            if not await self.check_command_permission(ctx_or_interaction if is_interaction else None, author, user.id):
+                if is_interaction:
+                    await self.send_permission_error(ctx_or_interaction, user.id)
+                else:
+                    embed = discord.Embed(
+                        title="❌ Permission Denied",
+                        description="Sorry! You don't have permission to use this command.",
+                        color=discord.Color.red()
+                    )
+                    await ctx_or_interaction.send(embed=embed, delete_after=10)
+                return
+
+            if not self.db_cog:
+                self.db_cog = self.bot.get_cog('DatabaseStats')
+                if not self.db_cog:
+                    if is_interaction:
+                        await ctx_or_interaction.followup.send(
+                            "❌ DatabaseStats cog is not loaded. AverageStats requires DatabaseStats to function.",
+                            ephemeral=True
+                        )
+                    else:
+                        await ctx_or_interaction.send(
+                            "❌ DatabaseStats cog is not loaded. AverageStats requires DatabaseStats to function.",
+                            delete_after=10
+                        )
+                    return
+
+            # Use default 30 days and day period
+            days = 30
+            period = "day"
+
+            if is_interaction:
+                await ctx_or_interaction.response.defer()
+
+            # Generate stats image
+            try:
+                if is_interaction:
+                    image_file = await self.generate_user_stats_image(ctx_or_interaction, days, user.id, period)
+                else:
+                    # Create a mock interaction for context
+                    class MockInteraction:
+                        def __init__(self, guild, author):
+                            self.guild = guild
+                            self.user = author
+                            self.response = type('obj', (object,), {
+                                                 'is_done': lambda: False})()
+
+                    mock_interaction = MockInteraction(guild, author)
+                    image_file = await self.generate_user_stats_image(mock_interaction, days, user.id, period)
+
+                view = AverageUserStatsView(self, days, user.id, period)
+
+                # Send the image
+                if is_interaction:
+                    msg = await send_method(file=image_file, view=view)
+                else:
+                    msg = await send_method(file=image_file, view=view, delete_after=300)
+
+            except Exception as e:
+                print(f"Error generating user stats image: {e}")
+                if is_interaction:
+                    await ctx_or_interaction.followup.send(
+                        "❌ An error occurred while generating statistics image. Please try again later.",
+                        ephemeral=True
+                    )
+                else:
+                    await ctx_or_interaction.send(
+                        "❌ An error occurred while generating statistics image. Please try again later.",
+                        delete_after=10
+                    )
+
+        except Exception as e:
+            print(f"Error in _handle_user_stats_command: {e}")
+            if is_interaction:
+                try:
+                    await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
+                except:
+                    pass
+            else:
+                try:
+                    await ctx_or_interaction.send("❌ An error occurred while generating stats image.", delete_after=10)
+                except:
+                    pass
+
+    # =========================================================
+    # INTERNAL FUNCTION FOR BOTH SERVER COMMAND TYPES
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def _handle_server_stats_command(self, ctx_or_interaction, is_interaction=False):
+        """Internal function to handle server stats for both command types"""
+        try:
+            # Get context parameters
+            if is_interaction:
+                interaction = ctx_or_interaction
+                author = interaction.user
+                guild = interaction.guild
+                send_method = interaction.followup.send
+            else:
+                ctx = ctx_or_interaction
+                author = ctx.author
+                guild = ctx.guild
+                try:
+                    await ctx.message.delete()
+                except:
+                    pass
+                send_method = ctx.send
+
+            if guild is None:
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ This command can only be used in a server.", delete_after=5)
+                return
+
+            # Check permission
+            if not await self.check_command_permission(ctx_or_interaction if is_interaction else None, author):
+                if is_interaction:
+                    await self.send_permission_error(ctx_or_interaction)
+                else:
+                    embed = discord.Embed(
+                        title="❌ Permission Denied",
+                        description="Sorry! You don't have permission to use this command.",
+                        color=discord.Color.red()
+                    )
+                    await ctx_or_interaction.send(embed=embed, delete_after=10)
+                return
+
+            if not self.db_cog:
+                self.db_cog = self.bot.get_cog('DatabaseStats')
+                if not self.db_cog:
+                    if is_interaction:
+                        await ctx_or_interaction.followup.send(
+                            "❌ DatabaseStats cog is not loaded. AverageStats requires DatabaseStats to function.",
+                            ephemeral=True
+                        )
+                    else:
+                        await ctx_or_interaction.send(
+                            "❌ DatabaseStats cog is not loaded. AverageStats requires DatabaseStats to function.",
+                            delete_after=10
+                        )
+                    return
+
+            # Use default 30 days, no role filter, and day period
+            days = 30
+            role_id = None
+            period = "day"
+
+            if is_interaction:
+                await ctx_or_interaction.response.defer()
+
+            # Generate stats image
+            try:
+                if is_interaction:
+                    image_file = await self.generate_server_stats_image(ctx_or_interaction, days, role_id, period)
+                else:
+                    # Create a mock interaction for context
+                    class MockInteraction:
+                        def __init__(self, guild, author):
+                            self.guild = guild
+                            self.user = author
+                            self.response = type('obj', (object,), {
+                                                 'is_done': lambda: False})()
+
+                    mock_interaction = MockInteraction(guild, author)
+                    image_file = await self.generate_server_stats_image(mock_interaction, days, role_id, period)
+
+                view = AverageServerStatsView(self, days, role_id, period)
+
+                # Send the image
+                if is_interaction:
+                    msg = await send_method(file=image_file, view=view)
+                else:
+                    msg = await send_method(file=image_file, view=view, delete_after=300)
+
+            except Exception as e:
+                print(f"Error generating server stats image: {e}")
+                if is_interaction:
+                    await ctx_or_interaction.followup.send(
+                        "❌ An error occurred while generating statistics image. Please try again later.",
+                        ephemeral=True
+                    )
+                else:
+                    await ctx_or_interaction.send(
+                        "❌ An error occurred while generating statistics image. Please try again later.",
+                        delete_after=10
+                    )
+
+        except Exception as e:
+            print(f"Error in _handle_server_stats_command: {e}")
+            if is_interaction:
+                try:
+                    await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
+                except:
+                    pass
+            else:
+                try:
+                    await ctx_or_interaction.send("❌ An error occurred while generating stats image.", delete_after=10)
+                except:
+                    pass
+
+    # =========================================================
+    # SHORTCUT COMMANDS
+    # =========================================================
+    @commands.command(name="avs")
+    async def average_server_shortcut(self, ctx: commands.Context):
+        """Shortcut command for average server stats - same as average server"""
+        await self._handle_server_stats_command(ctx, is_interaction=False)
+
+    @commands.command(name="avu")
+    async def average_user_shortcut(self, ctx: commands.Context, user: discord.User = None):
+        """Shortcut command for average user stats - same as average user"""
+        await self._handle_user_stats_command(ctx, user, is_interaction=False)
+
+    # =========================================================
+    # PREFIX COMMAND GROUP
+    # =========================================================
+    @commands.group(name="average", invoke_without_command=True)
+    async def average_group_prefix(self, ctx: commands.Context):
+        """Average statistics commands"""
+        await ctx.send("Available commands:\n- `average server` - Show average statistics for the server\n- `average user [user]` - Show average statistics for a user\n- `avs` - Shortcut for average server\n- `avu [user]` - Shortcut for average user")
+
+    @average_group_prefix.command(name="server")
+    async def average_server_prefix(self, ctx: commands.Context):
+        """Show average statistics for the server via prefix command"""
+        await self._handle_server_stats_command(ctx, is_interaction=False)
+
+    @average_group_prefix.command(name="user")
+    async def average_user_prefix(self, ctx: commands.Context, user: discord.User = None):
+        """Show average statistics for a specific user via prefix command"""
+        await self._handle_user_stats_command(ctx, user, is_interaction=False)
+
+    # PERMISSION CHECK FUNCTIONS
+    async def _get_settings_cog(self):
+        """Get settings cog with retry mechanism"""
+        if not self.settings_cog:
+            self.settings_cog = self.bot.get_cog('Settings')
+            if not self.settings_cog:
+                await asyncio.sleep(0.5)
+                self.settings_cog = self.bot.get_cog('Settings')
+        return self.settings_cog
+
+    async def check_command_permission(self, interaction: discord.Interaction, user: discord.Member = None, target_user_id: int = None) -> bool:
+        """Check if user has permission to use average commands based on server settings"""
+        if user is None and interaction:
+            user = interaction.user
+
+        # Users with administrator permission always have access
+        if user.guild_permissions.administrator:
+            return True
+
+        # Try to get settings cog
+        settings_cog = await self._get_settings_cog()
+
+        if settings_cog:
+            try:
+                settings = await settings_cog.get_guild_settings(user.guild.id)
+                permission_level = settings.get('permission_level', 'Default')
+            except Exception as e:
+                print(f"Error getting settings: {e}")
+                permission_level = 'Default'
         else:
-            print("✅ ActivityTracker cog loaded successfully")
+            print("⚠️ Settings cog not available, using default permissions")
+            permission_level = 'Default'
+
+        # Check based on permission level
+        if permission_level == 'All':
+            return True
+        elif permission_level == 'Admin':
+            return user.guild_permissions.administrator
+        elif permission_level == 'Moderator':
+            return user.guild_permissions.manage_guild
+        elif permission_level == 'Default':
+            return True
+        elif permission_level == 'User Restriction':
+            if target_user_id:
+                return user.id == target_user_id
+            return True
+
+        return True
+
+    async def send_permission_error(self, interaction: discord.Interaction, target_user_id: int = None):
+        """Send appropriate permission error message"""
+        settings_cog = await self._get_settings_cog()
+
+        if settings_cog:
+            try:
+                settings = await settings_cog.get_guild_settings(interaction.guild.id)
+                permission_level = settings.get('permission_level', 'Default')
+            except Exception as e:
+                print(f"Error getting settings for error message: {e}")
+                permission_level = 'Default'
+        else:
+            permission_level = 'Default'
+
+        if permission_level == 'User Restriction' and target_user_id and interaction.user.id != target_user_id:
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description="Sorry! You can only use this command on yourself.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            if permission_level == 'Admin':
+                required_permission = "Administrator"
+            elif permission_level == 'Moderator':
+                required_permission = "Manage Server"
+            elif permission_level == 'Default':
+                required_permission = "Administrator or Manage Server"
+            else:
+                required_permission = "Administrator"
+
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description=f"Sorry! You need the `{required_permission}` permission to access this command.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def _filter_members_by_role(self, guild: discord.Guild, role_id: str):
-
         if role_id == "none" or not role_id:
             return None
 
@@ -538,9 +925,7 @@ class AverageStats(commands.Cog):
         return [str(member.id) for member in role.members]
 
     # FORMAT
-
     def _format_number_for_period(self, daily_average: float, period: str) -> str:
-
         if period == "day":
             return f"{daily_average:.1f}/day"
         elif period == "week":
@@ -551,17 +936,19 @@ class AverageStats(commands.Cog):
 
     # IMAGE HELPER FUNCTIONS
     def _draw_text_with_stroke(self, draw, position, text, font, fill_color, stroke_color, stroke_width=2, max_width=None):
-
         current_font = font
         text_width = draw.textlength(text, font=current_font)
 
         if max_width and text_width > max_width:
-
             font_size = int(font.size * 0.9)
             while font_size > 10 and text_width > max_width:
-                current_font = ImageFont.truetype(self.font_path, font_size)
-                text_width = draw.textlength(text, font=current_font)
-                font_size = int(font_size * 0.9)
+                try:
+                    current_font = ImageFont.truetype(
+                        self.font_path, font_size)
+                    text_width = draw.textlength(text, font=current_font)
+                    font_size = int(font_size * 0.9)
+                except:
+                    break
 
         x, y = position
 
@@ -572,13 +959,10 @@ class AverageStats(commands.Cog):
                               font=current_font, fill=stroke_color)
 
         draw.text((x, y), text, font=current_font, fill=fill_color)
-
         return current_font
 
     def _fit_text_to_rectangle(self, draw, text, text_start_x, text_start_y, rect_center_x, rect_center_y, rect_width, rect_height, is_username=False):
-
         font_paths = [self.font_path]
-
         font_sizes = [32, 30, 28, 26, 24, 22, 20, 18, 17, 16, 15, 14, 13]
 
         rect_left = rect_center_x - (rect_width // 2)
@@ -681,8 +1065,10 @@ class AverageStats(commands.Cog):
         return final_text, font, (text_x, text_y)
 
     async def _add_profile_pic_and_name(self, image, draw, interaction, target_name, is_user_stats, user=None):
-
-        positions = self.COMPATIBILITY_UI_POSITIONS
+        if is_user_stats:
+            positions = self.COMPATIBILITY_UI_POSITIONS
+        else:
+            positions = self.SERVER_UI_POSITIONS
 
         avatar_x, avatar_y = positions['avatar']['x'], positions['avatar']['y']
         avatar_size = positions['avatar']['size']
@@ -695,10 +1081,8 @@ class AverageStats(commands.Cog):
         # PROFILE PICTURE
         try:
             if is_user_stats and user and user.avatar:
-                # User profile picture
                 icon_url = user.avatar.url
             elif not is_user_stats and interaction.guild.icon:
-                # Server profile picture
                 icon_url = interaction.guild.icon.url
             else:
                 icon_url = None
@@ -727,6 +1111,9 @@ class AverageStats(commands.Cog):
                 icon_with_bg.paste(icon_image, (0, 0), icon_image)
                 avatar_area.paste(icon_with_bg, (0, 0), icon_with_bg)
                 image.paste(avatar_area.convert('RGB'), (avatar_x, avatar_y))
+                icon_image.close()
+                del icon_image
+                del icon_data
 
         except Exception as e:
             print(f"Could not add profile icon: {e}")
@@ -744,17 +1131,14 @@ class AverageStats(commands.Cog):
         )
 
         if fitted_text and text_font:
-
             stroke_width = 1
             for dx in [-stroke_width, 0, stroke_width]:
                 for dy in [-stroke_width, 0, stroke_width]:
                     if dx != 0 or dy != 0:
                         draw.text((text_pos[0] + dx, text_pos[1] + dy),
                                   fitted_text, font=text_font, fill="black")
-
             draw.text(text_pos, fitted_text, font=text_font, fill="white")
         else:
-
             try:
                 font_huge = ImageFont.truetype(self.font_path, 40) if os.path.exists(
                     self.font_path) else ImageFont.load_default()
@@ -762,11 +1146,10 @@ class AverageStats(commands.Cog):
                 font_huge = ImageFont.load_default()
             draw.text((text_start_x, text_start_y),
                       target_name, font=font_huge, fill="white")
+            gc.collect()
 
     # QUERY FUNCTIONS
-
     async def generate_server_stats_image(self, interaction: discord.Interaction, days_back: int, role_id: str = None, period: str = "day") -> discord.File:
-
         guild_id = interaction.guild.id
         self.current_guild = interaction.guild
         now = datetime.utcnow()
@@ -776,11 +1159,27 @@ class AverageStats(commands.Cog):
         if role_id and role_id != "none":
             role_filter_ids = await self._filter_members_by_role(interaction.guild, role_id)
             if role_filter_ids:
-
                 role_filter_ids = [int(uid) for uid in role_filter_ids]
 
-        try:
+        # Get role name from database for display
+        role_name = None
+        if role_id and role_id != "none":
+            db_stats = self.db_cog
+            if db_stats and db_stats.pool:
+                try:
+                    async with db_stats.pool.acquire() as conn:
+                        row = await conn.fetchrow("""
+                            SELECT role_name FROM current_role_members 
+                            WHERE role_id = $1 AND guild_id = $2 
+                            LIMIT 1
+                        """, int(role_id), guild_id)
+                        if row:
+                            role_name = row['role_name']
+                except:
+                    pass
 
+        try:
+            # Messages - using hourly aggregated table
             messages_result = await self.db_cog.q_server_total_messages(
                 guild_id=guild_id,
                 role_filter_ids=role_filter_ids,
@@ -790,6 +1189,7 @@ class AverageStats(commands.Cog):
             total_messages = messages_result.get('total_messages', 0)
             avg_messages_per_day = total_messages / days_back if days_back > 0 else 0
 
+            # Emojis - using hourly aggregated table
             emojis_result = await self.db_cog.q_emoji_server_leaderboard(
                 guild_id=guild_id,
                 role_filter_ids=role_filter_ids,
@@ -800,6 +1200,7 @@ class AverageStats(commands.Cog):
             total_emojis = sum(emoji['usage_count'] for emoji in emojis_result)
             avg_emojis_per_day = total_emojis / days_back if days_back > 0 else 0
 
+            # Voice - using hourly aggregated table
             voice_result = await self.db_cog.q_server_total_voice(
                 guild_id=guild_id,
                 role_filter_ids=role_filter_ids,
@@ -809,6 +1210,7 @@ class AverageStats(commands.Cog):
             total_voice_minutes = voice_result.get('total_seconds', 0) / 60
             avg_voice_per_day = total_voice_minutes / days_back if days_back > 0 else 0
 
+            # Invites - using static table
             invites_result = await self.db_cog.q_invite_leaderboard(
                 guild_id=guild_id,
                 role_filter_ids=role_filter_ids,
@@ -820,37 +1222,19 @@ class AverageStats(commands.Cog):
                                 for invite in invites_result)
             avg_invites_per_day = total_invites / days_back if days_back > 0 else 0
 
-            total_activities = 0
-            avg_activities_per_day = 0
-
-            if self.activity_cog and self.activity_cog.db:
-                try:
-
-                    role_id_param = None
-                    if role_id and role_id != "none":
-                        role_id_param = int(role_id)
-
-                    activity_stats = await self.activity_cog.db.get_server_activity_stats(
-                        guild_id=guild_id,
-                        days=days_back,
-                        role_id=role_id_param,
-                        sort_by="time"
-                    )
-
-                    for activity in activity_stats:
-                        total_activities += activity.get('session_count', 0)
-
-                    avg_activities_per_day = total_activities / days_back if days_back > 0 else 0
-
-                except Exception as e:
-                    print(f"Error getting activity stats: {e}")
-
-                    if activity_stats:
-                        total_activities = sum(activity.get(
-                            'session_count', 0) for activity in activity_stats)
-                        avg_activities_per_day = total_activities / days_back if days_back > 0 else 0
+            # Activities - using ActivityTracker's helper
+            activity_cog = self.bot.get_cog('ActivityTracker')
+            if activity_cog and activity_cog.db:
+                role_id_int = int(
+                    role_id) if role_id and role_id != "none" else None
+                total_activities = await activity_cog.db.get_server_total_activity_sessions(
+                    guild_id=guild_id,
+                    days=days_back,
+                    role_id=role_id_int
+                )
             else:
-                print("ActivityTracker cog not available for activity stats")
+                total_activities = 0
+            avg_activities_per_day = total_activities / days_back if days_back > 0 else 0
 
             return await self._create_stats_image(
                 interaction=interaction,
@@ -867,7 +1251,8 @@ class AverageStats(commands.Cog):
                 activity_avg=avg_activities_per_day,
                 total_activities=total_activities,
                 is_user_stats=False,
-                role_id=role_id
+                role_id=role_id,
+                role_name=role_name
             )
 
         except Exception as e:
@@ -877,14 +1262,13 @@ class AverageStats(commands.Cog):
             return await self._create_error_image(interaction)
 
     async def generate_user_stats_image(self, interaction: discord.Interaction, days_back: int, user_id: int, period: str = "day") -> discord.File:
-
         guild_id = interaction.guild.id
         self.current_guild = interaction.guild
         now = datetime.utcnow()
         start_date = now - timedelta(days=days_back)
 
         try:
-
+            # Messages - using hourly aggregated table
             messages_result = await self.db_cog.q_user_total_messages(
                 guild_id=guild_id,
                 user_id=user_id,
@@ -894,22 +1278,18 @@ class AverageStats(commands.Cog):
             total_messages = messages_result.get('total_messages', 0)
             avg_messages_per_day = total_messages / days_back if days_back > 0 else 0
 
-            emojis_result = await self.db_cog.q_emoji_user_leaderboard(
+            # Emojis - using hourly aggregated table
+            user_emojis = await self.db_cog.q_user_top_emojis(
                 guild_id=guild_id,
+                user_id=user_id,
+                limit=100,
                 start_time=start_date,
-                end_time=now,
-                limit=100
+                end_time=now
             )
-
-            user_emoji_usage = 0
-            for user_data in emojis_result:
-                if user_data['user_id'] == user_id:
-                    user_emoji_usage = user_data['usage_count']
-                    break
-
-            total_emojis = user_emoji_usage
+            total_emojis = sum(emoji['usage_count'] for emoji in user_emojis)
             avg_emojis_per_day = total_emojis / days_back if days_back > 0 else 0
 
+            # Voice - using hourly aggregated table
             voice_result = await self.db_cog.q_user_total_voice(
                 guild_id=guild_id,
                 user_id=user_id,
@@ -919,6 +1299,7 @@ class AverageStats(commands.Cog):
             total_voice_minutes = voice_result.get('total_seconds', 0) / 60
             avg_voice_per_day = total_voice_minutes / days_back if days_back > 0 else 0
 
+            # Invites - using static table
             invites_result = await self.db_cog.q_user_invite_stats(
                 guild_id=guild_id,
                 user_id=user_id,
@@ -928,34 +1309,17 @@ class AverageStats(commands.Cog):
             total_invites = invites_result.get('valid_invites', 0)
             avg_invites_per_day = total_invites / days_back if days_back > 0 else 0
 
-            total_activities = 0
-            avg_activities_per_day = 0
-
-            if self.activity_cog and self.activity_cog.db:
-                try:
-
-                    activity_stats = await self.activity_cog.db.get_user_activity_stats(
-                        guild_id=guild_id,
-                        user_id=user_id,
-                        days=days_back,
-                        role_id=None,
-                        sort_by="time"
-                    )
-
-                    for activity in activity_stats:
-                        total_activities += activity.get('session_count', 0)
-
-                    avg_activities_per_day = total_activities / days_back if days_back > 0 else 0
-
-                except Exception as e:
-                    print(f"Error getting user activity stats: {e}")
-
-                    if activity_stats:
-                        total_activities = sum(activity.get(
-                            'session_count', 0) for activity in activity_stats)
-                        avg_activities_per_day = total_activities / days_back if days_back > 0 else 0
+            # Activities - using ActivityTracker's helper
+            activity_cog = self.bot.get_cog('ActivityTracker')
+            if activity_cog and activity_cog.db:
+                total_activities = await activity_cog.db.get_user_total_activity_sessions(
+                    guild_id=guild_id,
+                    user_id=user_id,
+                    days=days_back
+                )
             else:
-                print("ActivityTracker cog not available for user activity stats")
+                total_activities = 0
+            avg_activities_per_day = total_activities / days_back if days_back > 0 else 0
 
             user = interaction.guild.get_member(user_id)
             username = user.name if user else f"User {user_id}"
@@ -986,7 +1350,6 @@ class AverageStats(commands.Cog):
             return await self._create_error_image(interaction)
 
     # IMAGE GENERATION
-
     async def _create_stats_image(self, interaction: discord.Interaction, days_back: int, period: str,
                                   messages_avg: float, total_messages: int,
                                   voice_avg: float, total_voice: float,
@@ -996,10 +1359,9 @@ class AverageStats(commands.Cog):
                                   is_user_stats: bool = False,
                                   user_id: int = None,
                                   username: str = "",
-                                  role_id: str = None) -> discord.File:
-
+                                  role_id: str = None,
+                                  role_name: str = None) -> discord.File:
         try:
-
             background_path = self.user_background_path if is_user_stats else self.server_background_path
             image = Image.open(background_path)
             draw = ImageDraw.Draw(image)
@@ -1010,7 +1372,6 @@ class AverageStats(commands.Cog):
                 font_small = ImageFont.truetype(self.font_path, 16)
             except Exception as font_error:
                 print(f"Font loading error: {font_error}")
-
                 font_huge = ImageFont.load_default()
                 font_medium = ImageFont.load_default()
                 font_small = ImageFont.load_default()
@@ -1026,13 +1387,11 @@ class AverageStats(commands.Cog):
                 image, draw, interaction, target_name, is_user_stats, user_obj
             )
 
+            # ROLE FILTER
             if is_user_stats:
                 role_text = ""
             else:
-                role_text = "No Filter"
-                if role_id and role_id != "none":
-                    role = interaction.guild.get_role(int(role_id))
-                    role_text = role.name if role else "Unknown Role"
+                role_text = role_name if role_name else "No Filter"
 
             self._draw_text_with_stroke(draw, (70, 424), role_text,
                                         font_small, "white", "black", 1)
@@ -1088,6 +1447,7 @@ class AverageStats(commands.Cog):
             img_bytes.seek(0)
 
             filename = f"{'user' if is_user_stats else 'server'}_average_stats_{interaction.guild.id}.png"
+            gc.collect()
             return discord.File(img_bytes, filename=filename)
 
         except Exception as e:
@@ -1097,7 +1457,6 @@ class AverageStats(commands.Cog):
             return await self._create_error_image(interaction)
 
     async def _create_error_image(self, interaction: discord.Interaction) -> discord.File:
-
         image = Image.new('RGB', (800, 600), color='blue')
         draw = ImageDraw.Draw(image)
         draw.text((50, 50), "Error generating statistics image", fill='white')
@@ -1105,15 +1464,18 @@ class AverageStats(commands.Cog):
         img_bytes = io.BytesIO()
         image.save(img_bytes, format='PNG')
         img_bytes.seek(0)
+        gc.collect()
         return discord.File(img_bytes, filename="error.png")
 
     # COMMANDS
-
     average = app_commands.Group(
         name="average", description="Average statistics commands")
 
     @average.command(name="server", description="Show average statistics for the server")
     async def average_server(self, interaction: discord.Interaction):
+        if not await self.check_command_permission(interaction):
+            await self.send_permission_error(interaction)
+            return
 
         await interaction.response.defer()
 
@@ -1127,12 +1489,9 @@ class AverageStats(commands.Cog):
                 return
 
         try:
-
             image_file = await self.generate_server_stats_image(interaction, 30, None, "day")
             view = AverageServerStatsView(self, 30, None, "day")
-
             await interaction.followup.send(file=image_file, view=view)
-
         except Exception as e:
             print(f"Error in average server command: {e}")
             await interaction.followup.send(
@@ -1143,6 +1502,11 @@ class AverageStats(commands.Cog):
     @average.command(name="user", description="Show average statistics for a specific user")
     @app_commands.describe(user="The user to show statistics for")
     async def average_user(self, interaction: discord.Interaction, user: discord.User):
+        member = interaction.guild.get_member(user.id) or user
+
+        if not await self.check_command_permission(interaction, member, user.id):
+            await self.send_permission_error(interaction, user.id)
+            return
 
         await interaction.response.defer()
 
@@ -1156,12 +1520,9 @@ class AverageStats(commands.Cog):
                 return
 
         try:
-
             image_file = await self.generate_user_stats_image(interaction, 30, user.id, "day")
             view = AverageUserStatsView(self, 30, user.id, "day")
-
             await interaction.followup.send(file=image_file, view=view)
-
         except Exception as e:
             print(f"Error in average user command: {e}")
             await interaction.followup.send(
@@ -1170,8 +1531,5 @@ class AverageStats(commands.Cog):
             )
 
 
-# SETUP
-
 async def setup(bot):
-
     await bot.add_cog(AverageStats(bot))

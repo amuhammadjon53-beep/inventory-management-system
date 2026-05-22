@@ -10,7 +10,10 @@ from discord import app_commands
 from discord.ext import commands
 import discord
 from pathlib import Path
-
+import pytz
+from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
+import gc
+from discord.ext import tasks
 
 # CONFIGURATION
 
@@ -26,6 +29,231 @@ class InviteConfig:
     MAX_CUSTOM_DAYS = 2000
     TEMPLATE_PATH = BASE_DIR / "assets" / "images" / "leaderboards final png.png"
     FONT_PATH = BASE_DIR / "assets" / "fonts" / "HorndonD.ttf"
+
+
+# HELPER FUNCTIONS
+
+async def check_user_exists(bot, user_id: int) -> bool:
+    """
+    Check if a Discord user exists (account is not deleted).
+    Returns True if user exists, False if account is deleted.
+    """
+    try:
+        user = await bot.fetch_user(user_id)
+        return user is not None
+    except discord.NotFound:
+        return False
+    except discord.HTTPException:
+        return True
+    except Exception:
+        return True
+
+
+async def get_user_display_info(bot, guild: discord.Guild, user_id: int,
+                                check_exists: bool = True) -> Dict[str, Any]:
+    """
+    Get display information for a user, handling deleted accounts.
+    Returns dict with 'name', 'is_deleted', and optionally 'member' if in guild.
+    """
+    user_info = {
+        'name': '[Deleted User]',
+        'is_deleted': True,
+        'member': None
+    }
+
+    try:
+        if check_exists:
+            user_exists = await check_user_exists(bot, user_id)
+            if not user_exists:
+                return user_info
+
+        member = guild.get_member(user_id)
+        if member:
+            user_info.update({
+                'name': member.name,
+                'is_deleted': False,
+                'member': member
+            })
+            return user_info
+
+        try:
+            # This fetch_user call will be rate-limited by the check_user_exists function above
+            # No need for additional rate limiting here
+            user = await bot.fetch_user(user_id)
+            user_info.update({
+                'name': user.name,
+                'is_deleted': False,
+                'member': None
+            })
+        except discord.NotFound:
+            return user_info
+        except Exception:
+            user_info.update({
+                'name': f'User {user_id}',
+                'is_deleted': False,
+                'member': None
+            })
+
+    except Exception as e:
+        print(f"⚠️ Error getting user info for ID {user_id}: {e}")
+        user_info.update({
+            'name': f'User {user_id}',
+            'is_deleted': False,
+            'member': None
+        })
+
+    return user_info
+
+
+# PERMISSION CHECK FUNCTIONS
+
+async def check_command_permission(interaction: discord.Interaction, command_name: str, target_user: Optional[discord.Member] = None) -> bool:
+    """
+    Check if user has permission to use command based on server settings.
+    Returns True if allowed, False if not allowed.
+    """
+    try:
+        guild = interaction.guild
+        user = interaction.user
+
+        # Users with administrator permission can always use commands
+        if user.guild_permissions.administrator:
+            return True
+
+        # Get settings cog
+        settings_cog = interaction.client.get_cog('Settings')
+        if not settings_cog:
+            # If settings cog not available, use default permissions
+            return True
+
+        # Get guild settings
+        settings = await settings_cog.get_guild_settings(guild.id)
+        permission_level = settings.get('permission_level', 'Default')
+
+        # Check permission levels
+        if permission_level == 'All':
+            return True
+
+        elif permission_level == 'Default':
+            # Default Discord permissions apply
+            return True
+
+        elif permission_level == 'User Restriction':
+            # User can only use commands on themselves
+            if target_user and target_user.id != user.id:
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="Sorry! You can only use this command on yourself.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return False
+            return True
+
+        elif permission_level == 'Admin':
+            # Only users with administrator permission
+            if not user.guild_permissions.administrator:
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="Sorry! You need the `Administrator` permission to access this command.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return False
+            return True
+
+        elif permission_level == 'Moderator':
+            # Only users with manage_guild permission
+            if not user.guild_permissions.manage_guild:
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="Sorry! You need the `Manage Server` permission to access this command.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return False
+            return True
+
+        return True
+
+    except Exception as e:
+        print(f"Error checking permission: {e}")
+        return True
+
+
+# TIMEZONE HELPER FUNCTIONS
+
+async def get_guild_timezone(guild_id: int) -> pytz.timezone:
+    """
+    Get timezone for guild from settings.
+    Defaults to UTC if not set or invalid.
+    """
+    try:
+        settings_cog = discord.utils.get(
+            discord.Client.get_cog, name='Settings')
+        if settings_cog:
+            settings = await settings_cog.get_guild_settings(guild_id)
+            tz_str = settings.get('timezone', 'UTC')
+
+            # Map common timezone abbreviations
+            tz_mapping = {
+                'EST': 'America/New_York',
+                'PST': 'America/Los_Angeles',
+                'CST': 'America/Chicago',
+                'MST': 'America/Denver',
+                'GMT': 'Europe/London',
+                'CET': 'Europe/Paris',
+                'EET': 'Europe/Athens',
+                'IST': 'Asia/Kolkata',
+                'JST': 'Asia/Tokyo',
+                'AEST': 'Australia/Sydney',
+                'NZST': 'Pacific/Auckland'
+            }
+
+            if tz_str in tz_mapping:
+                tz_str = tz_mapping[tz_str]
+
+            return pytz.timezone(tz_str)
+    except:
+        pass
+
+    return pytz.UTC
+
+
+async def convert_utc_to_guild_time(utc_time: datetime, guild_id: int) -> datetime:
+    """
+    Convert UTC time to guild's local timezone.
+    """
+    if not utc_time:
+        return utc_time
+
+    try:
+        guild_tz = await get_guild_timezone(guild_id)
+
+        if utc_time.tzinfo is None:
+            utc_time = utc_time.replace(tzinfo=pytz.UTC)
+
+        return utc_time.astimezone(guild_tz)
+    except:
+        return utc_time
+
+
+def format_datetime_for_display(dt: datetime, guild_id: int = None) -> str:
+    """
+    Format datetime for display, optionally converting to guild timezone.
+    """
+    if not dt:
+        return "Unknown"
+
+    try:
+        if guild_id:
+            dt = convert_utc_to_guild_time(dt, guild_id)
+
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        if isinstance(dt, datetime):
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        return str(dt)
 
 
 # FONTS
@@ -136,10 +364,13 @@ def draw_rounded_rectangle(draw, xy, radius, fill=None, outline=None):
 # IMAGE GENERATION
 
 async def generate_invite_leaderboard_image(
+    bot,
     guild: discord.Guild,
     leaderboard_data: list,
     days_back: int,
     role_id: str = None,
+    role_name: str = None,
+    invite_type_filter: str = "all",
     page: int = 0
 ):
 
@@ -262,18 +493,13 @@ async def generate_invite_leaderboard_image(
 
         return final_text, font, (text_x, text_y)
 
-    # Profile picture at (7, 10)
     avatar_x, avatar_y = 7, 10
     avatar_size = (60, 60)
 
-    # Server name starting position
     text_start_x = 85
     text_start_y = 30
 
-    # Rectangle for text constraints
     username_rectangle = {"center": (150, 30), "width": 183, "height": 35}
-
-    # SERVER PROFILE PICTURE
 
     try:
         if guild.icon:
@@ -301,6 +527,9 @@ async def generate_invite_leaderboard_image(
             icon_with_bg.paste(icon_image, (0, 0), icon_image)
             avatar_area.paste(icon_with_bg, (0, 0), icon_with_bg)
             image.paste(avatar_area.convert('RGB'), (avatar_x, avatar_y))
+            icon_image.close()
+            del icon_image
+            del icon_data
 
     except Exception as e:
         print(f"❌ Could not add server icon: {e}")
@@ -333,23 +562,16 @@ async def generate_invite_leaderboard_image(
         draw_text_with_stroke(draw, (text_start_x, text_start_y), server_name,
                               font_huge, "white", "black", 2)
 
-    # ROLE FILTER
-
-    role_text = "No Filter"
-    if role_id and role_id != "none":
-        role = guild.get_role(int(role_id))
-        role_text = role.name if role else "Unknown Role"
+    # USE DATABASE ROLE NAME INSTEAD OF DISCORD API
+    role_text = role_name if role_name else "No Filter"
     draw_text_with_stroke(draw, (70, 424), role_text,
                           font_small, "white", "black", 1)
-
-    # CREATED ON
 
     draw_text_with_stroke(
         draw, (630, 422), f"{days_back} days", font_small, "white", "black", 1)
     draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
         "%B %d, %Y"), font_small, "white", "black", 1)
 
-    # PAGINATION
     if leaderboard_data:
         total_users = len(leaderboard_data)
         users_per_page = InviteConfig.USERS_PER_PAGE
@@ -359,24 +581,18 @@ async def generate_invite_leaderboard_image(
     else:
         total_pages = 1
 
-    # LEADERBOARD CONTENT
     if leaderboard_data:
         display_data = []
 
         for user_data in leaderboard_data:
             user_id = user_data['user_id']
-            name = None
-            try:
-                member = guild.get_member(int(user_id))
-                if member:
-                    name = member.name
-                else:
-                    name = f"User {user_id} (Left)"
-            except Exception as e:
-                print(f"⚠️ Error resolving user ID {user_id}: {e}")
-                name = f"Unknown ({user_id})"
 
-            invite_count = user_data.get('valid_invites', 0)
+            user_info = await get_user_display_info(bot, guild, int(user_id))
+
+            name = user_info['name']
+            # Use display_invites from the query result
+            invite_count = user_data.get(
+                'display_invites', user_data.get('valid_invites', 0))
 
             display_data.append((name, invite_count))
 
@@ -387,7 +603,7 @@ async def generate_invite_leaderboard_image(
 
         image_width, _ = image.size
 
-        if len(page_data) <= 4:
+        if len(page_data) <= 5:
             positions = [(60, 100 + i * 65) for i in range(len(page_data))]
             box_width, box_height = 600, 40
         else:
@@ -410,18 +626,26 @@ async def generate_invite_leaderboard_image(
 
             placement_width = 35
             if global_rank == 1:
-                placement_color = (255, 215, 0, 220)  # Gold
+                placement_color = (255, 215, 0, 220)
             elif global_rank == 2:
-                placement_color = (192, 192, 192, 220)  # Silver
+                placement_color = (192, 192, 192, 220)
             elif global_rank == 3:
-                placement_color = (205, 127, 50, 220)  # Bronze
+                placement_color = (205, 127, 50, 220)
             else:
-                placement_color = (93, 0, 136, 255)  # Purple
+                placement_color = (93, 0, 136, 255)
 
             draw_rounded_rectangle(draw, [box_x, box_y, box_x + placement_width, box_y + box_height],
                                    radius=8, fill=placement_color, outline=None)
 
-            value_text = f"{invite_count:,} invites"
+            # Display invite count with appropriate label based on filter
+            filter_labels = {
+                'all': "invites",
+                'valid': "valid invites",
+                'suspicious': "suspicious invites",
+                'left': "left invites"
+            }
+            label = filter_labels.get(invite_type_filter, "invites")
+            value_text = f"{invite_count:,} {label}"
 
             rank_text = f"#{global_rank}"
             rank_bbox = draw.textbbox((0, 0), rank_text, font=font_medium)
@@ -496,6 +720,7 @@ async def generate_invite_leaderboard_image(
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
+    gc.collect()
     return img_bytes
 
 
@@ -548,53 +773,106 @@ class InviteLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
             await interaction.followup.send("❌ An error occurred while updating the leaderboard.", ephemeral=True)
 
 
-# ROLE DROPDOWN MENU
+class InviteRoleInputModal(discord.ui.Modal, title='Input Role ID'):
+    def __init__(self, cog_instance, current_view):
+        super().__init__(timeout=300)
+        self.cog = cog_instance
+        self.current_view = current_view
 
-class InviteRoleSelectMenu(discord.ui.Select):
-    def __init__(self, guild: discord.Guild, current_role_id: str = None):
-        self.guild = guild
+    role_id = discord.ui.TextInput(
+        label='Enter Role ID',
+        placeholder='e.g., 123456789012345678 or "none" for no filter',
+        min_length=1,
+        max_length=20,
+        required=True
+    )
 
-        roles = [role for role in guild.roles if role.name != "@everyone"]
-        roles.sort(key=lambda x: x.position, reverse=True)
-        roles = roles[:InviteConfig.MAX_ROLES_IN_SELECT]
+    async def on_submit(self, interaction: discord.Interaction):
+        role_id_input = self.role_id.value.strip().lower()
+
+        if role_id_input == "none":
+            self.current_view.selected_role_id = "none"
+        else:
+            try:
+                role_id_int = int(role_id_input)
+                role = self.current_view.guild.get_role(role_id_int)
+                if role:
+                    self.current_view.selected_role_id = str(role_id_int)
+                else:
+                    embed = discord.Embed(
+                        title="❌ Invalid Role ID",
+                        description="Sorry! The role id you inputted is not valid, please try again.",
+                        color=discord.Color.red()
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+            except ValueError:
+                embed = discord.Embed(
+                    title="❌ Invalid Role ID",
+                    description="Sorry! The role id you inputted is not valid, please try again.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+        await interaction.response.defer(ephemeral=False, thinking=False)
+        self.current_view.page = 0
+        await self.current_view.update_message(interaction)
+
+
+# INVITE TYPE FILTER DROPDOWN
+
+class InviteTypeFilterSelect(discord.ui.Select):
+    def __init__(self, current_value: str = "all"):
+        self.current_value = current_value
 
         options = [
             discord.SelectOption(
-                label="No Filter",
-                value="none",
-                description="Show all users",
-                emoji="🌐",
-                default=(current_role_id == "none" or not current_role_id)
+                label="All Invites",
+                value="all",
+                description="Show all types of invites",
+                emoji="📊",
+                default=current_value == "all"
+            ),
+            discord.SelectOption(
+                label="Valid Invites",
+                value="valid",
+                description="Only valid invites (users who stayed)",
+                emoji="✅",
+                default=current_value == "valid"
+            ),
+            discord.SelectOption(
+                label="Suspicious Invites",
+                value="suspicious",
+                description="Invites marked as suspicious (new accounts)",
+                emoji="⚠️",
+                default=current_value == "suspicious"
+            ),
+            discord.SelectOption(
+                label="Left Invites",
+                value="left",
+                description="Users who joined and then left",
+                emoji="👋",
+                default=current_value == "left"
             )
         ]
 
-        for role in roles:
-            options.append(
-                discord.SelectOption(
-                    label=role.name,
-                    value=str(role.id),
-                    description=f"Filter by {role.name} role",
-                    default=(str(role.id) == current_role_id)
-                )
-            )
-
         super().__init__(
-            placeholder="Filter by role...",
+            placeholder="Filter by invite type...",
             options=options,
-            custom_id="invite_role_filter_select",
-            min_values=1,
-            max_values=1
+            custom_id="invite_type_filter",
+            row=2
         )
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=False, thinking=False)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=False, thinking=False)
 
         view = self.view
-        if hasattr(view, 'selected_role_id'):
-            view.selected_role_id = self.values[0]
-            view.page = 0
-
-            await view.update_message(interaction)
+        view.current_invite_type = self.values[0]
+        view.page = 0
+        view._update_buttons()
+        await view.update_message(interaction)
 
 
 # PAGINATION BUTTONS
@@ -644,34 +922,48 @@ class InvitePageIndicator(discord.ui.Button):
                          custom_id="invite_page", disabled=True)
 
 
+class InviteRoleInputButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(style=discord.ButtonStyle.primary, label="Input Role Id",
+                         custom_id="invite_role_input", row=3)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.response.is_done():
+            return
+
+        modal = InviteRoleInputModal(self.view.cog, self.view)
+        await interaction.response.send_modal(modal)
+
+
 # INVITE LEADERBOARD VIEW
 
 class InviteLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, page: int = 0, selected_role_id: str = None):
+    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, page: int = 0, selected_role_id: str = None, invite_type_filter: str = "all"):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.current_days = days_back
         self.page = page
         self.selected_role_id = selected_role_id
+        self.current_invite_type = invite_type_filter
         self.show_time_buttons = False
         self._update_buttons()
 
     def _update_buttons(self):
 
         self.clear_items()
-        self.add_item(InviteRoleSelectMenu(self.guild, self.selected_role_id))
 
         self.add_item(InvitePrevButton())
-
         self.add_item(InvitePageIndicator())
         self.add_item(InviteNextButton())
+        self.add_item(InviteRoleInputButton())
+        self.add_item(InviteTypeFilterSelect(self.current_invite_type))
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
             label="🔄 Refresh",
             custom_id="invite_refresh",
-            row=2
+            row=3
         )
         refresh_button.callback = self.refresh_callback
 
@@ -679,14 +971,15 @@ class InviteLeaderboardView(discord.ui.View):
             style=discord.ButtonStyle.secondary,
             label="⏰ Time Settings",
             custom_id="invite_time_settings",
-            row=2
+            row=3
         )
         time_settings_button.callback = self.time_settings_callback
 
         self.add_item(refresh_button)
         self.add_item(time_settings_button)
+
         if self.show_time_buttons:
-            row = 3
+            row = 4
             for days in InviteConfig.TIME_PERIODS:
                 days_button = discord.ui.Button(
                     style=discord.ButtonStyle.primary if self.current_days == days else discord.ButtonStyle.secondary,
@@ -762,21 +1055,50 @@ class InviteLeaderboardView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
     async def generate_image(self):
+        # Get role name from database instead of Discord API
+        role_name = None
+        if self.selected_role_id and self.selected_role_id != "none":
+            db_stats = self.cog.db_stats
+            if db_stats and db_stats.pool:
+                try:
+                    async with db_stats.pool.acquire() as conn:
+                        row = await conn.fetchrow("""
+                            SELECT role_name FROM current_role_members 
+                            WHERE role_id = $1 AND guild_id = $2 
+                            LIMIT 1
+                        """, int(self.selected_role_id), self.guild.id)
+                        if row:
+                            role_name = row['role_name']
+                except Exception as e:
+                    print(f"Error getting role name from DB: {e}")
 
-        leaderboard_data = await self.cog._get_invite_leaderboard_data(self.guild, self.current_days, self.selected_role_id)
+        leaderboard_data = await self.cog._get_invite_leaderboard_data(
+            self.guild,
+            self.current_days,
+            self.selected_role_id,
+            self.current_invite_type
+        )
 
         return await generate_invite_leaderboard_image(
+            bot=self.cog.bot,
             guild=self.guild,
             leaderboard_data=leaderboard_data,
             days_back=self.current_days,
             role_id=self.selected_role_id,
+            role_name=role_name,
+            invite_type_filter=self.current_invite_type,
             page=self.page
         )
 
     async def update_message(self, interaction: discord.Interaction):
 
         try:
-            leaderboard_data = await self.cog._get_invite_leaderboard_data(self.guild, self.current_days, self.selected_role_id)
+            leaderboard_data = await self.cog._get_invite_leaderboard_data(
+                self.guild,
+                self.current_days,
+                self.selected_role_id,
+                self.current_invite_type
+            )
             total_users = len(leaderboard_data)
             total_pages = max(
                 1, (total_users + InviteConfig.USERS_PER_PAGE - 1) // InviteConfig.USERS_PER_PAGE)
@@ -793,6 +1115,11 @@ class InviteLeaderboardView(discord.ui.View):
                 elif isinstance(child, InviteNextButton):
                     child.disabled = (
                         self.page >= total_pages - 1 or total_pages <= 1)
+                elif isinstance(child, InviteTypeFilterSelect):
+                    # Update the select's default values
+                    for option in child.options:
+                        option.default = (
+                            option.value == self.current_invite_type)
 
             file = discord.File(img_bytes, filename="invite_leaderboard.png")
 
@@ -812,6 +1139,81 @@ class InviteLeaderboardView(discord.ui.View):
                 pass
 
 
+# PERMISSION CHECK FOR PREFIX COMMANDS
+async def check_prefix_command_permission(ctx: commands.Context, target_user: Optional[discord.Member] = None) -> bool:
+    """
+    Check if user has permission to use prefix command based on server settings.
+    Returns True if allowed, False if not allowed.
+    """
+    try:
+        guild = ctx.guild
+        user = ctx.author
+
+        # Users with administrator permission can always use commands
+        if user.guild_permissions.administrator:
+            return True
+
+        # Get settings cog
+        settings_cog = ctx.bot.get_cog('Settings')
+        if not settings_cog:
+            # If settings cog not available, use default permissions
+            return True
+
+        # Get guild settings
+        settings = await settings_cog.get_guild_settings(guild.id)
+        permission_level = settings.get('permission_level', 'Default')
+
+        # Check permission levels
+        if permission_level == 'All':
+            return True
+
+        elif permission_level == 'Default':
+            # Default Discord permissions apply
+            return True
+
+        elif permission_level == 'User Restriction':
+            # User can only use commands on themselves
+            if target_user and target_user.id != user.id:
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="Sorry! You can only use this command on yourself.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed, delete_after=10)
+                return False
+            return True
+
+        elif permission_level == 'Admin':
+            # Only users with administrator permission
+            if not user.guild_permissions.administrator:
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="Sorry! You need the `Administrator` permission to access this command.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed, delete_after=10)
+                return False
+            return True
+
+        elif permission_level == 'Moderator':
+            # Only users with manage_guild permission
+            if not user.guild_permissions.manage_guild:
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="Sorry! You need the `Manage Server` permission to access this command.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed, delete_after=10)
+                return False
+            return True
+
+        return True
+
+    except Exception as e:
+        print(f"Error checking permission: {e}")
+        return True
+
+
 # MAIN CLASS
 
 class Invites(commands.Cog):
@@ -820,15 +1222,48 @@ class Invites(commands.Cog):
         self.initialized = False
         self.db_stats = None
         self.active_views = {}
+        self.rate_limiter = get_rate_limiter()
+        self.user_cache = {}  # Cache for fetched users
+        # Start cache cleanup task
+        self.clean_cache_task.start()
+
+    def cog_unload(self):
+        """Cancel the cache cleanup task when cog is unloaded"""
+        self.clean_cache_task.cancel()
+        self.active_views.clear()
+
+    @tasks.loop(hours=1)
+    async def clean_cache_task(self):
+        """Periodically clean the user cache to prevent memory bloat"""
+        self.user_cache.clear()
+        gc.collect()
+
+    @rate_limited(RateLimitType.API, timeout=1.0)
+    async def _fetch_user_with_rate_limit(self, user_id: int):
+        """Fetch user globally with rate limiting. Only used as fallback."""
+        # Check cache first
+        if user_id in self.user_cache:
+            return self.user_cache[user_id]
+
+        try:
+            user = await self.bot.fetch_user(user_id)
+            self.user_cache[user_id] = user
+            return user
+        except discord.NotFound:
+            return None
+        except discord.HTTPException as e:
+            print(f"Failed to fetch user {user_id}: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error fetching user {user_id}: {e}")
+            return None
 
     async def cog_load(self):
 
         self.db_stats = self.bot.get_cog('DatabaseStats')
         self.initialized = True
 
-    # HELPER METHODS
-
-    async def _get_invite_leaderboard_data(self, guild: discord.Guild, days_back: int, role_id: str = None):
+    async def _get_invite_leaderboard_data(self, guild: discord.Guild, days_back: int, role_id: str = None, invite_type_filter: str = "all"):
 
         if not self.db_stats or not self.db_stats.pool:
             print("⚠️ DatabaseStats not available for invite leaderboard")
@@ -841,7 +1276,7 @@ class Invites(commands.Cog):
                 if role:
                     role_filter_ids = [role.id]
 
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(days=days_back)
 
             leaderboard_data = await self.db_stats.q_invite_leaderboard(
@@ -849,7 +1284,8 @@ class Invites(commands.Cog):
                 limit=100,
                 role_filter_ids=role_filter_ids,
                 start_time=start_time,
-                end_time=end_time
+                end_time=end_time,
+                invite_type_filter=invite_type_filter
             )
 
             return leaderboard_data
@@ -860,8 +1296,6 @@ class Invites(commands.Cog):
             traceback.print_exc()
             return []
 
-    # QUERY FUNCTIONS
-
     async def get_user_invite_stats(self, guild_id: int, user_id: int, days_back: int = None):
 
         if not self.db_stats:
@@ -871,7 +1305,7 @@ class Invites(commands.Cog):
             start_time = None
             end_time = None
             if days_back:
-                end_time = datetime.utcnow()
+                end_time = datetime.now(timezone.utc)
                 start_time = end_time - timedelta(days=days_back)
 
             return await self.db_stats.q_user_invite_stats(
@@ -892,6 +1326,14 @@ class Invites(commands.Cog):
         try:
             async with self.db_stats.pool.acquire() as conn:
 
+                debug_rows = await conn.fetch('''
+                    SELECT inviter_id, invite_code, invite_type, created_at
+                    FROM invite_tracking
+                    WHERE guild_id = $1 AND invitee_id = $2
+                    ORDER BY created_at DESC
+                    LIMIT 5
+                ''', guild_id, user_id)
+
                 row = await conn.fetchrow('''
                     SELECT 
                         inviter_id, 
@@ -901,7 +1343,7 @@ class Invites(commands.Cog):
                     FROM invite_tracking
                     WHERE guild_id = $1 
                     AND invitee_id = $2
-                    AND invite_type = 'valid'  -- Fixed: added quotes
+                    AND invite_type = 'valid'
                     ORDER BY created_at DESC
                     LIMIT 1
                 ''', guild_id, user_id)
@@ -941,8 +1383,455 @@ class Invites(commands.Cog):
             print(f"Error getting inviter for user: {e}")
             return None
 
-    # COMMANDS
+    # =========================================================
+    # INTERNAL FUNCTION FOR INVITE STATS
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def _handle_invite_stats_command(self, ctx_or_interaction, user=None, is_interaction=False):
+        """Internal function to handle invite stats for both command types"""
+        try:
+            # Get context parameters
+            if is_interaction:
+                sender = ctx_or_interaction.user
+                guild = ctx_or_interaction.guild
+                send_method = ctx_or_interaction.followup.send
+                defer_method = ctx_or_interaction.response.defer
+            else:
+                sender = ctx_or_interaction.author
+                guild = ctx_or_interaction.guild
+                send_method = ctx_or_interaction.send
+                defer_method = None
 
+            # Handle user parameter
+            if user is None:
+                user = sender
+
+            if guild is None:
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ This command can only be used in a server.", delete_after=5)
+                return
+
+            # Check permission - USE CORRECT FUNCTION BASED ON COMMAND TYPE
+            if is_interaction:
+                # For slash commands, use check_command_permission
+                if not await check_command_permission(ctx_or_interaction, "invite_stats", target_user=user):
+                    return
+            else:
+                # For prefix commands, use check_prefix_command_permission
+                if not await check_prefix_command_permission(ctx_or_interaction, target_user=user):
+                    return
+
+            if is_interaction:
+                await defer_method(thinking=True)
+
+            if not self.db_stats or not self.db_stats.pool:
+                if is_interaction:
+                    await send_method("❌ Database not available. Please try again later.")
+                else:
+                    await send_method("❌ Database not available. Please try again later.", delete_after=10)
+                return
+
+            try:
+                stats = await self.get_user_invite_stats(guild.id, user.id)
+
+                if not stats:
+                    if is_interaction:
+                        await send_method("❌ No invite statistics found for this user.")
+                    else:
+                        await send_method("❌ No invite statistics found for this user.", delete_after=10)
+                    return
+
+                embed = discord.Embed(
+                    title=f"📊 Invite Statistics - {user.display_name}",
+                    color=discord.Color.blue()
+                )
+                embed.set_thumbnail(url=user.display_avatar.url)
+
+                embed.add_field(
+                    name="Total Invites",
+                    value=f"```{stats.get('total_invites', 0):,}```",
+                    inline=True
+                )
+                embed.add_field(
+                    name="✅ Valid Invites",
+                    value=f"```{stats.get('valid_invites', 0):,}```",
+                    inline=True
+                )
+                embed.add_field(
+                    name="⚠️ Suspicious Invites",
+                    value=f"```{stats.get('suspicious_invites', 0):,}```",
+                    inline=True
+                )
+
+                if stats.get('left_invites', 0) > 0:
+                    embed.add_field(
+                        name="👋 Users Left",
+                        value=f"```{stats.get('left_invites', 0):,}```",
+                        inline=True
+                    )
+
+                if stats.get('percentage_valid', 0) > 0:
+                    embed.add_field(
+                        name="🎯 Valid Invite Rate",
+                        value=f"```{stats.get('percentage_valid', 0):.1f}%```",
+                        inline=True
+                    )
+
+                if is_interaction:
+                    await send_method(embed=embed)
+                else:
+                    await send_method(embed=embed, delete_after=30)
+
+            except Exception as e:
+                print(f"❌ Error getting invite stats: {e}")
+                if is_interaction:
+                    await send_method("❌ An error occurred while fetching invite statistics.")
+                else:
+                    await send_method("❌ An error occurred while fetching invite statistics.", delete_after=10)
+
+        except Exception as e:
+            print(f"Error in _handle_invite_stats_command: {e}")
+
+    # =========================================================
+    # INTERNAL FUNCTION FOR INVITER
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def _handle_inviter_command(self, ctx_or_interaction, user=None, is_interaction=False):
+        """Internal function to handle inviter for both command types"""
+        try:
+            # Get context parameters
+            if is_interaction:
+                sender = ctx_or_interaction.user
+                guild = ctx_or_interaction.guild
+                send_method = ctx_or_interaction.followup.send
+                defer_method = ctx_or_interaction.response.defer
+            else:
+                sender = ctx_or_interaction.author
+                guild = ctx_or_interaction.guild
+                send_method = ctx_or_interaction.send
+                defer_method = None
+
+            # Handle user parameter
+            if user is None:
+                user = sender
+
+            if guild is None:
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ This command can only be used in a server.", delete_after=5)
+                return
+
+            # Check permission - USE CORRECT FUNCTION BASED ON COMMAND TYPE
+            if is_interaction:
+                # For slash commands, use check_command_permission
+                if not await check_command_permission(ctx_or_interaction, "inviter", target_user=user):
+                    return
+            else:
+                # For prefix commands, use check_prefix_command_permission
+                if not await check_prefix_command_permission(ctx_or_interaction, target_user=user):
+                    return
+
+            if is_interaction:
+                await defer_method(thinking=True)
+
+            if not self.db_stats or not self.db_stats.pool:
+                if is_interaction:
+                    await send_method("❌ Database not available. Please try again later.")
+                else:
+                    await send_method("❌ Database not available. Please try again later.", delete_after=10)
+                return
+
+            # Use the rate-limited fetch for user display info
+            # Override the global get_user_display_info to use our rate-limited version
+            async def get_user_display_info_limited(bot, guild, user_id, check_exists=True):
+                user_info = {
+                    'name': '[Deleted User]',
+                    'is_deleted': True,
+                    'member': None
+                }
+
+                try:
+                    member = guild.get_member(user_id)
+                    if member:
+                        user_info.update({
+                            'name': member.name,
+                            'is_deleted': False,
+                            'member': member
+                        })
+                        return user_info
+
+                    # Use rate-limited fetch
+                    user = await self._fetch_user_with_rate_limit(user_id)
+                    if user:
+                        user_info.update({
+                            'name': user.name,
+                            'is_deleted': False,
+                            'member': None
+                        })
+                    else:
+                        user_info.update({
+                            'name': f'User {user_id}',
+                            'is_deleted': False,
+                            'member': None
+                        })
+
+                except Exception as e:
+                    print(f"⚠️ Error getting user info for ID {user_id}: {e}")
+                    user_info.update({
+                        'name': f'User {user_id}',
+                        'is_deleted': False,
+                        'member': None
+                    })
+
+                return user_info
+
+            inviter_info = await self.get_inviter_for_user(guild.id, user.id)
+
+            user_info = await get_user_display_info_limited(self.bot, guild, user.id)
+            invited_user_display = user_info['name']
+
+            if not inviter_info:
+                embed = discord.Embed(
+                    title="❌ Inviter Not Found",
+                    description=f"Could not find who invited {invited_user_display}.\n\nThis could be because:\n• The user joined before invite tracking was enabled\n• The invite was deleted before tracking",
+                    color=discord.Color.orange()
+                )
+                if is_interaction:
+                    await send_method(embed=embed)
+                else:
+                    await send_method(embed=embed, delete_after=30)
+                return
+
+            inviter_id = inviter_info.get('inviter_id')
+            invite_type = inviter_info.get('invite_type', 'valid')
+
+            if inviter_id == 0:
+                embed = discord.Embed(
+                    title="❌ Unknown Inviter",
+                    description=f"**{invited_user_display}** was invited by an unknown user.\n\nThis usually happens when:\n• The inviter left the server before tracking\n• The invite was created before tracking started\n• It was a vanity URL invite",
+                    color=discord.Color.orange()
+                )
+                if is_interaction:
+                    await send_method(embed=embed)
+                else:
+                    await send_method(embed=embed, delete_after=30)
+                return
+
+            inviter_info_display = await get_user_display_info_limited(self.bot, guild, inviter_id)
+            inviter_display = inviter_info_display['name']
+
+            if inviter_info_display['member']:
+                inviter = inviter_info_display['member']
+                embed = discord.Embed(
+                    title="👥 Inviter Found",
+                    description=f"**{invited_user_display}** was invited by **{inviter.mention}**",
+                    color=discord.Color.green()
+                )
+                embed.set_thumbnail(url=user.display_avatar.url)
+                embed.add_field(
+                    name="Invited User",
+                    value=invited_user_display,
+                    inline=True
+                )
+                embed.add_field(
+                    name="Inviter",
+                    value=inviter.mention,
+                    inline=True
+                )
+
+                if inviter_info.get('invite_code') and inviter_info['invite_code'] not in ["unknown", "left"]:
+                    embed.add_field(
+                        name="Invite Code",
+                        value=f"`{inviter_info['invite_code']}`",
+                        inline=False
+                    )
+
+                if inviter_info.get('invite_time'):
+                    # Convert to guild timezone
+                    invite_time = await convert_utc_to_guild_time(inviter_info['invite_time'], guild.id)
+                    if isinstance(invite_time, datetime):
+                        invite_time_str = invite_time.strftime(
+                            "%Y-%m-%d %H:%M:%S")
+                    else:
+                        invite_time_str = str(invite_time)
+                    embed.add_field(
+                        name="Invite Time",
+                        value=f"`{invite_time_str}`",
+                        inline=False
+                    )
+                if invite_type == 'suspicious':
+                    embed.add_field(
+                        name="⚠️ Warning",
+                        value="This invite was marked as suspicious (new account detected)",
+                        inline=False
+                    )
+                    embed.color = discord.Color.orange()
+                elif invite_type == 'left':
+                    embed.add_field(
+                        name="📝 Note",
+                        value="The invited user has left the server",
+                        inline=False
+                    )
+                    embed.color = discord.Color.blue()
+                elif invite_type == 'unknown':
+                    embed.add_field(
+                        name="📝 Note",
+                        value="Invite source could not be determined",
+                        inline=False
+                    )
+                    embed.color = discord.Color.greyple()
+
+            else:
+                embed = discord.Embed(
+                    title="👥 Inviter Found",
+                    description=f"**{invited_user_display}** was invited by **{inviter_display}**",
+                    color=discord.Color.blue()
+                )
+                embed.set_thumbnail(url=user.display_avatar.url)
+                embed.add_field(
+                    name="Invited User",
+                    value=invited_user_display,
+                    inline=True
+                )
+                embed.add_field(
+                    name="Inviter",
+                    value=inviter_display,
+                    inline=True
+                )
+
+                if invite_type == 'suspicious':
+                    embed.add_field(
+                        name="⚠️ Warning",
+                        value="This invite was marked as suspicious",
+                        inline=False
+                    )
+                    embed.color = discord.Color.orange()
+
+            if is_interaction:
+                await send_method(embed=embed)
+            else:
+                await send_method(embed=embed, delete_after=30)
+
+        except Exception as e:
+            print(f"Error in _handle_inviter_command: {e}")
+
+    # =========================================================
+    # INTERNAL FUNCTION FOR INVITE LEADERBOARD
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def _handle_invite_leaderboard_command(self, ctx_or_interaction, is_interaction=False):
+        """Internal function to handle invite leaderboard for both command types"""
+        try:
+            # Get context parameters
+            if is_interaction:
+                guild = ctx_or_interaction.guild
+                send_method = ctx_or_interaction.followup.send
+                defer_method = ctx_or_interaction.response.defer
+            else:
+                guild = ctx_or_interaction.guild
+                send_method = ctx_or_interaction.send
+                defer_method = None
+
+            if guild is None:
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ This command can only be used in a server.", delete_after=5)
+                return
+
+            # Check permission - USE CORRECT FUNCTION BASED ON COMMAND TYPE
+            if is_interaction:
+                # For slash commands, use check_command_permission
+                if not await check_command_permission(ctx_or_interaction, "invite_leaderboard"):
+                    return
+            else:
+                # For prefix commands, use check_prefix_command_permission
+                if not await check_prefix_command_permission(ctx_or_interaction):
+                    return
+
+            if is_interaction:
+                await defer_method()
+            else:
+                # Try to delete the command message for prefix
+                try:
+                    await ctx_or_interaction.message.delete()
+                except:
+                    pass
+
+            leaderboard_data = await self._get_invite_leaderboard_data(guild, InviteConfig.DEFAULT_DAYS_BACK)
+
+            img_bytes = await generate_invite_leaderboard_image(
+                bot=self.bot,
+                guild=guild,
+                leaderboard_data=leaderboard_data,
+                days_back=InviteConfig.DEFAULT_DAYS_BACK,
+                page=0
+            )
+
+            file = discord.File(img_bytes, filename="invite_leaderboard.png")
+
+            view = InviteLeaderboardView(
+                self, guild, days_back=InviteConfig.DEFAULT_DAYS_BACK
+            )
+
+            msg = await send_method(file=file, view=view)
+
+            # Store the view
+            self.active_views[msg.id] = view
+
+        except Exception as e:
+            print(f"Error in _handle_invite_leaderboard_command: {e}")
+    # =========================================================
+    # SHORTCUT COMMANDS
+    # =========================================================
+
+    @commands.command(name="is")
+    async def invite_stats_shortcut(self, ctx: commands.Context, member: discord.Member = None):
+        """Shortcut command for invite stats - same as invite stats"""
+        await self._handle_invite_stats_command(ctx, member, is_interaction=False)
+
+    @commands.command(name="ir")
+    async def inviter_shortcut(self, ctx: commands.Context, member: discord.Member = None):
+        """Shortcut command for inviter - same as inviter"""
+        await self._handle_inviter_command(ctx, member, is_interaction=False)
+
+    @commands.command(name="il")
+    async def invite_leaderboard_shortcut(self, ctx: commands.Context):
+        """Shortcut command for invite leaderboard - same as invite leaderboard"""
+        await self._handle_invite_leaderboard_command(ctx, is_interaction=False)
+
+    # =========================================================
+    # PREFIX COMMAND GROUP
+    # =========================================================
+    @commands.group(name="invite", invoke_without_command=True)
+    async def invite_group_prefix(self, ctx: commands.Context):
+        """Invite tracking commands"""
+        await ctx.send("Available commands:\n- `invite stats [member]` - Show invite statistics for a user\n- `invite leaderboard` - Show invite leaderboard\n- `inviter [member]` - Find out who invited a user\n\nShortcuts:\n- `is [member]` - Invite stats shortcut\n- `ir [member]` - Inviter shortcut\n- `il` - Invite leaderboard shortcut")
+
+    @invite_group_prefix.command(name="stats")
+    async def invite_stats_prefix(self, ctx: commands.Context, member: discord.Member = None):
+        """Show invite statistics for a user via prefix command"""
+        await self._handle_invite_stats_command(ctx, member, is_interaction=False)
+
+    @invite_group_prefix.command(name="leaderboard")
+    async def invite_leaderboard_prefix(self, ctx: commands.Context):
+        """Show invite leaderboard via prefix command"""
+        await self._handle_invite_leaderboard_command(ctx, is_interaction=False)
+
+    # =========================================================
+    # PREFIX COMMAND - INVITER (STANDALONE)
+    # =========================================================
+    @commands.command(name="inviter")
+    async def inviter_prefix(self, ctx: commands.Context, member: discord.Member = None):
+        """Find out who invited a user via prefix command"""
+        await self._handle_inviter_command(ctx, member, is_interaction=False)
+
+    # =========================================================
+    # SLASH COMMANDS
+    # =========================================================
     invite_group = app_commands.Group(
         name="invite",
         description="Invite tracking commands"
@@ -950,219 +1839,18 @@ class Invites(commands.Cog):
 
     @invite_group.command(name="stats", description="Show invite statistics for a user")
     @app_commands.describe(user="The user to check invite stats for")
-    async def invite_stats(self, interaction: discord.Interaction, user: discord.Member):
-
-        await interaction.response.defer(thinking=True)
-
-        if not self.db_stats or not self.db_stats.pool:
-            await interaction.followup.send("❌ Database not available. Please try again later.")
-            return
-
-        try:
-            stats = await self.get_user_invite_stats(interaction.guild.id, user.id)
-
-            if not stats:
-                await interaction.followup.send("❌ No invite statistics found for this user.")
-                return
-
-            embed = discord.Embed(
-                title=f"📊 Invite Statistics - {user.display_name}",
-                color=discord.Color.blue()
-            )
-            embed.set_thumbnail(url=user.display_avatar.url)
-
-            embed.add_field(
-                name="Total Invites",
-                value=f"```{stats.get('total_invites', 0):,}```",
-                inline=True
-            )
-            embed.add_field(
-                name="✅ Valid Invites",
-                value=f"```{stats.get('valid_invites', 0):,}```",
-                inline=True
-            )
-            embed.add_field(
-                name="⚠️ Suspicious Invites",
-                value=f"```{stats.get('suspicious_invites', 0):,}```",
-                inline=True
-            )
-
-            if stats.get('left_invites', 0) > 0:
-                embed.add_field(
-                    name="👋 Users Left",
-                    value=f"```{stats.get('left_invites', 0):,}```",
-                    inline=True
-                )
-
-            if stats.get('percentage_valid', 0) > 0:
-                embed.add_field(
-                    name="🎯 Valid Invite Rate",
-                    value=f"```{stats.get('percentage_valid', 0):.1f}%```",
-                    inline=True
-                )
-
-            embed.set_footer(
-                text="Suspicious invites are invites made to accounts less than 3 days old OR inviters whose account is less than 3 days old.")
-
-            await interaction.followup.send(embed=embed)
-
-        except Exception as e:
-            print(f"❌ Error getting invite stats: {e}")
-            await interaction.followup.send("❌ An error occurred while fetching invite statistics.")
+    async def invite_stats(self, interaction: discord.Interaction, user: discord.Member = None):
+        await self._handle_invite_stats_command(interaction, user, is_interaction=True)
 
     @app_commands.command(name="inviter", description="Find out who invited a user")
     @app_commands.describe(user="The user to check inviter for")
-    async def inviter_command(self, interaction: discord.Interaction, user: discord.Member):
-
-        await interaction.response.defer(thinking=True)
-
-        if not self.db_stats or not self.db_stats.pool:
-            await interaction.followup.send("❌ Database not available. Please try again later.")
-            return
-
-        inviter_info = await self.get_inviter_for_user(interaction.guild.id, user.id)
-
-        if not inviter_info:
-            embed = discord.Embed(
-                title="❌ Inviter Not Found",
-                description=f"Could not find who invited {user.mention}.\n\nThis could be because:\n• The user joined before invite tracking was enabled\n• The invite was deleted before tracking\n• The user joined through a different method (vanity URL, etc.)",
-                color=discord.Color.orange()
-            )
-            await interaction.followup.send(embed=embed)
-            return
-
-        inviter_id = inviter_info.get('inviter_id')
-        invite_type = inviter_info.get('invite_type', 'valid')
-
-        if inviter_id == 0:
-            embed = discord.Embed(
-                title="❌ Unknown Inviter",
-                description=f"**{user.mention}** was invited by an unknown user.\n\nThis usually happens when:\n• The inviter left the server before tracking\n• The invite was created before tracking started\n• It was a vanity URL invite",
-                color=discord.Color.orange()
-            )
-            await interaction.followup.send(embed=embed)
-            return
-
-        inviter = interaction.guild.get_member(inviter_id)
-
-        if inviter:
-            embed = discord.Embed(
-                title="👥 Inviter Found",
-                description=f"**{user.mention}** was invited by **{inviter.mention}**",
-                color=discord.Color.green()
-            )
-            embed.set_thumbnail(url=user.display_avatar.url)
-            embed.add_field(
-                name="Invited User",
-                value=user.mention,
-                inline=True
-            )
-            embed.add_field(
-                name="Inviter",
-                value=inviter.mention,
-                inline=True
-            )
-
-            if inviter_info.get('invite_code') and inviter_info['invite_code'] not in ["unknown", "left"]:
-                embed.add_field(
-                    name="Invite Code",
-                    value=f"`{inviter_info['invite_code']}`",
-                    inline=False
-                )
-
-            if inviter_info.get('invite_time'):
-                invite_time = inviter_info['invite_time']
-                if isinstance(invite_time, datetime):
-                    invite_time_str = invite_time.strftime("%Y-%m-%d %H:%M")
-                else:
-                    invite_time_str = str(invite_time)
-                embed.add_field(
-                    name="Invite Time",
-                    value=f"`{invite_time_str}`",
-                    inline=False
-                )
-            if invite_type == 'suspicious':
-                embed.add_field(
-                    name="⚠️ Warning",
-                    value="This invite was marked as suspicious (new account detected)",
-                    inline=False
-                )
-                embed.color = discord.Color.orange()
-            elif invite_type == 'left':
-                embed.add_field(
-                    name="📝 Note",
-                    value="The invited user has left the server",
-                    inline=False
-                )
-                embed.color = discord.Color.blue()
-            elif invite_type == 'unknown':
-                embed.add_field(
-                    name="📝 Note",
-                    value="Invite source could not be determined",
-                    inline=False
-                )
-                embed.color = discord.Color.greyple()
-
-        else:
-            embed = discord.Embed(
-                title="👥 Inviter Found",
-                description=f"**{user.mention}** was invited by **User {inviter_id}**",
-                color=discord.Color.blue()
-            )
-            embed.set_thumbnail(url=user.display_avatar.url)
-            embed.add_field(
-                name="Invited User",
-                value=user.mention,
-                inline=True
-            )
-            embed.add_field(
-                name="Inviter",
-                value=f"User {inviter_id} (Left Server)",
-                inline=True
-            )
-
-            if invite_type == 'suspicious':
-                embed.add_field(
-                    name="⚠️ Warning",
-                    value="This invite was marked as suspicious",
-                    inline=False
-                )
-                embed.color = discord.Color.orange()
-
-        await interaction.followup.send(embed=embed)
+    async def inviter_command(self, interaction: discord.Interaction, user: discord.Member = None):
+        await self._handle_inviter_command(interaction, user, is_interaction=True)
 
     @invite_group.command(name="leaderboard", description="Show invite leaderboard")
     async def invite_leaderboard(self, interaction: discord.Interaction):
+        await self._handle_invite_leaderboard_command(interaction, is_interaction=True)
 
-        await interaction.response.defer()
-
-        leaderboard_data = await self._get_invite_leaderboard_data(interaction.guild, InviteConfig.DEFAULT_DAYS_BACK)
-
-        img_bytes = await generate_invite_leaderboard_image(
-            guild=interaction.guild,
-            leaderboard_data=leaderboard_data,
-            days_back=InviteConfig.DEFAULT_DAYS_BACK,
-            page=0
-        )
-
-        file = discord.File(img_bytes, filename="invite_leaderboard.png")
-
-        view = InviteLeaderboardView(
-            self, interaction.guild, days_back=InviteConfig.DEFAULT_DAYS_BACK
-        )
-
-        await interaction.followup.send(file=file, view=view)
-
-        message = await interaction.original_response()
-        self.active_views[message.id] = view
-
-    # CLEANUP
-
-    async def cog_unload(self):
-        self.active_views.clear()
-
-
-# SETUP
 
 async def setup(bot):
     await bot.add_cog(Invites(bot))

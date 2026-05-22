@@ -14,7 +14,10 @@ from pilmoji import Pilmoji
 import traceback
 import json
 from pathlib import Path
-
+import unicodedata
+from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
+import gc
+from discord.ext import tasks
 
 load_dotenv()
 
@@ -51,7 +54,6 @@ class EmojiConfig:
 def get_fonts():
 
     try:
-        # Try to load the custom font first
         custom_font_path = EmojiConfig.FONT_PATH
         if os.path.exists(custom_font_path):
             font_small = ImageFont.truetype(custom_font_path, 16)
@@ -89,6 +91,14 @@ def get_fonts():
             font_huge = ImageFont.load_default()
             font_giant = ImageFont.load_default()
             return font_small, font_medium, font_large, font_larger, font_huge, font_giant
+
+
+# TEXT NORMALIZATION
+
+def normalize_text_for_display(text):
+    normalized = unicodedata.normalize('NFKD', text)
+    ascii_only = normalized.encode('ASCII', 'ignore').decode('ASCII')
+    return ascii_only if ascii_only else text
 
 
 # DRAWING FUNCTIONS
@@ -269,31 +279,32 @@ def fit_text_to_rectangle(draw, text, text_start_x, text_start_y, rect_center_x,
     return final_text, font, (text_x, text_y)
 
 
-async def add_server_profile_pic_and_name(image, guild, font_huge, channel=None):
+async def add_server_profile_pic_and_name(image, guild, font_huge, channel=None, category=None, target_member=None, target_location=None):
 
     temp_draw = ImageDraw.Draw(image)
 
-    # POSITIONS
-
-    # Profile picture at (7, 10)
     avatar_x, avatar_y = 7, 10
     avatar_size = (60, 60)
 
     text_start_x = 85
     text_start_y = 30
 
-    # Rectangle for text constraints
     rect_center_x = 150
     rect_center_y = 30
     rect_width = 183
     rect_height = 35
 
-    # SERVER PROFILE PICTURE
     try:
-        if guild.icon:
-            icon_url = guild.icon.url
+        if target_member:
+            avatar_url = target_member.avatar.url if target_member.avatar else target_member.default_avatar.url
+        elif guild.icon:
+            avatar_url = guild.icon.url
+        else:
+            avatar_url = None
+
+        if avatar_url:
             async with aiohttp.ClientSession() as session:
-                async with session.get(icon_url) as response:
+                async with session.get(avatar_url) as response:
                     icon_data = await response.read()
 
             icon_image = Image.open(io.BytesIO(icon_data))
@@ -315,12 +326,23 @@ async def add_server_profile_pic_and_name(image, guild, font_huge, channel=None)
             icon_with_bg.paste(icon_image, (0, 0), icon_image)
             avatar_area.paste(icon_with_bg, (0, 0), icon_with_bg)
             image.paste(avatar_area.convert('RGB'), (avatar_x, avatar_y))
+            icon_image.close()
+            del icon_image
+            del icon_data
 
     except Exception as e:
-        print(f"❌ Could not add server icon: {e}")
+        print(f"❌ Could not add avatar: {e}")
 
     with Pilmoji(image) as pilmoji:
-        display_text = f"#{channel.name}" if channel else guild.name
+        display_text = ""
+        if target_member:
+            display_text = target_member.name  # Use username instead of display name
+        elif channel:
+            display_text = f"#{normalize_text_for_display(channel.name)}"
+        elif category:
+            display_text = normalize_text_for_display(category.name)
+        else:
+            display_text = normalize_text_for_display(guild.name)
 
         fitted_text, text_font, text_pos = fit_text_to_rectangle(
             temp_draw,
@@ -341,6 +363,27 @@ async def add_server_profile_pic_and_name(image, guild, font_huge, channel=None)
             draw_text_with_stroke_and_emoji(pilmoji, (text_start_x, text_start_y), display_text,
                                             font=font_huge, fill="white", stroke_fill="black", stroke_width=1)
 
+        # Add location text at (360, 80) if target_location is provided
+        if target_location:
+            if isinstance(target_location, discord.TextChannel):
+                location_text = f"in #{normalize_text_for_display(target_location.name)}"
+            else:
+                location_text = f"in {normalize_text_for_display(target_location.name)}"
+
+            # Get font_small for 16px font size
+            font_small, font_medium, font_large, font_larger, font_huge, font_giant = get_fonts()
+            location_font = font_small  # 16px font size
+
+            location_bbox = temp_draw.textbbox(
+                (0, 0), location_text, font=location_font)
+            location_width = location_bbox[2] - location_bbox[0]
+            location_x = 370 - (location_width // 2)
+            location_y = 70
+
+            draw_text_with_stroke_and_emoji(pilmoji, (location_x, location_y), location_text,
+                                            font=location_font, fill="white", stroke_fill="black", stroke_width=1)
+            gc.collect()
+
 
 async def generate_emoji_leaderboard_image(
     guild: discord.Guild,
@@ -348,11 +391,14 @@ async def generate_emoji_leaderboard_image(
     leaderboard_type: str,
     days_back: int,
     role_id: str = None,
+    role_name: str = None,
     target_member: discord.Member = None,
     usage_type: str = 'all',
     page: int = 0,
     total_pages: int = 1,
-    channel: discord.TextChannel = None
+    channel: discord.TextChannel = None,
+    category: discord.CategoryChannel = None,
+    target_location=None
 ):
 
     template_path = EmojiConfig.TEMPLATE_PATH
@@ -368,33 +414,31 @@ async def generate_emoji_leaderboard_image(
     draw = ImageDraw.Draw(image)
     font_small, font_medium, font_large, font_larger, font_huge, font_giant = get_fonts()
 
-    if leaderboard_type == 'channel' and channel:
-        await add_server_profile_pic_and_name(image, guild, font_huge, channel)
+    if target_member and (channel or category or target_location):
+        await add_server_profile_pic_and_name(image, guild, font_huge, target_member=target_member, target_location=target_location)
+    elif target_member:
+        await add_server_profile_pic_and_name(image, guild, font_huge, target_member=target_member)
+    elif leaderboard_type == 'channel' and channel:
+        await add_server_profile_pic_and_name(image, guild, font_huge, channel=channel)
+    elif leaderboard_type == 'category' and category:
+        await add_server_profile_pic_and_name(image, guild, font_huge, category=category)
     else:
         await add_server_profile_pic_and_name(image, guild, font_huge)
 
-    # ROLE FILTER / DATE / TIME RANGE
-    role_text = "No Filter"
-    if role_id and role_id != "none":
-        role = guild.get_role(int(role_id))
-        role_text = role.name if role else "Unknown Role"
+    # USE DATABASE ROLE NAME INSTEAD OF DISCORD API
+    role_text = role_name if role_name else "No Filter"
 
     with Pilmoji(image) as pilmoji:
-        # role filter
         draw_text_with_stroke_and_emoji(pilmoji, (70, 424), role_text,
                                         font=font_small, fill="white", stroke_fill="black", stroke_width=1)
-        # time period
         draw_text_with_stroke_and_emoji(pilmoji, (630, 422), f"{days_back} days",
                                         font=font_small, fill="white", stroke_fill="black", stroke_width=1)
-        # created on
         draw_text_with_stroke_and_emoji(pilmoji, (550, 38), datetime.now(timezone.utc).strftime(
             "%B %d, %Y"), font=font_small, fill="white", stroke_fill="black", stroke_width=1)
 
-        # Pagination
         draw_text_with_stroke_and_emoji(
             pilmoji, (400, 450), f"Page {page + 1}/{total_pages}", font=font_medium, fill="white", stroke_fill="black", stroke_width=1)
 
-        # LEADERBOARD CONTENT
         if leaderboard_data:
             start_idx = page * EmojiConfig.EMOJIS_PER_PAGE
             end_idx = min(start_idx + EmojiConfig.EMOJIS_PER_PAGE,
@@ -426,13 +470,13 @@ async def generate_emoji_leaderboard_image(
 
                 placement_width = 35
                 if global_rank == 1:
-                    placement_color = EmojiConfig.COLORS['gold']  # Gold
+                    placement_color = EmojiConfig.COLORS['gold']
                 elif global_rank == 2:
-                    placement_color = EmojiConfig.COLORS['silver']  # Silver
+                    placement_color = EmojiConfig.COLORS['silver']
                 elif global_rank == 3:
-                    placement_color = EmojiConfig.COLORS['bronze']  # Bronze
+                    placement_color = EmojiConfig.COLORS['bronze']
                 else:
-                    placement_color = EmojiConfig.COLORS['default']  # Purple
+                    placement_color = EmojiConfig.COLORS['default']
 
                 draw_rounded_rectangle(draw, [box_x, box_y, box_x + placement_width, box_y + box_height],
                                        radius=8, fill=placement_color, outline=None)
@@ -519,15 +563,13 @@ async def generate_emoji_leaderboard_image(
                                                 font=font_medium, fill="white", stroke_fill="black", stroke_width=1)
 
                 emoji_x = box_x + placement_width + 5
-                emoji_y = box_y + (box_height - 30) // 2 + 5
+                emoji_y = box_y + (box_height - 30) // 2 - 13
 
                 try:
-
                     pilmoji.text((emoji_x, emoji_y), display_emoji,
                                  font=font_large, fill=(255, 255, 255))
                 except Exception as e:
                     print(f"❌ Error drawing emoji {display_emoji}: {e}")
-
                     pilmoji.text((emoji_x, emoji_y), display_emoji,
                                  font=font_large, fill=(255, 255, 255))
 
@@ -543,7 +585,6 @@ async def generate_emoji_leaderboard_image(
                 draw_text_with_stroke_and_emoji(pilmoji, (value_x, value_y), value_text,
                                                 font=font_medium, fill="white", stroke_fill="black", stroke_width=1)
         else:
-
             cx, cy = image.size[0] // 2, image.size[1] // 2
             draw_text_centered_with_stroke_and_emoji(
                 pilmoji, "NO DATA AVAILABLE", (cx, cy), font=font_giant, fill="white", stroke_fill="black", stroke_width=3)
@@ -551,6 +592,7 @@ async def generate_emoji_leaderboard_image(
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
+    gc.collect()
     return img_bytes
 
 
@@ -559,9 +601,14 @@ async def generate_user_emoji_leaderboard_image(
     user_data: list,
     days_back: int,
     role_id: str = None,
+    role_name: str = None,
     usage_type: str = "all",
     page: int = 0,
-    total_pages: int = 1
+    total_pages: int = 1,
+    target_channel: discord.TextChannel = None,
+    target_category: discord.CategoryChannel = None,
+    target_location=None,
+    cog=None
 ):
 
     template_path = EmojiConfig.TEMPLATE_PATH
@@ -577,29 +624,29 @@ async def generate_user_emoji_leaderboard_image(
     draw = ImageDraw.Draw(image)
     font_small, font_medium, font_large, font_larger, font_huge, font_giant = get_fonts()
 
-    await add_server_profile_pic_and_name(image, guild, font_huge)
+    if target_location:
+        await add_server_profile_pic_and_name(image, guild, font_huge, target_location=target_location)
+    elif target_channel:
+        await add_server_profile_pic_and_name(image, guild, font_huge, channel=target_channel)
+    elif target_category:
+        await add_server_profile_pic_and_name(image, guild, font_huge, category=target_category)
+    else:
+        await add_server_profile_pic_and_name(image, guild, font_huge)
 
-    role_text = "No Filter"
-    if role_id and role_id != "none":
-        role = guild.get_role(int(role_id))
-        role_text = role.name if role else "Unknown Role"
+    # USE DATABASE ROLE NAME INSTEAD OF DISCORD API
+    role_text = role_name if role_name else "No Filter"
 
     with Pilmoji(image) as pilmoji:
-        # role filter
         draw_text_with_stroke_and_emoji(pilmoji, (70, 424), role_text,
                                         font=font_small, fill="white", stroke_fill="black", stroke_width=1)
-        # time period
         draw_text_with_stroke_and_emoji(pilmoji, (630, 422), f"{days_back} days",
                                         font=font_small, fill="white", stroke_fill="black", stroke_width=1)
-        # created on
         draw_text_with_stroke_and_emoji(pilmoji, (550, 38), datetime.now(timezone.utc).strftime(
             "%B %d, %Y"), font=font_small, fill="white", stroke_fill="black", stroke_width=1)
 
-        # pagination
         draw_text_with_stroke_and_emoji(
             pilmoji, (400, 450), f"Page {page + 1}/{total_pages}", font=font_medium, fill="white", stroke_fill="black", stroke_width=1)
 
-        # LEADERBOARD CONTENT
         if user_data:
             start_idx = page * EmojiConfig.USERS_PER_PAGE
             end_idx = min(start_idx + EmojiConfig.USERS_PER_PAGE,
@@ -631,13 +678,13 @@ async def generate_user_emoji_leaderboard_image(
 
                 placement_width = 35
                 if global_rank == 1:
-                    placement_color = EmojiConfig.COLORS['gold']  # Gold
+                    placement_color = EmojiConfig.COLORS['gold']
                 elif global_rank == 2:
-                    placement_color = EmojiConfig.COLORS['silver']  # Silver
+                    placement_color = EmojiConfig.COLORS['silver']
                 elif global_rank == 3:
-                    placement_color = EmojiConfig.COLORS['bronze']  # Bronze
+                    placement_color = EmojiConfig.COLORS['bronze']
                 else:
-                    placement_color = EmojiConfig.COLORS['default']  # Purple
+                    placement_color = EmojiConfig.COLORS['default']
 
                 draw_rounded_rectangle(draw, [box_x, box_y, box_x + placement_width, box_y + box_height],
                                        radius=8, fill=placement_color, outline=None)
@@ -655,14 +702,30 @@ async def generate_user_emoji_leaderboard_image(
                     (0, 0), value_text, font=font_medium)
                 value_width = value_bbox[2] - value_bbox[0]
 
+                # Get username - ONLY rate limit the fallback when user left
                 member = guild.get_member(user_id)
                 if member:
-                    username = member.display_name
+                    # User is still in server - NO rate limiting
+                    username = member.name
                 else:
+                    # User left the server - ONLY rate limit this fallback
+                    @rate_limited(RateLimitType.API, timeout=1.0)
+                    async def fetch_user_limited(uid):
+                        if cog and cog.bot:
+                            return await cog.bot.fetch_user(uid)
+                        return None
+
                     try:
-                        user = await guild._state.fetch_user(user_id)
-                        username = user.name
-                    except:
+                        # Need to run the async function
+                        loop = asyncio.get_event_loop()
+                        user = await fetch_user_limited(user_id)
+                        if user:
+                            username = user.name
+                        else:
+                            username = f"Unknown User ({user_id})"
+                    except discord.NotFound:
+                        username = "[Deleted User]"
+                    except Exception:
                         username = f"Unknown User ({user_id})"
 
                 available_width = box_width - placement_width - value_width - 30
@@ -682,7 +745,6 @@ async def generate_user_emoji_leaderboard_image(
                         if smaller_width <= available_width:
                             name_font = smaller_font
                         else:
-
                             display_name = username
                             while len(display_name) > 3:
                                 display_name = display_name[:-4] + "..."
@@ -694,7 +756,6 @@ async def generate_user_emoji_leaderboard_image(
                                     username = display_name
                                     break
                     except:
-
                         display_name = username
                         while len(display_name) > 3 and name_width > available_width:
                             display_name = display_name[:-4] + "..."
@@ -706,7 +767,7 @@ async def generate_user_emoji_leaderboard_image(
                 rank_height = rank_bbox[3] - rank_bbox[1]
                 name_height = name_bbox[3] - name_bbox[1] if name_font == font_medium else draw.textbbox(
                     (0, 0), username, font=name_font)[3] - draw.textbbox((0, 0), username, font=name_font)[1]
-                value_height = value_bbox[3] - value_bbox[0]
+                value_height = value_bbox[3] - value_bbox[1]
 
                 rank_y = box_y + (box_height - rank_height) // 2
                 name_y = box_y + (box_height - name_height) // 2
@@ -731,7 +792,114 @@ async def generate_user_emoji_leaderboard_image(
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
+    gc.collect()
     return img_bytes
+
+
+# PERMISSION CHECK FUNCTIONS
+
+async def check_emoji_permission(interaction: discord.Interaction, target_user: discord.Member = None) -> bool:
+    """Check if user has permission to use emoji commands"""
+    # Get Settings cog
+    settings_cog = interaction.client.get_cog('Settings')
+    if not settings_cog or not settings_cog.initialized:
+        # If Settings cog not available, allow command
+        return True
+
+    # Get guild settings
+    settings = await settings_cog.get_guild_settings(interaction.guild_id)
+    permission_level = settings.get('permission_level', 'Default')
+
+    # Users with Administrator permission bypass all restrictions
+    if interaction.user.guild_permissions.administrator:
+        return True
+
+    # Check permission levels
+    if permission_level == 'All':
+        return True
+
+    elif permission_level == 'Default':
+        # Default allows anyone to use commands
+        return True
+
+    elif permission_level == 'User Restriction':
+        # User can only use commands on themselves
+        if target_user and target_user.id != interaction.user.id:
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description="Sorry! You can only use this command on yourself.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return False
+        return True
+
+    elif permission_level == 'Admin':
+        # Only users with Administrator permission
+        if not interaction.user.guild_permissions.administrator:
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description="Sorry! You need the `Administrator` permission to access this command.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return False
+        return True
+
+    elif permission_level == 'Moderator':
+        # Only users with Manage Server permission
+        if not interaction.user.guild_permissions.manage_guild:
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description="Sorry! You need the `Manage Server` permission to access this command.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return False
+        return True
+
+    # Default fallback - allow command
+    return True
+
+
+async def check_prefix_emoji_permission(ctx, target_user: discord.Member = None) -> bool:
+    """Check if user has permission to use emoji commands for prefix"""
+    # Get Settings cog
+    settings_cog = ctx.bot.get_cog('Settings')
+    if not settings_cog or not settings_cog.initialized:
+        return True
+
+    # Get guild settings - use await directly
+    settings = await settings_cog.get_guild_settings(ctx.guild.id)
+
+    permission_level = settings.get('permission_level', 'Default')
+
+    # Users with Administrator permission bypass all restrictions
+    if ctx.author.guild_permissions.administrator:
+        return True
+
+    # Check permission levels
+    if permission_level == 'All':
+        return True
+    elif permission_level == 'Default':
+        return True
+    elif permission_level == 'User Restriction':
+        # User can only use commands on themselves
+        if target_user and target_user.id != ctx.author.id:
+            return False
+        return True
+    elif permission_level == 'Admin':
+        # Only users with Administrator permission
+        if not ctx.author.guild_permissions.administrator:
+            return False
+        return True
+    elif permission_level == 'Moderator':
+        # Only users with Manage Server permission
+        if not ctx.author.guild_permissions.manage_guild:
+            return False
+        return True
+
+    return True
 
 
 # USAGE TYPE SELECT MENU
@@ -779,49 +947,75 @@ class UsageTypeSelectMenu(discord.ui.Select):
             await view.update_message(interaction)
 
 
-# ROLE SELECT MENUS
+# ROLE INPUT BUTTON AND MODAL
 
-class EmojiRoleSelectMenu(discord.ui.Select):
-    def __init__(self, guild: discord.Guild, current_role_id: str = None):
-        self.guild = guild
-
-        roles = [role for role in guild.roles if role.name != "@everyone"]
-        roles.sort(key=lambda x: x.position, reverse=True)
-        roles = roles[:EmojiConfig.MAX_ROLES_IN_SELECT]
-
-        options = [
-            discord.SelectOption(
-                label="No Filter",
-                value="none",
-                description="Show all users",
-                emoji="🌐",
-                default=(current_role_id == "none" or not current_role_id)
-            )
-        ]
-
-        for role in roles:
-            options.append(discord.SelectOption(
-                label=role.name,
-                value=str(role.id),
-                description=f"Filter by {role.name} role",
-                default=(str(role.id) == current_role_id)
-            ))
-
+class RoleInputButton(discord.ui.Button):
+    def __init__(self):
         super().__init__(
-            placeholder="Filter by role...",
-            options=options,
-            custom_id="emoji_role_filter_select",
-            min_values=1,
-            max_values=1
+            style=discord.ButtonStyle.primary,
+            label="Input Role ID",
+            custom_id="role_input_button"
         )
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=False, thinking=False)
-        view = self.view
-        if hasattr(view, 'selected_role_id'):
-            view.selected_role_id = self.values[0]
-            view.page = 0
-            await view.update_message(interaction)
+        modal = RoleInputModal(self.view)
+        await interaction.response.send_modal(modal)
+
+
+class RoleInputModal(discord.ui.Modal, title="Enter Role ID"):
+    def __init__(self, view):
+        super().__init__(timeout=300)
+        self.view = view
+
+        self.role_id_input = discord.ui.TextInput(
+            label="Role ID",
+            placeholder="Enter the role ID to filter by...",
+            default=self.view.selected_role_id if self.view.selected_role_id != "none" else "",
+            min_length=1,
+            max_length=20,
+            required=True
+        )
+        self.add_item(self.role_id_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            role_id = self.role_id_input.value.strip()
+
+            if role_id.lower() == "none" or role_id == "":
+                self.view.selected_role_id = "none"
+                self.view.page = 0
+                await interaction.response.defer(ephemeral=False, thinking=False)
+                await self.view.update_message(interaction)
+                return
+
+            role = self.view.guild.get_role(int(role_id))
+            if role:
+                self.view.selected_role_id = role_id
+                self.view.page = 0
+                await interaction.response.defer(ephemeral=False, thinking=False)
+                await self.view.update_message(interaction)
+            else:
+                embed = discord.Embed(
+                    title="Invalid Role ID",
+                    description="Sorry! The role id you inputted is not valid, please try again.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        except ValueError:
+            embed = discord.Embed(
+                title="Invalid Input",
+                description="Please enter a valid numeric role ID.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception as e:
+            embed = discord.Embed(
+                title="Error",
+                description="An error occurred while processing your request.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # BUTTONS
@@ -829,10 +1023,9 @@ class EmojiRoleSelectMenu(discord.ui.Select):
 class EmojiPrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="◀️", custom_id="emoji_leaderboard_prev")
+                         label="⬅️", custom_id="emoji_leaderboard_prev")
 
     async def callback(self, interaction: discord.Interaction):
-
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
             return
@@ -849,10 +1042,9 @@ class EmojiPrevButton(discord.ui.Button):
 class EmojiNextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="▶️", custom_id="emoji_leaderboard_next")
+                         label="➡️", custom_id="emoji_leaderboard_next")
 
     async def callback(self, interaction: discord.Interaction):
-
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
             return
@@ -999,12 +1191,9 @@ class EmojiLeaderboardView(discord.ui.View):
         self.message = None
 
     async def _update_buttons(self, total_pages: int = 1):
-
         self.clear_items()
 
         self.add_item(UsageTypeSelectMenu(self.usage_type))
-
-        self.add_item(EmojiRoleSelectMenu(self.guild, self.selected_role_id))
 
         prev_button = EmojiPrevButton()
         next_button = EmojiNextButton()
@@ -1019,6 +1208,8 @@ class EmojiLeaderboardView(discord.ui.View):
         self.add_item(page_indicator)
         self.add_item(next_button)
 
+        self.add_item(RoleInputButton())
+
         self.add_item(RefreshButton())
 
         self.add_item(TimeSettingsButton())
@@ -1030,6 +1221,22 @@ class EmojiLeaderboardView(discord.ui.View):
             self.add_item(DaysCustomButton(self.days_back))
 
     async def generate_image(self):
+        # Get role name from database
+        role_name = None
+        if self.selected_role_id and self.selected_role_id != "none":
+            db_stats = self.cog.bot.get_cog('DatabaseStats')
+            if db_stats and db_stats.pool:
+                try:
+                    async with db_stats.pool.acquire() as conn:
+                        row = await conn.fetchrow("""
+                            SELECT role_name FROM current_role_members 
+                            WHERE role_id = $1 AND guild_id = $2 
+                            LIMIT 1
+                        """, int(self.selected_role_id), self.guild.id)
+                        if row:
+                            role_name = row['role_name']
+                except:
+                    pass
 
         emoji_data = await self.cog.get_emoji_stats(self.guild, self.days_back, self.usage_type, self.selected_role_id)
 
@@ -1046,13 +1253,13 @@ class EmojiLeaderboardView(discord.ui.View):
             leaderboard_type='server',
             days_back=self.days_back,
             role_id=self.selected_role_id,
+            role_name=role_name,
             usage_type=self.usage_type,
             page=self.page,
             total_pages=total_pages
         ), total_pages
 
     async def update_message(self, interaction: discord.Interaction = None):
-
         try:
             img_bytes, total_pages = await self.generate_image()
             await self._update_buttons(total_pages)
@@ -1076,7 +1283,7 @@ class EmojiLeaderboardView(discord.ui.View):
 # EMOJI USER LEADERBOARD VIEW
 
 class UserEmojiLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int = 14, page: int = 0, selected_role_id: str = None, usage_type: str = 'all'):
+    def __init__(self, cog_instance, guild: discord.Guild, days_back: int = 14, page: int = 0, selected_role_id: str = None, usage_type: str = 'all', target_location=None):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
@@ -1084,16 +1291,14 @@ class UserEmojiLeaderboardView(discord.ui.View):
         self.page = page
         self.selected_role_id = selected_role_id
         self.usage_type = usage_type
+        self.target_location = target_location
         self.show_time_buttons = False
         self.message = None
 
     async def _update_buttons(self, total_pages: int = 1):
-
         self.clear_items()
 
         self.add_item(UsageTypeSelectMenu(self.usage_type))
-
-        self.add_item(EmojiRoleSelectMenu(self.guild, self.selected_role_id))
 
         prev_button = EmojiPrevButton()
         next_button = EmojiNextButton()
@@ -1108,6 +1313,8 @@ class UserEmojiLeaderboardView(discord.ui.View):
         self.add_item(page_indicator)
         self.add_item(next_button)
 
+        self.add_item(RoleInputButton())
+
         self.add_item(RefreshButton())
 
         self.add_item(TimeSettingsButton())
@@ -1119,8 +1326,38 @@ class UserEmojiLeaderboardView(discord.ui.View):
             self.add_item(DaysCustomButton(self.days_back))
 
     async def generate_image(self):
+        # Get role name from database
+        role_name = None
+        if self.selected_role_id and self.selected_role_id != "none":
+            db_stats = self.cog.bot.get_cog('DatabaseStats')
+            if db_stats and db_stats.pool:
+                try:
+                    async with db_stats.pool.acquire() as conn:
+                        row = await conn.fetchrow("""
+                            SELECT role_name FROM current_role_members 
+                            WHERE role_id = $1 AND guild_id = $2 
+                            LIMIT 1
+                        """, int(self.selected_role_id), self.guild.id)
+                        if row:
+                            role_name = row['role_name']
+                except:
+                    pass
 
-        user_data = await self.cog.get_user_emoji_stats(self.guild, self.days_back, self.usage_type, self.selected_role_id)
+        if self.target_location:
+            if isinstance(self.target_location, discord.TextChannel):
+                user_data = await self.cog.get_user_emoji_stats(
+                    self.guild, self.days_back, self.usage_type, self.selected_role_id,
+                    channel_id=self.target_location.id)
+            elif isinstance(self.target_location, discord.CategoryChannel):
+                user_data = await self.cog.get_user_emoji_stats(
+                    self.guild, self.days_back, self.usage_type, self.selected_role_id,
+                    category_id=self.target_location.id)
+            else:
+                user_data = await self.cog.get_user_emoji_stats(
+                    self.guild, self.days_back, self.usage_type, self.selected_role_id)
+        else:
+            user_data = await self.cog.get_user_emoji_stats(
+                self.guild, self.days_back, self.usage_type, self.selected_role_id)
 
         total_users = len(user_data)
         total_pages = max(
@@ -1134,13 +1371,15 @@ class UserEmojiLeaderboardView(discord.ui.View):
             user_data=user_data,
             days_back=self.days_back,
             role_id=self.selected_role_id,
+            role_name=role_name,
             usage_type=self.usage_type,
             page=self.page,
-            total_pages=total_pages
+            total_pages=total_pages,
+            target_location=self.target_location,
+            cog=self.cog
         ), total_pages
 
     async def update_message(self, interaction: discord.Interaction = None):
-
         try:
             img_bytes, total_pages = await self.generate_image()
             await self._update_buttons(total_pages)
@@ -1177,12 +1416,9 @@ class ChannelEmojiLeaderboardView(discord.ui.View):
         self.message = None
 
     async def _update_buttons(self, total_pages: int = 1):
-
         self.clear_items()
 
         self.add_item(UsageTypeSelectMenu(self.usage_type))
-
-        self.add_item(EmojiRoleSelectMenu(self.guild, self.selected_role_id))
 
         prev_button = EmojiPrevButton()
         next_button = EmojiNextButton()
@@ -1197,6 +1433,8 @@ class ChannelEmojiLeaderboardView(discord.ui.View):
         self.add_item(page_indicator)
         self.add_item(next_button)
 
+        self.add_item(RoleInputButton())
+
         self.add_item(RefreshButton())
 
         self.add_item(TimeSettingsButton())
@@ -1208,6 +1446,22 @@ class ChannelEmojiLeaderboardView(discord.ui.View):
             self.add_item(DaysCustomButton(self.days_back))
 
     async def generate_image(self):
+        # Get role name from database
+        role_name = None
+        if self.selected_role_id and self.selected_role_id != "none":
+            db_stats = self.cog.bot.get_cog('DatabaseStats')
+            if db_stats and db_stats.pool:
+                try:
+                    async with db_stats.pool.acquire() as conn:
+                        row = await conn.fetchrow("""
+                            SELECT role_name FROM current_role_members 
+                            WHERE role_id = $1 AND guild_id = $2 
+                            LIMIT 1
+                        """, int(self.selected_role_id), self.guild.id)
+                        if row:
+                            role_name = row['role_name']
+                except:
+                    pass
 
         emoji_data = await self.cog.get_channel_emoji_stats(self.guild, self.channel.id, self.days_back, self.usage_type, self.selected_role_id)
 
@@ -1224,6 +1478,7 @@ class ChannelEmojiLeaderboardView(discord.ui.View):
             leaderboard_type='channel',
             days_back=self.days_back,
             role_id=self.selected_role_id,
+            role_name=role_name,
             usage_type=self.usage_type,
             page=self.page,
             total_pages=total_pages,
@@ -1231,7 +1486,6 @@ class ChannelEmojiLeaderboardView(discord.ui.View):
         ), total_pages
 
     async def update_message(self, interaction: discord.Interaction = None):
-
         try:
             img_bytes, total_pages = await self.generate_image()
             await self._update_buttons(total_pages)
@@ -1268,12 +1522,9 @@ class CategoryEmojiLeaderboardView(discord.ui.View):
         self.message = None
 
     async def _update_buttons(self, total_pages: int = 1):
-
         self.clear_items()
 
         self.add_item(UsageTypeSelectMenu(self.usage_type))
-
-        self.add_item(EmojiRoleSelectMenu(self.guild, self.selected_role_id))
 
         prev_button = EmojiPrevButton()
         next_button = EmojiNextButton()
@@ -1288,6 +1539,8 @@ class CategoryEmojiLeaderboardView(discord.ui.View):
         self.add_item(page_indicator)
         self.add_item(next_button)
 
+        self.add_item(RoleInputButton())
+
         self.add_item(RefreshButton())
 
         self.add_item(TimeSettingsButton())
@@ -1299,6 +1552,22 @@ class CategoryEmojiLeaderboardView(discord.ui.View):
             self.add_item(DaysCustomButton(self.days_back))
 
     async def generate_image(self):
+        # Get role name from database
+        role_name = None
+        if self.selected_role_id and self.selected_role_id != "none":
+            db_stats = self.cog.bot.get_cog('DatabaseStats')
+            if db_stats and db_stats.pool:
+                try:
+                    async with db_stats.pool.acquire() as conn:
+                        row = await conn.fetchrow("""
+                            SELECT role_name FROM current_role_members 
+                            WHERE role_id = $1 AND guild_id = $2 
+                            LIMIT 1
+                        """, int(self.selected_role_id), self.guild.id)
+                        if row:
+                            role_name = row['role_name']
+                except:
+                    pass
 
         emoji_data = await self.cog.get_category_emoji_stats(self.guild, self.category.id, self.days_back, self.usage_type, self.selected_role_id)
 
@@ -1315,13 +1584,14 @@ class CategoryEmojiLeaderboardView(discord.ui.View):
             leaderboard_type='category',
             days_back=self.days_back,
             role_id=self.selected_role_id,
+            role_name=role_name,
             usage_type=self.usage_type,
             page=self.page,
-            total_pages=total_pages
+            total_pages=total_pages,
+            category=self.category
         ), total_pages
 
     async def update_message(self, interaction: discord.Interaction = None):
-
         try:
             img_bytes, total_pages = await self.generate_image()
             await self._update_buttons(total_pages)
@@ -1343,23 +1613,188 @@ class CategoryEmojiLeaderboardView(discord.ui.View):
                 pass
 
 
-# QUERY FUNCTIONS
+# USER SPECIFIC EMOJI LEADERBOARD VIEW
+class UserSpecificEmojiLeaderboardView(discord.ui.View):
+    def __init__(self, cog_instance, guild: discord.Guild, target_user: discord.Member,
+                 days_back: int = 14, page: int = 0, selected_role_id: str = None,
+                 usage_type: str = 'all', target_location=None):
+        super().__init__(timeout=600)
+        self.cog = cog_instance
+        self.guild = guild
+        self.target_user = target_user
+        self.days_back = days_back
+        self.page = page
+        self.selected_role_id = selected_role_id
+        self.usage_type = usage_type
+        self.target_location = target_location
+        self.show_time_buttons = False
+        self.message = None
+
+    async def _update_buttons(self, total_pages: int = 1):
+        self.clear_items()
+
+        self.add_item(UsageTypeSelectMenu(self.usage_type))
+
+        prev_button = EmojiPrevButton()
+        next_button = EmojiNextButton()
+        page_indicator = EmojiPageIndicator()
+
+        prev_button.disabled = (self.page == 0 or total_pages <= 1)
+        next_button.disabled = (
+            self.page >= total_pages - 1 or total_pages <= 1)
+        page_indicator.label = f"Page {self.page + 1}/{total_pages}"
+
+        self.add_item(prev_button)
+        self.add_item(page_indicator)
+        self.add_item(next_button)
+
+        self.add_item(RoleInputButton())
+
+        self.add_item(RefreshButton())
+
+        self.add_item(TimeSettingsButton())
+
+        if self.show_time_buttons:
+            self.add_item(Days7Button(self.days_back))
+            self.add_item(Days14Button(self.days_back))
+            self.add_item(Days30Button(self.days_back))
+            self.add_item(DaysCustomButton(self.days_back))
+
+    async def generate_image(self):
+        # Get role name from database
+        role_name = None
+        if self.selected_role_id and self.selected_role_id != "none":
+            db_stats = self.cog.bot.get_cog('DatabaseStats')
+            if db_stats and db_stats.pool:
+                try:
+                    async with db_stats.pool.acquire() as conn:
+                        row = await conn.fetchrow("""
+                            SELECT role_name FROM current_role_members 
+                            WHERE role_id = $1 AND guild_id = $2 
+                            LIMIT 1
+                        """, int(self.selected_role_id), self.guild.id)
+                        if row:
+                            role_name = row['role_name']
+                except:
+                    pass
+
+        if self.target_location:
+            if isinstance(self.target_location, discord.TextChannel):
+                emoji_data = await self.cog.get_user_top_emojis(
+                    self.guild, self.target_user.id,
+                    self.days_back, self.usage_type, self.selected_role_id,
+                    channel_id=self.target_location.id
+                )
+            elif isinstance(self.target_location, discord.CategoryChannel):
+                emoji_data = await self.cog.get_user_top_emojis(
+                    self.guild, self.target_user.id,
+                    self.days_back, self.usage_type, self.selected_role_id,
+                    category_id=self.target_location.id
+                )
+            else:
+                emoji_data = await self.cog.get_user_top_emojis(
+                    self.guild, self.target_user.id,
+                    self.days_back, self.usage_type, self.selected_role_id
+                )
+        else:
+            emoji_data = await self.cog.get_user_top_emojis(
+                self.guild, self.target_user.id,
+                self.days_back, self.usage_type, self.selected_role_id
+            )
+
+        total_emojis = len(emoji_data)
+        total_pages = max(
+            1, (total_emojis + EmojiConfig.EMOJIS_PER_PAGE -
+                1) // EmojiConfig.EMOJIS_PER_PAGE
+        )
+
+        if self.page >= total_pages:
+            self.page = max(0, total_pages - 1)
+
+        img_bytes = await generate_emoji_leaderboard_image(
+            guild=self.guild,
+            leaderboard_data=emoji_data,
+            leaderboard_type='server',
+            days_back=self.days_back,
+            role_id=self.selected_role_id,
+            role_name=role_name,
+            target_member=self.target_user,
+            usage_type=self.usage_type,
+            page=self.page,
+            total_pages=total_pages,
+            target_location=self.target_location
+        )
+
+        return img_bytes, total_pages
+
+    async def update_message(self, interaction: discord.Interaction = None):
+        try:
+            img_bytes, total_pages = await self.generate_image()
+            await self._update_buttons(total_pages)
+
+            filename = "user_specific_emoji_leaderboard.png"
+            file = discord.File(img_bytes, filename=filename)
+
+            if interaction:
+                await interaction.edit_original_response(attachments=[file], view=self)
+            elif self.message:
+                await self.message.edit(attachments=[file], view=self)
+
+        except Exception as e:
+            print(
+                f"Error updating user-specific emoji leaderboard message: {e}")
+            try:
+                if interaction:
+                    await interaction.followup.send("❌ An error occurred while updating the leaderboard.", ephemeral=True)
+            except:
+                pass
+
+
+# QUERY FUNCTIONS - UPDATED TO USE HOURLY AGGREGATED TABLES
 
 class EmojiLeaderboard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.initialized = False
+        self.rate_limiter = get_rate_limiter()
+        self.user_cache = {}
+        self.clean_cache_task.start()
+
+    def cog_unload(self):
+        self.clean_cache_task.cancel()
+
+    @tasks.loop(hours=1)
+    async def clean_cache_task(self):
+        self.user_cache.clear()
+        gc.collect()
+
+    @rate_limited(RateLimitType.API, timeout=1.0)
+    async def _fetch_user_with_rate_limit(self, user_id: int):
+        """Fetch user globally with rate limiting. Only used as fallback."""
+        if user_id in self.user_cache:
+            return self.user_cache[user_id]
+
+        try:
+            user = await self.bot.fetch_user(user_id)
+            self.user_cache[user_id] = user
+            return user
+        except discord.NotFound:
+            return None
+        except discord.HTTPException as e:
+            print(f"Failed to fetch user {user_id}: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error fetching user {user_id}: {e}")
+            return None
 
     async def cog_load(self):
-
         self.initialized = True
 
     async def get_database_cog(self):
-
         return self.bot.get_cog('DatabaseStats')
 
     async def get_emoji_stats(self, guild: discord.Guild, days_back: int, usage_type: str = 'all', role_id: str = None):
-
+        """Server-wide emoji stats using emoji_usage_hourly table"""
         db_cog = await self.get_database_cog()
         if not db_cog:
             return []
@@ -1384,11 +1819,9 @@ class EmojiLeaderboard(commands.Cog):
 
         formatted_data = []
         for emoji in emoji_data:
-
             total_count = emoji['usage_count']
 
             if usage_type == 'all':
-
                 message_count = total_count // 2
                 reaction_count = total_count - message_count
             elif usage_type == 'message':
@@ -1410,8 +1843,8 @@ class EmojiLeaderboard(commands.Cog):
 
         return formatted_data
 
-    async def get_user_emoji_stats(self, guild: discord.Guild, days_back: int, usage_type: str = 'all', role_id: str = None):
-
+    async def get_user_emoji_stats(self, guild: discord.Guild, days_back: int, usage_type: str = 'all', role_id: str = None, channel_id: int = None, category_id: int = None):
+        """User emoji leaderboard using emoji_usage_hourly table"""
         db_cog = await self.get_database_cog()
         if not db_cog:
             return []
@@ -1431,7 +1864,9 @@ class EmojiLeaderboard(commands.Cog):
             role_filter_ids=role_filter_ids,
             start_time=start_time,
             end_time=end_time,
-            usage_type=usage_type if usage_type != 'all' else None
+            usage_type=usage_type if usage_type != 'all' else None,
+            channel_id=channel_id,
+            category_id=category_id
         )
 
         formatted_data = []
@@ -1461,7 +1896,7 @@ class EmojiLeaderboard(commands.Cog):
         return formatted_data
 
     async def get_channel_emoji_stats(self, guild: discord.Guild, channel_id: int, days_back: int, usage_type: str = 'all', role_id: str = None):
-
+        """Channel emoji stats using emoji_usage_hourly table"""
         db_cog = await self.get_database_cog()
         if not db_cog:
             return []
@@ -1512,7 +1947,7 @@ class EmojiLeaderboard(commands.Cog):
         return formatted_data
 
     async def get_category_emoji_stats(self, guild: discord.Guild, category_id: int, days_back: int, usage_type: str = 'all', role_id: str = None):
-
+        """Category emoji stats using emoji_usage_hourly table"""
         db_cog = await self.get_database_cog()
         if not db_cog:
             return []
@@ -1562,7 +1997,329 @@ class EmojiLeaderboard(commands.Cog):
 
         return formatted_data
 
-    # COMMANDS
+    async def get_user_top_emojis(self, guild: discord.Guild, user_id: int, days_back: int, usage_type: str = 'all', role_id: str = None, channel_id: int = None, category_id: int = None):
+        """User's top emojis using emoji_usage_hourly table"""
+        db_cog = await self.get_database_cog()
+        if not db_cog:
+            return []
+
+        role_filter_ids = None
+        if role_id and role_id != "none":
+            role = guild.get_role(int(role_id))
+            if role:
+                role_filter_ids = [role.id]
+
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(days=days_back)
+
+        emoji_data = await db_cog.q_user_top_emojis(
+            guild_id=guild.id,
+            user_id=user_id,
+            limit=100,
+            role_filter_ids=role_filter_ids,
+            start_time=start_time,
+            end_time=end_time,
+            usage_type=usage_type if usage_type != 'all' else None,
+            channel_id=channel_id,
+            category_id=category_id
+        )
+
+        formatted_data = []
+        for emoji in emoji_data:
+            total_count = emoji['usage_count']
+
+            if usage_type == 'all':
+                message_count = total_count // 2
+                reaction_count = total_count - message_count
+            elif usage_type == 'message':
+                message_count = total_count
+                reaction_count = 0
+            elif usage_type == 'reaction':
+                message_count = 0
+                reaction_count = total_count
+            else:
+                message_count = 0
+                reaction_count = 0
+
+            formatted_data.append((
+                emoji['emoji_str'],
+                total_count,
+                message_count,
+                reaction_count
+            ))
+
+        return formatted_data
+
+    # =========================================================
+    # INTERNAL FUNCTION FOR PREFIX COMMANDS
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def _handle_prefix_command(self, ctx, command_type, target_id=None, target_type=None, user_target=None):
+        """Internal function to handle all prefix commands"""
+        try:
+            guild = ctx.guild
+            if guild is None:
+                await ctx.send("❌ This command can only be used in a server.", delete_after=5)
+                return
+
+            # Check permission - use await here
+            if not await check_prefix_emoji_permission(ctx, user_target):
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="Sorry! You don't have permission to use this command.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed, delete_after=10)
+                return
+
+            # Try to delete the command message
+            try:
+                await ctx.message.delete()
+            except:
+                pass
+
+            # Default parameters
+            days_back = EmojiConfig.DEFAULT_DAYS_BACK
+            selected_role_id = "none"
+            usage_type = "all"
+
+            # Handle different command types
+            if command_type == "server":
+                # Server-wide emoji leaderboard
+                view = EmojiLeaderboardView(
+                    self, guild, days_back=days_back,
+                    selected_role_id=selected_role_id, usage_type=usage_type
+                )
+
+            elif command_type == "channel":
+                # Channel-specific emoji leaderboard
+                if target_id:
+                    channel = guild.get_channel(int(target_id))
+                else:
+                    channel = ctx.channel
+
+                if not isinstance(channel, discord.TextChannel):
+                    await ctx.send("❌ Please specify a valid text channel or use this command in a text channel.", delete_after=5)
+                    return
+
+                view = ChannelEmojiLeaderboardView(
+                    self, guild, channel, days_back=days_back,
+                    selected_role_id=selected_role_id, usage_type=usage_type
+                )
+
+            elif command_type == "category":
+                # Category-specific emoji leaderboard
+                if target_id:
+                    category = guild.get_channel(int(target_id))
+                else:
+                    # Try to get category from current channel
+                    if hasattr(ctx.channel, 'category') and ctx.channel.category:
+                        category = ctx.channel.category
+                    else:
+                        await ctx.send("❌ Please specify a category ID or use this command in a channel with a category.", delete_after=5)
+                        return
+
+                if not isinstance(category, discord.CategoryChannel):
+                    await ctx.send("❌ Please specify a valid category.", delete_after=5)
+                    return
+
+                view = CategoryEmojiLeaderboardView(
+                    self, guild, category, days_back=days_back,
+                    selected_role_id=selected_role_id, usage_type=usage_type
+                )
+
+            elif command_type == "user_stats":
+                # User-specific emoji stats
+                if user_target:
+                    target_user = user_target
+                else:
+                    target_user = ctx.author
+
+                if target_type == "channel" and target_id:
+                    target_location = guild.get_channel(int(target_id))
+                elif target_type == "category" and target_id:
+                    target_location = guild.get_channel(int(target_id))
+                else:
+                    target_location = None
+
+                view = UserSpecificEmojiLeaderboardView(
+                    self, guild, target_user, days_back=days_back,
+                    selected_role_id=selected_role_id, usage_type=usage_type,
+                    target_location=target_location
+                )
+
+            elif command_type == "user_leaderboard":
+                # User emoji leaderboard
+                if target_type == "channel" and target_id:
+                    target_location = guild.get_channel(int(target_id))
+                elif target_type == "category" and target_id:
+                    target_location = guild.get_channel(int(target_id))
+                else:
+                    target_location = None
+
+                view = UserEmojiLeaderboardView(
+                    self, guild, days_back=days_back,
+                    selected_role_id=selected_role_id, usage_type=usage_type,
+                    target_location=target_location
+                )
+            else:
+                await ctx.send("❌ Invalid command type.", delete_after=5)
+                return
+
+            # Generate and send the image
+            img_bytes, total_pages = await view.generate_image()
+            file = discord.File(img_bytes, filename="emoji_leaderboard.png")
+            msg = await ctx.send(file=file, view=view)
+            view.message = msg
+
+            # Update buttons
+            await view._update_buttons(total_pages)
+            await msg.edit(view=view)
+
+        except Exception as e:
+            print(f"Error in _handle_prefix_command: {e}")
+            await ctx.send("❌ An error occurred while processing the command.", delete_after=10)
+
+    # =========================================================
+    # SHORTCUT COMMANDS
+    # =========================================================
+
+    @commands.command(name="els")
+    async def emoji_leaderboard_server_shortcut(self, ctx):
+        """Shortcut for emoji leaderboard server"""
+        await self._handle_prefix_command(ctx, "server")
+
+    @commands.command(name="elch")
+    async def emoji_leaderboard_channel_shortcut(self, ctx, channel_id: str = None):
+        """Shortcut for emoji leaderboard channel"""
+        await self._handle_prefix_command(ctx, "channel", target_id=channel_id)
+
+    @commands.command(name="elca")
+    async def emoji_leaderboard_category_shortcut(self, ctx, category_id: str = None):
+        """Shortcut for emoji leaderboard category"""
+        await self._handle_prefix_command(ctx, "category", target_id=category_id)
+
+    @commands.command(name="eu")
+    async def emoji_user_stats_shortcut(self, ctx, user: discord.Member = None, target_id: str = None):
+        """Shortcut for emoji user stats"""
+        target_type = None
+        if target_id:
+            # Try to determine if it's a channel or category
+            guild = ctx.guild
+            target_channel = guild.get_channel(
+                int(target_id)) if target_id.isdigit() else None
+            if target_channel:
+                if isinstance(target_channel, discord.TextChannel):
+                    target_type = "channel"
+                elif isinstance(target_channel, discord.CategoryChannel):
+                    target_type = "category"
+
+        await self._handle_prefix_command(ctx, "user_stats", target_id=target_id, target_type=target_type, user_target=user)
+
+    @commands.command(name="eul")
+    async def emoji_user_leaderboard_shortcut(self, ctx, target_id: str = None):
+        """Shortcut for emoji user leaderboard"""
+        target_type = None
+        if target_id:
+            # Try to determine if it's a channel or category
+            guild = ctx.guild
+            target_channel = guild.get_channel(
+                int(target_id)) if target_id.isdigit() else None
+            if target_channel:
+                if isinstance(target_channel, discord.TextChannel):
+                    target_type = "channel"
+                elif isinstance(target_channel, discord.CategoryChannel):
+                    target_type = "category"
+
+        await self._handle_prefix_command(ctx, "user_leaderboard", target_id=target_id, target_type=target_type)
+
+    # =========================================================
+    # PREFIX COMMAND GROUPS
+    # =========================================================
+
+    @commands.group(name="emoji", invoke_without_command=True)
+    async def emoji_group_prefix(self, ctx):
+        """Emoji statistics and leaderboard commands"""
+        await ctx.send("Available commands:\n"
+                       "- `emoji leaderboard server` - Show most used emojis in the server\n"
+                       "- `emoji leaderboard channel [channel_id]` - Show most used emojis in a channel\n"
+                       "- `emoji leaderboard category [category_id]` - Show most used emojis in a category\n"
+                       "- `emoji user stats [user] [target_id]` - Show top emojis used by a user\n"
+                       "- `emoji user leaderboard [target_id]` - Show top emoji users\n\n"
+                       "Shortcuts:\n"
+                       "- `els` - Emoji leaderboard server\n"
+                       "- `elch [channel_id]` - Emoji leaderboard channel\n"
+                       "- `elca [category_id]` - Emoji leaderboard category\n"
+                       "- `eu [user] [target_id]` - Emoji user stats\n"
+                       "- `eul [target_id]` - Emoji user leaderboard")
+
+    @emoji_group_prefix.group(name="leaderboard", invoke_without_command=True)
+    async def emoji_leaderboard_group_prefix(self, ctx):
+        """Emoji leaderboard commands"""
+        await ctx.send("Available leaderboard commands:\n"
+                       "- `emoji leaderboard server` - Server-wide emoji leaderboard\n"
+                       "- `emoji leaderboard channel [channel_id]` - Channel-specific emoji leaderboard\n"
+                       "- `emoji leaderboard category [category_id]` - Category-specific emoji leaderboard")
+
+    @emoji_leaderboard_group_prefix.command(name="server")
+    async def emoji_leaderboard_server_prefix(self, ctx):
+        """Server-wide emoji leaderboard via prefix command"""
+        await self._handle_prefix_command(ctx, "server")
+
+    @emoji_leaderboard_group_prefix.command(name="channel")
+    async def emoji_leaderboard_channel_prefix(self, ctx, channel_id: str = None):
+        """Channel-specific emoji leaderboard via prefix command"""
+        await self._handle_prefix_command(ctx, "channel", target_id=channel_id)
+
+    @emoji_leaderboard_group_prefix.command(name="category")
+    async def emoji_leaderboard_category_prefix(self, ctx, category_id: str = None):
+        """Category-specific emoji leaderboard via prefix command"""
+        await self._handle_prefix_command(ctx, "category", target_id=category_id)
+
+    @emoji_group_prefix.group(name="user", invoke_without_command=True)
+    async def emoji_user_group_prefix(self, ctx):
+        """Emoji user statistics commands"""
+        await ctx.send("Available user commands:\n"
+                       "- `emoji user stats [user] [target_id]` - Show top emojis used by a user\n"
+                       "- `emoji user leaderboard [target_id]` - Show top emoji users")
+
+    @emoji_user_group_prefix.command(name="stats")
+    async def emoji_user_stats_prefix(self, ctx, user: discord.Member = None, target_id: str = None):
+        """User-specific emoji stats via prefix command"""
+        target_type = None
+        if target_id:
+            # Try to determine if it's a channel or category
+            guild = ctx.guild
+            target_channel = guild.get_channel(
+                int(target_id)) if target_id.isdigit() else None
+            if target_channel:
+                if isinstance(target_channel, discord.TextChannel):
+                    target_type = "channel"
+                elif isinstance(target_channel, discord.CategoryChannel):
+                    target_type = "category"
+
+        await self._handle_prefix_command(ctx, "user_stats", target_id=target_id, target_type=target_type, user_target=user)
+
+    @emoji_user_group_prefix.command(name="leaderboard")
+    async def emoji_user_leaderboard_prefix(self, ctx, target_id: str = None):
+        """User emoji leaderboard via prefix command"""
+        target_type = None
+        if target_id:
+            # Try to determine if it's a channel or category
+            guild = ctx.guild
+            target_channel = guild.get_channel(
+                int(target_id)) if target_id.isdigit() else None
+            if target_channel:
+                if isinstance(target_channel, discord.TextChannel):
+                    target_type = "channel"
+                elif isinstance(target_channel, discord.CategoryChannel):
+                    target_type = "category"
+
+        await self._handle_prefix_command(ctx, "user_leaderboard", target_id=target_id, target_type=target_type)
+
+    # =========================================================
+    # SLASH COMMANDS
+    # =========================================================
 
     emoji_group = app_commands.Group(
         name="emoji", description="Emoji statistics and leaderboard commands")
@@ -1574,12 +2331,17 @@ class EmojiLeaderboard(commands.Cog):
         name="category", description="Category-specific emoji statistics commands", parent=emoji_group)
 
     @emoji_group.command(name="leaderboard", description="Show most used emojis in the server")
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def emoji_leaderboard(self, interaction: discord.Interaction):
-
+        """Server-wide emoji leaderboard - NO TARGET PARAMETER HERE"""
         try:
             guild = interaction.guild
             if guild is None:
                 await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+                return
+
+            # Check permission
+            if not await check_emoji_permission(interaction):
                 return
 
             await interaction.response.defer()
@@ -1603,18 +2365,36 @@ class EmojiLeaderboard(commands.Cog):
             await interaction.followup.send("❌ An error occurred while retrieving emoji stats.")
 
     @emoji_user_group.command(name="leaderboard", description="Show top emoji users in the server")
-    async def emoji_user_leaderboard(self, interaction: discord.Interaction):
-
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    @app_commands.describe(
+        target="Filter by specific channel or category (optional)"
+    )
+    async def emoji_user_leaderboard(self, interaction: discord.Interaction,
+                                     target: discord.abc.GuildChannel = None):
         try:
             guild = interaction.guild
             if guild is None:
                 await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
                 return
 
+            # Check permission
+            if not await check_emoji_permission(interaction):
+                return
+
+            # Validate target type
+            target_location = None
+            if target:
+                if isinstance(target, (discord.TextChannel, discord.CategoryChannel)):
+                    target_location = target
+                else:
+                    await interaction.response.send_message("Please select either a text channel or a category.", ephemeral=True)
+                    return
+
             await interaction.response.defer()
 
             view = UserEmojiLeaderboardView(
-                self, guild, days_back=EmojiConfig.DEFAULT_DAYS_BACK)
+                self, guild, days_back=EmojiConfig.DEFAULT_DAYS_BACK,
+                target_location=target_location)
 
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(
@@ -1633,13 +2413,17 @@ class EmojiLeaderboard(commands.Cog):
             await interaction.followup.send("❌ An error occurred while retrieving user emoji stats.")
 
     @emoji_channel_group.command(name="leaderboard", description="Show most used emojis in a specific channel")
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     @app_commands.describe(channel="Select a text channel")
     async def emoji_channel_leaderboard(self, interaction: discord.Interaction, channel: discord.TextChannel):
-
         try:
             guild = interaction.guild
             if guild is None:
                 await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+                return
+
+            # Check permission
+            if not await check_emoji_permission(interaction):
                 return
 
             await interaction.response.defer()
@@ -1664,13 +2448,17 @@ class EmojiLeaderboard(commands.Cog):
             await interaction.followup.send("❌ An error occurred while retrieving channel emoji stats.")
 
     @emoji_category_group.command(name="leaderboard", description="Show most used emojis in a specific category")
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     @app_commands.describe(category="Select a category")
     async def emoji_category_leaderboard(self, interaction: discord.Interaction, category: discord.CategoryChannel):
-
         try:
             guild = interaction.guild
             if guild is None:
                 await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+                return
+
+            # Check permission
+            if not await check_emoji_permission(interaction):
                 return
 
             await interaction.response.defer()
@@ -1694,9 +2482,57 @@ class EmojiLeaderboard(commands.Cog):
             print(f"Error in emoji_category_leaderboard: {e}")
             await interaction.followup.send("❌ An error occurred while retrieving category emoji stats.")
 
+    @emoji_user_group.command(name="stats", description="Show top emojis used by a specific user")
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    @app_commands.describe(
+        user="The user to show emoji stats for",
+        target="Filter by specific channel or category (optional)"
+    )
+    async def emoji_user_stats(self, interaction: discord.Interaction,
+                               user: discord.Member,
+                               target: discord.abc.GuildChannel = None):
+        try:
+            guild = interaction.guild
+            if guild is None:
+                await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+                return
+
+            # Check permission with target user
+            if not await check_emoji_permission(interaction, target_user=user):
+                return
+
+            # Validate target type
+            target_location = None
+            if target:
+                if isinstance(target, (discord.TextChannel, discord.CategoryChannel)):
+                    target_location = target
+                else:
+                    await interaction.response.send_message("Please select either a text channel or a category.", ephemeral=True)
+                    return
+
+            await interaction.response.defer()
+
+            view = UserSpecificEmojiLeaderboardView(
+                self, guild, user, days_back=EmojiConfig.DEFAULT_DAYS_BACK,
+                target_location=target_location)
+
+            img_bytes, total_pages = await view.generate_image()
+            file = discord.File(img_bytes, filename="user_emoji_stats.png")
+
+            await interaction.followup.send(file=file, view=view)
+
+            message = await interaction.original_response()
+            view.message = message
+
+            await view._update_buttons(total_pages)
+            await message.edit(view=view)
+
+        except Exception as e:
+            print(f"Error in emoji_user_stats: {e}")
+            await interaction.followup.send("❌ An error occurred while retrieving user's emoji stats.")
+
 
 # SETUP
 
 async def setup(bot):
-
     await bot.add_cog(EmojiLeaderboard(bot))

@@ -13,10 +13,23 @@ import traceback
 import time
 import logging
 from pathlib import Path
+from zoneinfo import ZoneInfo
+import datetime as dt
+from datetime import datetime, timedelta, date, timezone
+from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
+import gc
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_aware(dt):
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 # TEXT CENTERING
@@ -72,6 +85,15 @@ def format_voice_hours_per_hour(voice_hours_per_hour):
         return f"{time_str}"
 
 
+# UNICODE NORMALIZATION
+
+def normalize_text(text):
+    import unicodedata
+    normalized = unicodedata.normalize('NFKD', str(text))
+    ascii_only = normalized.encode('ascii', 'ignore').decode('ascii')
+    return ascii_only if ascii_only else text
+
+
 # TIME MODAL
 
 class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
@@ -97,6 +119,12 @@ class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 return
 
             await interaction.response.defer()
+
+            # Check if user has permission to view this member's stats
+            permission_error = await self.cog.check_user_permission(interaction.user, self.member, self.guild)
+            if permission_error:
+                await interaction.followup.send(embed=permission_error, ephemeral=True)
+                return
 
             blacklist_error = await self.cog.check_blacklist_and_get_error(self.guild, self.member)
             if blacklist_error:
@@ -224,6 +252,16 @@ class UserStatsView(discord.ui.View):
                 self.current_days = days
                 self.show_time_buttons = False
 
+            # Check if user has permission to view this member's stats
+            permission_error = await self.cog.check_user_permission(interaction.user, self.member, self.guild)
+            if permission_error:
+                await interaction.followup.send(embed=permission_error, ephemeral=True)
+                try:
+                    await interaction.message.delete()
+                except:
+                    pass
+                return
+
             blacklist_error = await self.cog.check_blacklist_and_get_error(self.guild, self.member)
             if blacklist_error:
                 await interaction.followup.send(blacklist_error, ephemeral=True)
@@ -251,11 +289,82 @@ class UserStats(commands.Cog):
         self.bot = bot
         self.active_user_stats_sessions = {}
         self.emoji_source = AppleEmojiSource
+        self.rate_limiter = get_rate_limiter()
 
     user_group = app_commands.Group(
         name="user",
         description="User statistics commands"
     )
+
+    # PERMISSION CHECKING
+
+    async def check_user_permission(self, user: discord.Member, target_member: discord.Member, guild: discord.Guild) -> discord.Embed:
+        """
+        Check if user has permission to view target member's stats
+        Returns None if allowed, error embed if not allowed
+        """
+        try:
+            # Get settings cog
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                # If settings cog not available, use default permissions
+                return None
+
+            # Get guild settings
+            settings = await settings_cog.get_guild_settings(guild.id)
+            permission_level = settings.get('permission_level', 'Default')
+
+            # Always allow if user has administrator permission
+            if user.guild_permissions.administrator:
+                return None
+
+            # Check based on permission level
+            if permission_level == 'All':
+                # All users can view anyone's stats
+                return None
+
+            elif permission_level == 'Default':
+                # Default - anyone can view anyone's stats
+                return None
+
+            elif permission_level == 'User Restriction':
+                # User can only view their own stats
+                if user.id != target_member.id:
+                    embed = discord.Embed(
+                        title="❌ Permission Denied",
+                        description="Sorry! You can only use this command on yourself.",
+                        color=discord.Color.red()
+                    )
+                    return embed
+                return None
+
+            elif permission_level == 'Admin':
+                # Only administrators can use the command
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="Sorry! You need the `Administrator` permission to access this command.",
+                    color=discord.Color.red()
+                )
+                return embed
+
+            elif permission_level == 'Moderator':
+                # Only users with Manage Server permission can use the command
+                if not user.guild_permissions.manage_guild:
+                    embed = discord.Embed(
+                        title="❌ Permission Denied",
+                        description="Sorry! You need the `Manage Server` permission to access this command.",
+                        color=discord.Color.red()
+                    )
+                    return embed
+                return None
+
+            # Default fallback
+            return None
+
+        except Exception as e:
+            logger.error(f"Error checking user permission: {e}")
+            # On error, allow access
+            return None
 
     # ERROR HANDLING
 
@@ -281,16 +390,33 @@ class UserStats(commands.Cog):
     async def get_channel_name(self, guild: discord.Guild, channel_id: int) -> str:
 
         try:
-            if not guild:
+            db_cog = self.bot.get_cog('DatabaseStats')
+            if not db_cog:
+                if not guild:
+                    return f"#{channel_id}"
+
+                channel = guild.get_channel(channel_id)
+                if channel:
+                    name = channel.name
+                    name = normalize_text(name)
+                    if len(name) > 12:
+                        name = name[:10] + ".."
+                    return f"#{name}"
                 return f"#{channel_id}"
 
-            channel = guild.get_channel(channel_id)
-            if channel:
-                name = channel.name
-                if len(name) > 12:
-                    name = name[:10] + ".."
-                return f"#{name}"
-            return f"#{channel_id}"
+            display_name = db_cog._get_channel_display_name(
+                guild.id, channel_id, 'channel')
+
+            if display_name.startswith('#'):
+                display_name = display_name[1:]
+
+            display_name = normalize_text(display_name)
+
+            if len(display_name) > 12:
+                display_name = display_name[:10] + ".."
+
+            return f"#{display_name}"
+
         except Exception as e:
             logger.error(f"Error getting channel name: {e}")
             return f"#{channel_id}"
@@ -319,41 +445,38 @@ class UserStats(commands.Cog):
         if not db_cog.pool:
             return {"error": "Database pool not available."}
 
-        logger.debug(
-            f"Getting user stats for {member.id} in guild {guild.id} for {days_back} days")
-
         try:
             start_time = datetime.utcnow() - timedelta(days=days_back)
             end_time = datetime.utcnow()
 
-            messages_leaderboard_data = await db_cog.q_server_top3_users_messages(
-                guild_id=guild.id,
-                role_filter_ids=None,
-                start_time=start_time,
-                end_time=end_time
-            )
-
+            # Initialize variables with default values
+            message_rank = 0
+            voice_rank = 0
             total_message_users = 0
-            message_counts = {}
+            total_voice_users = 0
 
+            # ===== MESSAGE RANK USING HOURLY AGGREGATED TABLE =====
             try:
                 async with db_cog.pool.acquire() as conn:
                     query = '''
-                        SELECT user_id, COUNT(*) as message_count
-                        FROM message_tracking
+                        SELECT user_id, SUM(message_count) as message_count
+                        FROM message_tracking_hourly
                         WHERE guild_id = $1 
-                        AND NOT is_bot
-                        AND created_at >= $2
-                        AND created_at <= $3
+                        AND is_bot = FALSE
+                        AND hour >= $2
+                        AND hour <= $3
                         GROUP BY user_id
+                        HAVING SUM(message_count) > 0
                         ORDER BY message_count DESC
                     '''
                     rows = await conn.fetch(query, guild.id, start_time, end_time)
 
                     total_message_users = len(rows)
                     message_rank = 0
+                    message_counts = {}
                     for idx, row in enumerate(rows, 1):
                         user_id = row['user_id']
+                        message_counts[user_id] = row['message_count']
                         if user_id == member.id:
                             message_rank = idx
                             break
@@ -362,41 +485,83 @@ class UserStats(commands.Cog):
                 message_rank = 0
                 total_message_users = 0
 
-            voice_leaderboard_data = await db_cog.q_server_top3_users_voice(
-                guild_id=guild.id,
-                role_filter_ids=None,
-                start_time=start_time,
-                end_time=end_time
-            )
-
-            total_voice_users = 0
-            voice_rank = 0
-
+            # ===== VOICE RANK USING HOURLY AGGREGATED TABLE =====
+            # ===== VOICE RANK =====
             try:
                 async with db_cog.pool.acquire() as conn:
                     query = '''
-                        SELECT user_id, SUM(duration_seconds) as total_seconds
-                        FROM voice_session_history
-                        WHERE guild_id = $1 
-                        AND join_time >= $2
-                        AND join_time <= $3
+                        SELECT 
+                            user_id,
+                            COALESCE(SUM(total_seconds), 0) as total_seconds
+                        FROM voice_session_history_hourly
+                        WHERE guild_id = $1
+                        AND hour >= $2
+                        AND hour <= $3
                         GROUP BY user_id
-                        HAVING SUM(duration_seconds) > 0
+                        HAVING SUM(total_seconds) > 0
                         ORDER BY total_seconds DESC
                     '''
-                    rows = await conn.fetch(query, guild.id, start_time, end_time)
+                    start_time_aware = ensure_aware(start_time)
+                    end_time_aware = ensure_aware(end_time)
+
+                    rows = await conn.fetch(query, guild.id, start_time_aware, end_time_aware)
 
                     total_voice_users = len(rows)
+                    voice_rank = 0
                     for idx, row in enumerate(rows, 1):
-                        user_id = row['user_id']
-                        if user_id == member.id:
+                        if int(row['user_id']) == int(member.id):
                             voice_rank = idx
                             break
+
             except Exception as e:
                 logger.error(f"Error getting voice rank: {e}")
                 voice_rank = 0
                 total_voice_users = 0
 
+            # ===== GET TOP USERS BY MESSAGES FOR LEADERBOARD =====
+            messages_leaderboard_data = []
+            try:
+                async with db_cog.pool.acquire() as conn:
+                    query = '''
+                        SELECT user_id, SUM(message_count) as message_count
+                        FROM message_tracking_hourly
+                        WHERE guild_id = $1
+                        AND hour >= $2
+                        AND hour <= $3
+                        AND is_bot = FALSE
+                        GROUP BY user_id
+                        HAVING SUM(message_count) > 0
+                        ORDER BY message_count DESC
+                        LIMIT 3
+                    '''
+                    rows = await conn.fetch(query, guild.id, start_time, end_time)
+                    messages_leaderboard_data = [dict(row) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting messages leaderboard: {e}")
+                messages_leaderboard_data = []
+
+            # ===== GET TOP USERS BY VOICE FOR LEADERBOARD =====
+            voice_leaderboard_data = []
+            try:
+                async with db_cog.pool.acquire() as conn:
+                    query = '''
+                        SELECT user_id, SUM(total_seconds) as total_seconds
+                        FROM voice_session_history_hourly
+                        WHERE guild_id = $1
+                        AND hour >= $2
+                        AND hour <= $3
+                        GROUP BY user_id
+                        HAVING SUM(total_seconds) > 0
+                        ORDER BY total_seconds DESC
+                        LIMIT 3
+                    '''
+                    rows = await conn.fetch(query, guild.id, start_time, end_time)
+                    voice_leaderboard_data = [dict(row) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting voice leaderboard: {e}")
+                voice_leaderboard_data = []
+
+            # ===== USER TOTAL MESSAGES =====
             total_messages_data = await db_cog.q_user_total_messages(
                 guild_id=guild.id,
                 user_id=member.id,
@@ -407,6 +572,7 @@ class UserStats(commands.Cog):
             total_messages = total_messages_data.get(
                 'total_messages', 0) if total_messages_data else 0
 
+            # ===== USER TOTAL VOICE =====
             total_voice_data = await db_cog.q_user_total_voice(
                 guild_id=guild.id,
                 user_id=member.id,
@@ -417,6 +583,7 @@ class UserStats(commands.Cog):
             total_voice_seconds = total_voice_data.get(
                 'total_seconds', 0) if total_voice_data else 0
 
+            # ===== USER TOP TEXT CHANNELS =====
             top_text_channels_raw = await db_cog.q_user_top3_text_channels(
                 guild_id=guild.id,
                 user_id=member.id,
@@ -426,6 +593,7 @@ class UserStats(commands.Cog):
             )
             top_text_channels_raw = top_text_channels_raw if top_text_channels_raw else []
 
+            # ===== USER TOP VOICE CHANNELS =====
             top_voice_channels_raw = await db_cog.q_user_top3_voice_channels(
                 guild_id=guild.id,
                 user_id=member.id,
@@ -435,6 +603,7 @@ class UserStats(commands.Cog):
             )
             top_voice_channels_raw = top_voice_channels_raw if top_voice_channels_raw else []
 
+            # Format text channels
             top_text_channels = []
             for channel_data in top_text_channels_raw[:3]:
                 channel_id = channel_data.get('channel_id')
@@ -443,27 +612,30 @@ class UserStats(commands.Cog):
                     top_text_channels.append({
                         'channel_id': channel_id,
                         'channel_name': channel_name,
-                        'activity_count': channel_data.get('message_count', 0)
+                        'activity_count': channel_data.get('message_count', 0) or 0
                     })
 
+            # Format voice channels
             top_voice_channels = []
             for channel_data in top_voice_channels_raw[:3]:
                 channel_id = channel_data.get('channel_id')
                 if channel_id:
                     channel_name = await self.get_channel_name(guild, channel_id)
 
-                    activity_count = channel_data.get('total_seconds', 0)
+                    activity_count = channel_data.get('total_seconds', 0) or 0
                     top_voice_channels.append({
                         'channel_id': channel_id,
                         'channel_name': channel_name,
                         'activity_count': activity_count
                     })
 
+            # Calculate hourly rates
             total_hours = days_back * 24
             messages_per_hour = total_messages / total_hours if total_hours > 0 else 0
             total_voice_hours = total_voice_seconds / 3600
             voice_hours_per_hour = total_voice_hours / total_hours if total_hours > 0 else 0
 
+            # ===== MESSAGE PERIOD DATA =====
             message_periods_data = {}
             for period_days in [1, 5, 10, 20, 30]:
                 if period_days > days_back:
@@ -485,6 +657,7 @@ class UserStats(commands.Cog):
                 message_periods_data[f'{period_days}d'] = period_data.get(
                     'total_messages', 0) if period_data else 0
 
+            # ===== VOICE PERIOD DATA =====
             voice_periods_data = {}
             for period_days in [1, 5, 10, 20, 30]:
                 if period_days > days_back:
@@ -507,22 +680,21 @@ class UserStats(commands.Cog):
                     'total_seconds', 0) if period_data else 0
 
             result = {
-                'total_messages': total_messages,
-                'total_voice_seconds': total_voice_seconds,
-                'message_rank': message_rank,
-                'voice_rank': voice_rank,
-                'total_message_users': total_message_users,
-                'total_voice_users': total_voice_users,
-                'messages_per_hour': messages_per_hour,
-                'voice_hours_per_hour': voice_hours_per_hour,
-                'top_text_channels': top_text_channels,
-                'top_voice_channels': top_voice_channels,
-                'message_periods': message_periods_data,
-                'voice_periods': voice_periods_data,
+                'total_messages': total_messages or 0,
+                'total_voice_seconds': total_voice_seconds or 0,
+                'message_rank': message_rank or 0,
+                'voice_rank': voice_rank or 0,
+                'total_message_users': total_message_users or 0,
+                'total_voice_users': total_voice_users or 0,
+                'messages_per_hour': messages_per_hour or 0,
+                'voice_hours_per_hour': voice_hours_per_hour or 0,
+                'top_text_channels': top_text_channels or [],
+                'top_voice_channels': top_voice_channels or [],
+                'message_periods': message_periods_data or {},
+                'voice_periods': voice_periods_data or {},
                 'success': True
             }
 
-            logger.debug(f"Returning user stats data successfully")
             return result
 
         except Exception as e:
@@ -532,6 +704,7 @@ class UserStats(commands.Cog):
 
     # IMAGE GENERATION
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _generate_user_stats_image(self, guild: discord.Guild, member: discord.Member, days_back: int = 14):
 
         data = await self._get_user_stats_data(guild, member, days_back)
@@ -789,6 +962,8 @@ class UserStats(commands.Cog):
         member_name = f"{member.name}" if isinstance(
             member, discord.Member) else member.name
 
+        member_name = normalize_text(member_name)
+
         try:
             if member.avatar:
                 avatar_url = member.avatar.url
@@ -819,6 +994,10 @@ class UserStats(commands.Cog):
 
                 avatar_area.paste(avatar_with_bg, (0, 0), avatar_with_bg)
                 image.paste(avatar_area.convert('RGB'), (avatar_x, avatar_y))
+
+                avatar_image.close()
+                del avatar_image
+                del avatar_data
 
                 username_text_center = (150, 25)
 
@@ -884,32 +1063,40 @@ class UserStats(commands.Cog):
                            font_horndon_medium, "white", max_width=100)
 
         # RANKS
-        messages_rank_text = f"#{data['message_rank']}" if data['message_rank'] > 0 else "Not ranked"
+        messages_rank_text = f"#{data['message_rank']}" if data['message_rank'] > 0 else "-"
         draw_text_centered(pilmoji, messages_rank_text, (190, 155),
                            font_horndon_xlarge, "white", max_width=150)
 
         # Voice rank
-        voice_rank_text = f"#{data['voice_rank']}" if data['voice_rank'] > 0 else "Not ranked"
+
+        voice_rank_text = f"#{data['voice_rank']}" if data['voice_rank'] > 0 else "-"
         draw_text_centered(pilmoji, voice_rank_text, (190, 215),
                            font_horndon_xlarge, "white", max_width=150)
 
         # TOTALS
-        total_messages_text = str(data['total_messages'])
+        total_messages_text = str(
+            data['total_messages']) if data['total_messages'] > 0 else "0"
         draw_text_centered(pilmoji, total_messages_text, (450, 155),
                            font_horndon_xlarge, "white", max_width=150)
 
         # Total voice time
-        voice_time_text = format_voice_time(data['total_voice_seconds'])
+        if data['total_voice_seconds'] > 0:
+            voice_time_text = format_voice_time(data['total_voice_seconds'])
+        else:
+            voice_time_text = "0s"
         draw_text_centered(pilmoji, voice_time_text, (450, 215),
                            font_horndon_xlarge, "white", max_width=150)
 
         # HOURLY RATES
-        messages_per_hour_text = f"{data['messages_per_hour']:.2f}"
+        messages_per_hour_text = f"{data['messages_per_hour']:.2f}" if data['messages_per_hour'] > 0 else "0.00"
         draw_text_centered(pilmoji, messages_per_hour_text, (130, 340),
                            font_horndon_huge, "white", max_width=150)
 
-        voice_per_hour_text = format_voice_hours_per_hour(
-            data['voice_hours_per_hour'])
+        if data['voice_hours_per_hour'] > 0:
+            voice_per_hour_text = format_voice_hours_per_hour(
+                data['voice_hours_per_hour'])
+        else:
+            voice_per_hour_text = "0s"
         draw_text_centered(pilmoji, voice_per_hour_text, (385, 340),
                            font_horndon_huge, "white", max_width=150)
 
@@ -930,6 +1117,10 @@ class UserStats(commands.Cog):
                     display_name = channel_name
                 else:
                     display_name = f"#{channel_name}"
+
+                # Use placeholder if channel name is empty
+                if not display_name or display_name.strip() == "#":
+                    display_name = "-"
 
                 fitted_text, channel_font, final_pos = fit_text_to_rectangle(
                     display_name,
@@ -955,7 +1146,7 @@ class UserStats(commands.Cog):
                     pilmoji.text((placeholder_x, placeholder_y), "-",
                                  fill="white", font=placeholder_font)
 
-                draw_text_centered(pilmoji, str(channel.get('activity_count', 0)),
+                draw_text_centered(pilmoji, str(channel.get('activity_count', 0) or 0),
                                    text_message_positions[i], font_horndon_xlarge, "white", max_width=80)
             else:
                 placeholder_font = font_horndon_xlarge
@@ -988,6 +1179,10 @@ class UserStats(commands.Cog):
                 else:
                     display_name = channel_name
 
+                # Use placeholder if channel name is empty
+                if not display_name or display_name.strip() == "":
+                    display_name = "-"
+
                 fitted_text, channel_font, final_pos = fit_text_to_rectangle(
                     display_name,
                     text_pos[0],
@@ -1012,8 +1207,11 @@ class UserStats(commands.Cog):
                     pilmoji.text((placeholder_x, placeholder_y), "-",
                                  fill="white", font=placeholder_font)
 
-                seconds = channel.get('activity_count', 0)
-                time_text = format_voice_time(seconds)
+                seconds = channel.get('activity_count', 0) or 0
+                if seconds > 0:
+                    time_text = format_voice_time(seconds)
+                else:
+                    time_text = "0s"
                 draw_text_centered(pilmoji, time_text, voice_time_positions[i],
                                    font_horndon_xlarge, "white", max_width=80)
             else:
@@ -1039,7 +1237,7 @@ class UserStats(commands.Cog):
         }
 
         for period, position in message_time_positions.items():
-            count = data['message_periods'].get(period, 0)
+            count = data['message_periods'].get(period, 0) or 0
             draw_text_centered(pilmoji, str(count), position,
                                font_horndon_xlarge, "white", max_width=80)
 
@@ -1053,13 +1251,16 @@ class UserStats(commands.Cog):
         }
 
         for period, position in voice_time_positions.items():
-            seconds = data['voice_periods'].get(period, 0)
-            voice_time_formatted = format_voice_time(seconds)
+            seconds = data['voice_periods'].get(period, 0) or 0
+            if seconds > 0:
+                voice_time_formatted = format_voice_time(seconds)
+            else:
+                voice_time_formatted = "0s"
             draw_text_centered(pilmoji, voice_time_formatted, position,
                                font_horndon_xlarge, "white", max_width=80)
 
         # SERVER NAME AND ICON
-        server_name = guild.name
+        server_name = normalize_text(guild.name)
 
         try:
             if guild.icon:
@@ -1082,8 +1283,7 @@ class UserStats(commands.Cog):
                                      font=font_horndon_medium)
                 text_width = bbox[2] - bbox[0]
 
-                icon_x = 375 - (text_width // 2) - \
-                    25
+                icon_x = 375 - (text_width // 2) - 25
                 icon_y = 75 - 10
 
                 icon_area = image.crop((int(icon_x), int(icon_y), int(
@@ -1150,45 +1350,88 @@ class UserStats(commands.Cog):
 
         pilmoji.close()
 
+        gc.collect()
+
         image_buffer = io.BytesIO()
         image.save(image_buffer, format='PNG')
         image_buffer.seek(0)
 
         return image_buffer
 
-    # COMMAND
-
-    @user_group.command(name="stats", description="Display the stats of a user")
-    @app_commands.describe(member="Choose which member's stats to view")
-    async def user_stats(self, interaction: discord.Interaction, member: discord.Member = None):
-
+    # =========================================================
+    # INTERNAL FUNCTION FOR BOTH COMMANDS
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def _handle_user_stats_command(self, ctx_or_interaction, member=None, is_interaction=False):
+        """Internal function to handle user stats for both command types"""
         try:
-            if member is None:
-                member = interaction.user
+            # Get context parameters
+            if is_interaction:
+                user = ctx_or_interaction.user
+                guild = ctx_or_interaction.guild
+                send_method = ctx_or_interaction.followup.send
+                original_message = None
+            else:
+                user = ctx_or_interaction.author
+                guild = ctx_or_interaction.guild
+                # Try to delete the command message
+                try:
+                    await ctx_or_interaction.message.delete()
+                except:
+                    pass
+                send_method = ctx_or_interaction.send
+                original_message = await ctx_or_interaction.original_response() if hasattr(ctx_or_interaction, 'original_response') else None
 
-            guild = interaction.guild
+            # Handle member parameter
+            if member is None:
+                member = user
+
             if guild is None:
-                await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ This command can only be used in a server.", delete_after=5)
                 return
 
-            days = 14
+            # Check if user has permission to view this member's stats
+            permission_error = await self.check_user_permission(user, member, guild)
+            if permission_error:
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message(embed=permission_error, ephemeral=True)
+                else:
+                    await ctx_or_interaction.send(embed=permission_error, delete_after=10)
+                return
 
+            # Check blacklist
             blacklist_error = await self.check_blacklist_and_get_error(guild, member)
             if blacklist_error:
-                await interaction.response.send_message(blacklist_error, ephemeral=True)
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message(blacklist_error, ephemeral=True)
+                else:
+                    await ctx_or_interaction.send(blacklist_error, delete_after=10)
                 return
 
-            await interaction.response.defer()
+            # Use default 14 days
+            days = 14
 
+            if is_interaction:
+                await ctx_or_interaction.response.defer()
+
+            # Generate stats image
             image_buffer = await self._generate_user_stats_image(guild, member, days_back=days)
             file = discord.File(image_buffer, filename="user_stats.png")
 
+            # Create view
             view = UserStatsView(self, guild, member, days_back=days)
 
-            await interaction.followup.send(file=file, view=view)
+            # Send the image
+            if is_interaction:
+                msg = await send_method(file=file, view=view)
+            else:
+                msg = await send_method(file=file, view=view, delete_after=300)
 
-            message = await interaction.original_response()
-            self.active_user_stats_sessions[message.id] = {
+            # Store session
+            self.active_user_stats_sessions[msg.id] = {
                 'guild_id': guild.id,
                 'user_id': member.id,
                 'current_days': days,
@@ -1197,12 +1440,47 @@ class UserStats(commands.Cog):
             }
 
         except Exception as e:
-            logger.error("Error in user_stats command:")
-            traceback.print_exc()
-            try:
-                await interaction.followup.send("❌ An error occurred while generating stats image. Please try again.")
-            except:
-                pass
+            logger.error(f"Error in _handle_user_stats_command: {e}")
+            if is_interaction:
+                try:
+                    await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
+                except:
+                    pass
+            else:
+                try:
+                    await ctx_or_interaction.send("❌ An error occurred while generating stats image.", delete_after=10)
+                except:
+                    pass
+
+    # =========================================================
+    # SHORTCUT COMMAND - u
+    # =========================================================
+    @commands.command(name="u")
+    async def user_stats_shortcut(self, ctx: commands.Context, member: discord.Member = None):
+        """Shortcut command for user stats - same as user stats"""
+        await self._handle_user_stats_command(ctx, member, is_interaction=False)
+
+    # =========================================================
+    # USER GROUP COMMANDS
+    # =========================================================
+
+    @commands.group(name="user", invoke_without_command=True)
+    async def user_group_prefix(self, ctx: commands.Context):
+        """User statistics commands"""
+        await ctx.send("Available commands:\n- `user stats [member]` - Show user statistics\n- `u [member]` - Shortcut for user stats")
+
+    @user_group_prefix.command(name="stats")
+    async def user_stats_prefix(self, ctx: commands.Context, member: discord.Member = None):
+        """Display user stats via prefix command"""
+        await self._handle_user_stats_command(ctx, member, is_interaction=False)
+
+    # =========================================================
+    # SLASH COMMAND
+    # =========================================================
+    @user_group.command(name="stats", description="Display the stats of a user")
+    @app_commands.describe(member="Choose which member's stats to view")
+    async def user_stats(self, interaction: discord.Interaction, member: discord.Member = None):
+        await self._handle_user_stats_command(interaction, member, is_interaction=True)
 
     # CLEANUP
 

@@ -1,3 +1,4 @@
+from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
 import numpy as np
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -9,7 +10,7 @@ import asyncio
 from datetime import datetime, timedelta
 import io
 import os
-from typing import Optional, Dict, List, Tuple, Set, Any
+from typing import Optional, Dict, List, Tuple, Set, Any, Union
 from dotenv import load_dotenv
 import aiohttp
 import json
@@ -20,6 +21,10 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from pilmoji import Pilmoji
 import matplotlib
+import unicodedata
+import pytz
+import gc
+import scipy
 matplotlib.use('Agg')
 
 
@@ -58,49 +63,73 @@ def draw_text_with_stroke_and_emoji(pilmoji_draw, position, text, font, text_col
                       emoji_position_offset=(0, 0))
 
 
-# ROLE SELECT MENU
+# ROLE INPUT MODAL
 
-class ChartRoleSelectMenu(discord.ui.Select):
-    def __init__(self, guild: discord.Guild, current_role_id: str = None):
-        self.guild = guild
+class RoleInputModal(discord.ui.Modal, title='Input Role ID'):
+    def __init__(self, view):
+        super().__init__(timeout=300)
+        self.view = view
 
-        roles = [role for role in guild.roles if role.name != "@everyone"]
-        roles.sort(key=lambda x: x.position, reverse=True)
-        roles = roles[:25]
+    role_id = discord.ui.TextInput(
+        label='Enter Role ID or "none" for no filter',
+        placeholder='e.g., 123456789012345678 or "none"',
+        min_length=3,
+        max_length=30,
+        required=True
+    )
 
-        options = [
-            discord.SelectOption(
-                label="No Filter",
-                value="none",
-                description="Show all users",
-                emoji="🌐",
-                default=(current_role_id == "none" or not current_role_id)
-            )
-        ]
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            role_input = self.role_id.value.strip()
 
-        for role in roles:
-            options.append(
-                discord.SelectOption(
-                    label=role.name,
-                    value=str(role.id),
-                    description=f"Filter by {role.name} role",
-                    default=(str(role.id) == current_role_id)
+            if role_input.lower() == "none":
+                self.view.selected_role_id = "none"
+                await interaction.response.defer()
+                await self.view.update_chart(interaction)
+                return
+
+            try:
+                role_id_int = int(role_input)
+            except ValueError:
+                embed = discord.Embed(
+                    description="❌ Please enter a valid role ID number or 'none'.",
+                    color=discord.Color.red()
                 )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            guild = self.view.guild
+            if not guild:
+                embed = discord.Embed(
+                    description="❌ Could not find guild information.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            role = guild.get_role(role_id_int)
+            if not role:
+                embed = discord.Embed(
+                    description="❌ Sorry! The role id you inputted is not valid, please try again.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            self.view.selected_role_id = str(role_id_int)
+            await interaction.response.defer()
+            await self.view.update_chart(interaction)
+
+        except Exception as e:
+            print(f"Error in role input modal submit: {e}")
+            embed = discord.Embed(
+                description="❌ An error occurred while processing your request.",
+                color=discord.Color.red()
             )
-
-        super().__init__(
-            placeholder="Filter by role...",
-            options=options,
-            custom_id="chart_role_filter_select",
-            min_values=1,
-            max_values=1
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        view.selected_role_id = self.values[0]
-        await interaction.response.defer()
-        await view.update_chart(interaction)
+            try:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            except:
+                pass
 
 
 # TIME SETTINGS MODAL
@@ -172,7 +201,7 @@ class ChartSelectMenu(discord.ui.Select):
 # MAIN CHART VIEW
 
 class ChartView(discord.ui.View):
-    def __init__(self, cog, chart_type: str, target_id: int, guild_id: int, days: int = 14, role_id: Optional[str] = None):
+    def __init__(self, cog, chart_type: str, target_id: int, guild_id: int, days: int = 14, role_id: Optional[str] = None, ctx=None):
         super().__init__(timeout=600)
         self.cog = cog
         self.chart_type = chart_type
@@ -182,6 +211,8 @@ class ChartView(discord.ui.View):
         self.selected_role_id = role_id
         self.show_time_buttons = False
         self.guild = cog.bot.get_guild(self.guild_id)
+        self.ctx = ctx  # Store context for prefix commands
+        self.message = None  # Store message for prefix commands
 
         if chart_type == "user" or chart_type == "server":
             self.chart_options = ["Messages", "Voice Activity", "Invites"]
@@ -193,7 +224,6 @@ class ChartView(discord.ui.View):
         self._update_buttons()
 
     async def _safe_edit_response(self, interaction: discord.Interaction, **kwargs):
-
         try:
             await interaction.edit_original_response(**kwargs)
         except discord.NotFound:
@@ -204,6 +234,22 @@ class ChartView(discord.ui.View):
         except Exception as e:
             print(f"Error in _safe_edit_response: {e}")
 
+    async def _safe_send_or_edit(self, content=None, file=None, view=None):
+        """Handle both interaction and context-based messages"""
+        if self.message:
+            # For prefix commands, edit the existing message
+            try:
+                await self.message.edit(content=content, attachments=[file] if file else [], view=view)
+            except Exception as e:
+                print(f"Error editing message: {e}")
+        elif self.ctx:
+            # For new prefix commands, send a new message
+            try:
+                self.message = await self.ctx.send(content=content, file=file, view=view)
+            except Exception as e:
+                print(f"Error sending message: {e}")
+        # For interactions, we handle in update_chart
+
     def _update_buttons(self):
         self.clear_items()
 
@@ -212,11 +258,14 @@ class ChartView(discord.ui.View):
         self.add_item(chart_select)
 
         if self.chart_type != "user":
-            if self.guild:
-                role_select = ChartRoleSelectMenu(
-                    self.guild, self.selected_role_id)
-                role_select.row = 1
-                self.add_item(role_select)
+            role_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary,
+                label="Input Role Id",
+                custom_id="chart_role_input",
+                row=1
+            )
+            role_button.callback = self.role_input_callback
+            self.add_item(role_button)
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
@@ -273,6 +322,18 @@ class ChartView(discord.ui.View):
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
+    async def role_input_callback(self, interaction: discord.Interaction):
+        if not self.guild:
+            embed = discord.Embed(
+                description="❌ Could not find guild information.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        modal = RoleInputModal(self)
+        await interaction.response.send_modal(modal)
+
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
@@ -322,32 +383,89 @@ class ChartView(discord.ui.View):
             except:
                 pass
 
-    async def update_chart(self, interaction: discord.Interaction):
+    async def update_chart(self, interaction: discord.Interaction = None):
+        """Update chart, handling both interaction and context-based calls"""
 
         try:
+
             data = await self.fetch_chart_data()
+
             if not data:
-                await self._safe_edit_response(interaction, content="❌ No data available for the selected parameters", view=self)
-                return
-            if data.get('error'):
-                await self._safe_edit_response(interaction, content=f"❌ {data['error']}", view=self)
+
+                if interaction:
+                    await self._safe_edit_response(interaction, content="❌ No data available for the selected parameters", view=self)
+                else:
+                    await self._safe_send_or_edit(content="❌ No data available for the selected parameters", view=self)
                 return
 
-            chart_img, timestamps, y_labels = self.cog.generate_professional_chart(
-                data, self.current_selection)
+            if data.get('error'):
+                print(f"Step 3: Data has error: {data['error']}")
+                if interaction:
+                    await self._safe_edit_response(interaction, content=f"❌ {data['error']}", view=self)
+                else:
+                    await self._safe_send_or_edit(content=f"❌ {data['error']}", view=self)
+                return
+
+            settings_cog = self.cog.bot.get_cog('Settings')
+            guild_timezone = 'UTC'
+            if settings_cog:
+                settings = await settings_cog.get_guild_settings(self.guild_id)
+                guild_timezone = settings.get('timezone', 'UTC')
+
+            role_name = None
+            if self.selected_role_id and self.selected_role_id != "none":
+                db_stats = self.cog.bot.get_cog('DatabaseStats')
+                if db_stats and db_stats.pool:
+                    try:
+                        async with db_stats.pool.acquire() as conn:
+                            row = await conn.fetchrow("""
+                                SELECT role_name FROM current_role_members 
+                                WHERE role_id = $1 AND guild_id = $2 
+                                LIMIT 1
+                            """, int(self.selected_role_id), self.guild_id)
+                            if row:
+                                role_name = row['role_name']
+
+                    except Exception as e:
+                        print(f"Step 7 ERROR getting role: {e}")
+                        traceback.print_exc()
+
+            result = self.cog.generate_professional_chart(
+                data, self.current_selection, guild_timezone)
+
+            # Unpack safely
+            if isinstance(result, tuple) and len(result) == 3:
+                chart_img, timestamps, y_labels = result
+
+            else:
+                print(f"Step 10 ERROR: Unexpected result format: {result}")
+                raise ValueError(
+                    f"generate_professional_chart returned {type(result)} instead of tuple")
+
             label = self.create_label(data)
+
             final_image_bytes = await self.cog.draw_chart_on_template(
                 chart_img, label, self.current_days, self.selected_role_id,
-                timestamps, y_labels, self.current_selection, self.chart_type, self.target_id, self.guild_id)
+                role_name, timestamps, y_labels, self.current_selection, self.chart_type, self.target_id, self.guild_id)
 
             file = discord.File(final_image_bytes, filename='chart.png')
             self._update_buttons()
-            await self._safe_edit_response(interaction, content=None, attachments=[file], view=self)
+
+            if interaction:
+                await self._safe_edit_response(interaction, content=None, attachments=[file], view=self)
+            else:
+                await self._safe_send_or_edit(file=file, view=self)
 
         except Exception as e:
-            print(f"Error updating chart: {e}")
+            print(f"\n❌❌❌ ERROR IN UPDATE_CHART: {e}")
+            print(f"Error type: {type(e)}")
+            traceback.print_exc()
+            print("❌❌❌ END ERROR\n")
             try:
-                await self._safe_edit_response(interaction, content="❌ Error generating chart", view=self)
+                if interaction:
+                    await self._safe_edit_response(interaction, content="❌ Error generating chart", view=self)
+                else:
+                    await self._safe_send_or_edit(content="❌ Error generating chart", view=self)
             except:
                 pass
 
@@ -366,10 +484,28 @@ class ChartView(discord.ui.View):
         return "🟢 Chart"
 
     async def fetch_chart_data(self) -> Dict:
-
+        """Fetch chart data using aggregated tables"""
         chart_type = self.current_selection
-        end_time = datetime.utcnow()
+
+        # Get timezone from settings
+        settings_cog = self.cog.bot.get_cog('Settings')
+        if settings_cog:
+            settings = await settings_cog.get_guild_settings(self.guild_id)
+            tz_str = settings.get('timezone', 'UTC')
+            try:
+                tz = pytz.timezone(tz_str)
+            except:
+                tz = pytz.UTC
+        else:
+            tz = pytz.UTC
+
+        # Use timezone for end time
+        end_time = datetime.now(tz)
         start_time = end_time - timedelta(days=self.current_days)
+
+        # Convert to naive UTC for database queries
+        end_time_naive = end_time.replace(tzinfo=None)
+        start_time_naive = start_time.replace(tzinfo=None)
 
         role_filter_ids = None
         if self.selected_role_id and self.selected_role_id != "none":
@@ -404,13 +540,14 @@ class ChartView(discord.ui.View):
             total = 0
 
             for i in range(intervals):
-                interval_start = end_time - time_delta * (i + 1)
-                interval_end = end_time - time_delta * i
+                interval_end = end_time_naive - time_delta * i
+                interval_start = end_time_naive - time_delta * (i + 1)
 
+                # Create date object for display (not timezone aware)
                 if self.current_days <= 2:
-                    date_obj = interval_start
+                    date_obj = interval_start  # Keep as datetime for hourly data
                 else:
-                    date_obj = interval_start.date()
+                    date_obj = interval_start.date()  # Use date for daily/weekly/monthly
 
                 if self.chart_type == "user":
                     if chart_type == "messages":
@@ -550,12 +687,12 @@ class ChartView(discord.ui.View):
 class ChartSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        print("✅ ChartSystem: Initialized without session tracking")
+        self.rate_limiter = get_rate_limiter()
 
     async def cog_load(self):
 
         try:
-            print("✅ ChartSystem: Using DatabaseStats for database connections")
+            print("✅ Chart cog loaded")
         except Exception as e:
             print(f"❌ ChartSystem: Setup failed: {e}")
 
@@ -586,10 +723,82 @@ class ChartSystem(commands.Cog):
             print(f"⚠️ Error checking user blacklist via DatabaseStats: {e}")
             return False
 
+    # PERMISSION CHECKING METHODS
+    async def check_permission(self, interaction: discord.Interaction, target_user_id: Optional[int] = None) -> bool:
+        """Check if user has permission to use chart commands based on settings"""
+        if interaction.user.guild_permissions.administrator:
+            return True
+
+        settings_cog = self.bot.get_cog('Settings')
+        if not settings_cog:
+            return True
+
+        settings = await settings_cog.get_guild_settings(interaction.guild_id)
+        permission_level = settings.get('permission_level', 'Default')
+
+        if permission_level == 'All':
+            return True
+        elif permission_level == 'Default':
+            return True
+        elif permission_level == 'User Restriction':
+            if target_user_id is not None:
+                return interaction.user.id == target_user_id
+            return True
+        elif permission_level == 'Admin':
+            return interaction.user.guild_permissions.administrator
+        elif permission_level == 'Moderator':
+            return interaction.user.guild_permissions.manage_guild
+        else:
+            return True
+
+    def check_permission_prefix(self, ctx: commands.Context, target_user_id: Optional[int] = None) -> bool:
+        """Check if user has permission to use chart commands for prefix commands"""
+        if ctx.author.guild_permissions.administrator:
+            return True
+
+        return True  # Default to True for prefix commands - actual check would need async
+
+    async def send_permission_error(self, interaction: discord.Interaction, target_user_id: Optional[int] = None):
+        """Send appropriate permission error message"""
+        settings_cog = self.bot.get_cog('Settings')
+        if not settings_cog:
+            embed = discord.Embed(
+                description="❌ An error occurred while checking permissions.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return False
+
+        settings = await settings_cog.get_guild_settings(interaction.guild_id)
+        permission_level = settings.get('permission_level', 'Default')
+
+        if permission_level == 'User Restriction' and target_user_id is not None and interaction.user.id != target_user_id:
+            embed = discord.Embed(
+                description="❌ Sorry! You can only use this command on yourself.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return False
+        elif permission_level == 'Admin':
+            embed = discord.Embed(
+                description="❌ Sorry! You need the `Administrator` permission to access this command.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return False
+        elif permission_level == 'Moderator':
+            embed = discord.Embed(
+                description="❌ Sorry! You need the `Manage Server` permission to access this command.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return False
+
+        return True
+
     # CHART GENERATION METHODS
 
-    def generate_dynamic_timestamps(self, data_points: List[Dict]) -> List[str]:
-
+    def generate_dynamic_timestamps(self, data_points: List[Dict], guild_timezone: str = 'UTC') -> List[str]:
         if not data_points or len(data_points) < 2:
             return [f"Day {i+1}" for i in range(8)]
 
@@ -597,32 +806,36 @@ class ChartSystem(commands.Cog):
         if not dates:
             return [f"Day {i+1}" for i in range(8)]
 
-        start_time = min(dates)
-        end_time = max(dates)
-        delta = end_time - start_time
+        # Convert all dates to datetime for consistent handling
+        datetime_dates = []
+        for d in dates:
+            if isinstance(d, date) and not isinstance(d, datetime):
+                # Convert date to datetime at midnight UTC
+                dt = datetime(d.year, d.month, d.day)
+                datetime_dates.append(dt)
+            else:
+                datetime_dates.append(d)
 
+        start_time = min(datetime_dates)
+        end_time = max(datetime_dates)
+        delta = end_time - start_time
         total_days = delta.days + (delta.seconds / 86400)
 
         if total_days <= 2:
-            if isinstance(start_time, date) and not isinstance(start_time, datetime):
-                start_time = datetime.combine(start_time, datetime.min.time())
-                end_time = datetime.combine(end_time, datetime.min.time())
-
             timestamps = []
-
             if total_days <= 1:
                 hours = [0, 3, 6, 9, 12, 15, 18, 21]
                 for hour in hours:
-                    timestamps.append(f"{hour:02d}:00")
+                    display_time = start_time + timedelta(hours=hour)
+                    timestamps.append(f"{display_time.hour:02d}:00")
             else:
                 hours = [0, 6, 12, 18, 24, 30, 36, 42]
-                for i, hour in enumerate(hours):
+                for hour in hours:
+                    display_time = start_time + timedelta(hours=hour)
                     if hour < 24:
-                        timestamps.append(f"{hour:02d}:00")
+                        timestamps.append(f"{display_time.hour:02d}:00")
                     else:
-                        display_hour = hour - 24
-                        timestamps.append(f"{display_hour:02d}:00")
-
+                        timestamps.append(f"{display_time.hour:02d}:00")
             return timestamps
 
         elif total_days <= 30:
@@ -650,7 +863,7 @@ class ChartSystem(commands.Cog):
         interval = (x_end - x_start) / 7
         return [int(x_start + interval * i) for i in range(8)]
 
-    def generate_professional_chart(self, data: Dict, chart_type: str) -> Tuple[Image.Image, List[str], List[Tuple[float, str]]]:
+    def generate_professional_chart(self, data: Dict, chart_type: str, guild_timezone: str = 'UTC') -> Tuple[Image.Image, List[str], List[Tuple[float, str]]]:
 
         plt.style.use('dark_background')
         fig, ax = plt.subplots(figsize=(6, 2.5), dpi=300,
@@ -701,7 +914,8 @@ class ChartSystem(commands.Cog):
                         label = str(int(value))
                     y_labels.append((value, label))
 
-                timestamps = self.generate_dynamic_timestamps(points)
+                timestamps = self.generate_dynamic_timestamps(
+                    points, guild_timezone)
 
                 if len(dates_numeric) > 1:
                     x_smooth = np.linspace(
@@ -781,12 +995,27 @@ class ChartSystem(commands.Cog):
         avatar_x, avatar_y = 10, 10
         avatar_size = (52, 52)
 
-        text_start_x = 78
+        # MOVED: Adjusted text_start_x to move name further left (was 78)
+        text_start_x = 70  # Reduced from 78 to move name left
         text_start_y = 28
 
-        username_rectangle = {"center": (143, 28), "width": 183, "height": 35}
+        # MOVED: Adjusted rectangle position to match new name position
+        # center x reduced from 143 to 133
+        username_rectangle = {"center": (133, 35), "width": 183, "height": 35}
 
-        current_date = datetime.now().strftime("%B %d, %Y")
+        # Get timezone for date display
+        settings_cog = self.bot.get_cog('Settings')
+        current_timezone = 'UTC'
+        if settings_cog:
+            settings = await settings_cog.get_guild_settings(guild_id)
+            current_timezone = settings.get('timezone', 'UTC')
+
+        try:
+            tz = pytz.timezone(current_timezone)
+            current_date = datetime.now(tz).strftime("%B %d, %Y")
+        except:
+            current_date = datetime.now().strftime("%B %d, %Y")
+
         try:
             horndon_font = ImageFont.truetype(
                 BASE_DIR / "assets" / "fonts" / "HorndonD.ttf", 16)
@@ -801,11 +1030,10 @@ class ChartSystem(commands.Cog):
             return template
 
         # RECTANGLE FUNCTIONS
-
         def fit_text_to_rectangle(text, text_start_x, text_start_y, rect_center_x, rect_center_y, rect_width, rect_height):
-
             font_paths = [
-                BASE_DIR / "assets" / "fonts" / "HorndonD.ttf",]
+                BASE_DIR / "assets" / "fonts" / "HorndonD.ttf",
+            ]
 
             font_sizes = [32, 30, 28, 26, 24, 22, 20,
                           18, 16]
@@ -830,7 +1058,7 @@ class ChartSystem(commands.Cog):
                 text_y = text_start_y - (text_height // 2)
 
                 vertical_offset = 0
-                if font_size <= 32:
+                if font_size == 32:
                     vertical_offset += 1
                 if font_size <= 30:
                     vertical_offset += 1
@@ -873,7 +1101,7 @@ class ChartSystem(commands.Cog):
             text_y = text_start_y - (text_height // 2)
 
             vertical_offset = 0
-            if smallest_font <= 32:
+            if smallest_font == 32:
                 vertical_offset += 1
             if smallest_font <= 30:
                 vertical_offset += 1
@@ -926,23 +1154,22 @@ class ChartSystem(commands.Cog):
         target_member = None
 
         if chart_type == "server":
-
             target_name = guild.name
             use_server_icon = True
 
         elif chart_type == "channel":
-
             channel = guild.get_channel(int(target_id))
             if channel:
                 target_name = f"#{channel.name}"
             use_server_icon = True
 
         elif chart_type == "category":
-            target_name = guild.name
+            category = guild.get_channel(int(target_id))
+            if category:
+                target_name = category.name
             use_server_icon = True
 
         elif chart_type == "user":
-
             member = guild.get_member(int(target_id))
             if member:
                 target_name = member.name
@@ -952,10 +1179,15 @@ class ChartSystem(commands.Cog):
                 target_name = f"User {target_id}"
                 use_server_icon = True
 
-        # PROFILE PICTURE
+        normalized_name = unicodedata.normalize('NFKD', target_name)
+        ascii_name = normalized_name.encode('ascii', 'ignore').decode('ascii')
+        if not ascii_name:
+            ascii_name = target_name
+
+        # PROFILE PICTURE - RESTORE THIS EXACT WORKING CODE
+
         try:
             if use_server_icon:
-
                 if guild.icon:
                     icon_url = guild.icon.url
                     async with aiohttp.ClientSession() as session:
@@ -982,8 +1214,10 @@ class ChartSystem(commands.Cog):
                     avatar_area.paste(icon_with_bg, (0, 0), icon_with_bg)
                     template.paste(avatar_area.convert(
                         'RGB'), (avatar_x, avatar_y))
+                    icon_image.close()
+                    del icon_image
+                    del icon_data
             else:
-
                 if target_member and target_member.avatar:
                     icon_url = target_member.avatar.url
                     async with aiohttp.ClientSession() as session:
@@ -1010,6 +1244,9 @@ class ChartSystem(commands.Cog):
                     avatar_area.paste(icon_with_bg, (0, 0), icon_with_bg)
                     template.paste(avatar_area.convert(
                         'RGB'), (avatar_x, avatar_y))
+                    icon_image.close()
+                    del icon_image
+                    del icon_data
                 else:
                     if guild.icon:
                         icon_url = guild.icon.url
@@ -1038,12 +1275,15 @@ class ChartSystem(commands.Cog):
                         avatar_area.paste(icon_with_bg, (0, 0), icon_with_bg)
                         template.paste(avatar_area.convert(
                             'RGB'), (avatar_x, avatar_y))
+                        icon_image.close()
+                        del icon_image
+                        del icon_data
 
         except Exception as e:
             print(f"❌ Could not add profile picture: {e}")
 
         fitted_text, text_font, text_pos = fit_text_to_rectangle(
-            target_name,
+            ascii_name,
             text_start_x,
             text_start_y,
             username_rectangle["center"][0],
@@ -1054,7 +1294,6 @@ class ChartSystem(commands.Cog):
 
         if fitted_text and text_font:
             with Pilmoji(template) as pilmoji:
-
                 stroke_width = 1
                 for dx in [-stroke_width, 0, stroke_width]:
                     for dy in [-stroke_width, 0, stroke_width]:
@@ -1073,19 +1312,14 @@ class ChartSystem(commands.Cog):
 
             with Pilmoji(template) as pilmoji:
                 pilmoji.text((text_start_x, text_start_y),
-                             target_name, font=fallback_font, fill="white")
+                             ascii_name, font=fallback_font, fill="white")
 
-        # DRAW INVISIBLE RECTANGLE (for testing - uncomment to see boundaries)
-        # rect_left = username_rectangle["center"][0] - (username_rectangle["width"] // 2)
-        # rect_top = username_rectangle["center"][1] - (username_rectangle["height"] // 2)
-        # rect_right = username_rectangle["center"][0] + (username_rectangle["width"] // 2)
-        # rect_bottom = username_rectangle["center"][1] + (username_rectangle["height"] // 2)
-        # draw.rectangle([rect_left, rect_top, rect_right, rect_bottom], outline="red", width=1)
+        # DON'T CALL gc.collect() HERE - REMOVE IT
 
         return template
 
     async def draw_chart_on_template(self, chart_img: Image.Image, label_text: str, days: int,
-                                     role_id: Optional[str], timestamps: List[str],
+                                     role_id: Optional[str], role_name: Optional[str], timestamps: List[str],
                                      y_labels: List[Tuple[float, str]], chart_type: str,
                                      target_type: str, target_id: int, guild_id: int) -> io.BytesIO:
 
@@ -1135,44 +1369,34 @@ class ChartSystem(commands.Cog):
         draw_text_with_stroke(draw, (133, 93), time_text,
                               horndon_font, text_color, shadow_color, 1)
 
-        # ROLE FILTER
-        if target_type != "user":
-            role_text = "No Filter"
-            if role_id and role_id != "none":
-                guild = self.bot.get_guild(guild_id)
-                if guild:
-                    role = guild.get_role(int(role_id))
-                    role_text = role.name if role else "Unknown Role"
+        # ROLE FILTER - USE DATABASE ROLE NAME
+        role_text = role_name if role_name else "No Filter"
 
-            with Pilmoji(template) as pilmoji:
+        with Pilmoji(template) as pilmoji:
+            stroke_width = 1
+            for dx in [-stroke_width, 0, stroke_width]:
+                for dy in [-stroke_width, 0, stroke_width]:
+                    if dx != 0 or dy != 0:
+                        pilmoji.text((333 + dx, 95 + dy), role_text,
+                                     font=horndon_font, fill=shadow_color)
 
-                stroke_width = 1
-                for dx in [-stroke_width, 0, stroke_width]:
-                    for dy in [-stroke_width, 0, stroke_width]:
-                        if dx != 0 or dy != 0:
-                            pilmoji.text((333 + dx, 95 + dy), role_text,
-                                         font=horndon_font, fill=shadow_color)
-
-                pilmoji.text((333, 95), role_text,
-                             font=horndon_font, fill=text_color)
+            pilmoji.text((333, 95), role_text,
+                         font=horndon_font, fill=text_color)
 
         total_value = "0"
         if "Messages" in label_text:
             total_value = label_text.split(
                 "Messages ")[1] if "Messages " in label_text else "0"
-
             draw_text_with_stroke(draw, (623, 95), total_value, horndon_font,
                                   text_color, shadow_color, 1)
         elif "Voice Activity" in label_text:
             total_value = label_text.split("Voice Activity ")[
                 1] if "Voice Activity " in label_text else "0"
-
             draw_text_with_stroke(draw, (655, 95), total_value, horndon_font,
                                   text_color, shadow_color, 1)
         elif "Invites" in label_text:
             total_value = label_text.split(
                 "Invites ")[1] if "Invites " in label_text else "0"
-
             draw_text_with_stroke(draw, (600, 95), total_value, horndon_font,
                                   text_color, shadow_color, 1)
 
@@ -1204,15 +1428,214 @@ class ChartSystem(commands.Cog):
         output = io.BytesIO()
         template.save(output, format='PNG')
         output.seek(0)
+        gc.collect()
         return output
 
-    # COMMANDS
+    # =========================================================
+    # INTERNAL FUNCTION FOR BOTH COMMANDS
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def _handle_chart_command(self, ctx_or_interaction, chart_type: str, target=None, is_interaction=False):
+        """Internal function to handle chart commands for both command types"""
+        try:
+            if is_interaction:
+                user = ctx_or_interaction.user
+                guild = ctx_or_interaction.guild
+                send_method = ctx_or_interaction.followup.send
+                defer_method = ctx_or_interaction.response.defer
+            else:
+                user = ctx_or_interaction.author
+                guild = ctx_or_interaction.guild
+                try:
+                    await ctx_or_interaction.message.delete()
+                except:
+                    pass
+                send_method = ctx_or_interaction.send
+                defer_method = None
 
+            if guild is None:
+                if is_interaction:
+                    await ctx_or_interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ This command can only be used in a server.", delete_after=5)
+                return
+
+            # Determine target based on chart type
+            target_id = None
+            if chart_type == "server":
+                target_id = guild.id
+            elif chart_type == "user":
+                if target is None:
+                    target_id = user.id
+                elif isinstance(target, discord.User) or isinstance(target, discord.Member):
+                    target_id = target.id
+                elif isinstance(target, int):
+                    target_id = target
+                else:
+                    if is_interaction:
+                        await ctx_or_interaction.response.send_message("❌ Invalid user specified.", ephemeral=True)
+                    else:
+                        await ctx_or_interaction.send("❌ Invalid user specified.", delete_after=5)
+                    return
+            elif chart_type == "channel":
+                if target is None:
+                    if hasattr(ctx_or_interaction, 'channel'):
+                        target_id = ctx_or_interaction.channel.id
+                    else:
+                        if is_interaction:
+                            await ctx_or_interaction.response.send_message("❌ Please specify a channel or use this command in a channel.", ephemeral=True)
+                        else:
+                            await ctx_or_interaction.send("❌ Please specify a channel or use this command in a channel.", delete_after=5)
+                        return
+                elif isinstance(target, discord.TextChannel):
+                    target_id = target.id
+                elif isinstance(target, int):
+                    target_id = target
+                else:
+                    if is_interaction:
+                        await ctx_or_interaction.response.send_message("❌ Invalid channel specified.", ephemeral=True)
+                    else:
+                        await ctx_or_interaction.send("❌ Invalid channel specified.", delete_after=5)
+                    return
+            elif chart_type == "category":
+                if target is None:
+                    if hasattr(ctx_or_interaction, 'channel') and ctx_or_interaction.channel.category:
+                        target_id = ctx_or_interaction.channel.category.id
+                    else:
+                        if is_interaction:
+                            await ctx_or_interaction.response.send_message("❌ Please specify a category or use this command in a categorized channel.", ephemeral=True)
+                        else:
+                            await ctx_or_interaction.send("❌ Please specify a category or use this command in a categorized channel.", delete_after=5)
+                        return
+                elif isinstance(target, discord.CategoryChannel):
+                    target_id = target.id
+                elif isinstance(target, int):
+                    target_id = target
+                else:
+                    if is_interaction:
+                        await ctx_or_interaction.response.send_message("❌ Invalid category specified.", ephemeral=True)
+                    else:
+                        await ctx_or_interaction.send("❌ Invalid category specified.", delete_after=5)
+                    return
+
+            # Check permissions
+            if chart_type == "user":
+                if is_interaction:
+                    if not await self.check_permission(ctx_or_interaction, target_user_id=target_id):
+                        await self.send_permission_error(ctx_or_interaction, target_user_id=target_id)
+                        return
+                else:
+                    if not self.check_permission_prefix(ctx_or_interaction, target_user_id=target_id):
+                        embed = discord.Embed(
+                            description="❌ Sorry! You don't have permission to use this command.",
+                            color=discord.Color.red()
+                        )
+                        await ctx_or_interaction.send(embed=embed, delete_after=10)
+                        return
+            else:
+                if is_interaction and not await self.check_permission(ctx_or_interaction):
+                    await self.send_permission_error(ctx_or_interaction)
+                    return
+
+            # Check blacklist for user commands
+            if chart_type == "user":
+                db_stats = self.bot.get_cog('DatabaseStats')
+                if db_stats:
+                    if await db_stats.is_user_or_roles_blacklisted(int(guild.id), int(target_id)):
+                        if is_interaction:
+                            await ctx_or_interaction.followup.send("❌ This user is blacklisted and cannot be tracked.", ephemeral=True)
+                        else:
+                            await ctx_or_interaction.send("❌ This user is blacklisted and cannot be tracked.", delete_after=5)
+                        return
+
+            if is_interaction:
+                await defer_method()
+
+            # Create view with context for prefix commands
+            view = ChartView(self, chart_type, int(target_id), int(
+                guild.id), days=14, ctx=ctx_or_interaction if not is_interaction else None)
+
+            # Initial chart generation
+            await view.update_chart(ctx_or_interaction if is_interaction else None)
+
+        except Exception as e:
+            print(f"Error in _handle_chart_command: {e}")
+            traceback.print_exc()
+            if is_interaction:
+                try:
+                    await ctx_or_interaction.followup.send("❌ An error occurred while generating chart.", ephemeral=True)
+                except:
+                    pass
+            else:
+                try:
+                    await ctx_or_interaction.send("❌ An error occurred while generating chart.", delete_after=10)
+                except:
+                    pass
+
+    # =========================================================
+    # SHORTCUT COMMANDS
+    # =========================================================
+    @commands.command(name="cu")
+    async def chart_user_shortcut(self, ctx: commands.Context, user: Optional[discord.User] = None):
+        """Shortcut command for user chart - same as chart user"""
+        await self._handle_chart_command(ctx, "user", user, is_interaction=False)
+
+    @commands.command(name="cs")
+    async def chart_server_shortcut(self, ctx: commands.Context):
+        """Shortcut command for server chart - same as chart server"""
+        await self._handle_chart_command(ctx, "server", None, is_interaction=False)
+
+    @commands.command(name="cch")
+    async def chart_channel_shortcut(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """Shortcut command for channel chart - same as chart channel"""
+        await self._handle_chart_command(ctx, "channel", channel, is_interaction=False)
+
+    @commands.command(name="cca")
+    async def chart_category_shortcut(self, ctx: commands.Context, category: Optional[discord.CategoryChannel] = None):
+        """Shortcut command for category chart - same as chart category"""
+        await self._handle_chart_command(ctx, "category", category, is_interaction=False)
+
+    # =========================================================
+    # PREFIX COMMAND GROUP
+    # =========================================================
+    @commands.group(name="chart", invoke_without_command=True)
+    async def chart_group_prefix(self, ctx: commands.Context):
+        """Generate activity charts"""
+        await ctx.send("Available commands:\n- `chart user [user]` - Generate user activity charts\n- `chart server` - Generate server-wide charts\n- `chart channel [channel]` - Generate channel-specific charts\n- `chart category [category]` - Generate category-specific charts\n\nShortcuts:\n- `cu [user]` - User chart shortcut\n- `cs` - Server chart shortcut\n- `cch [channel]` - Channel chart shortcut\n- `cca [category]` - Category chart shortcut")
+
+    @chart_group_prefix.command(name="user")
+    async def chart_user_prefix(self, ctx: commands.Context, user: Optional[discord.User] = None):
+        """Generate user activity charts via prefix command"""
+        await self._handle_chart_command(ctx, "user", user, is_interaction=False)
+
+    @chart_group_prefix.command(name="server")
+    async def chart_server_prefix(self, ctx: commands.Context):
+        """Generate server-wide charts via prefix command"""
+        await self._handle_chart_command(ctx, "server", None, is_interaction=False)
+
+    @chart_group_prefix.command(name="channel")
+    async def chart_channel_prefix(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """Generate channel-specific charts via prefix command"""
+        await self._handle_chart_command(ctx, "channel", channel, is_interaction=False)
+
+    @chart_group_prefix.command(name="category")
+    async def chart_category_prefix(self, ctx: commands.Context, category: Optional[discord.CategoryChannel] = None):
+        """Generate category-specific charts via prefix command"""
+        await self._handle_chart_command(ctx, "category", category, is_interaction=False)
+
+    # =========================================================
+    # SLASH COMMANDS
+    # =========================================================
     chart_group = app_commands.Group(
         name="chart", description="Generate activity charts")
 
     @chart_group.command(name="user", description="Generate user activity charts")
     async def chart_user(self, interaction: discord.Interaction, user: discord.User):
+
+        # Check permissions
+        if not await self.check_permission(interaction, target_user_id=user.id):
+            await self.send_permission_error(interaction, target_user_id=user.id)
+            return
 
         await interaction.response.defer()
 
@@ -1229,6 +1652,11 @@ class ChartSystem(commands.Cog):
     @chart_group.command(name="server", description="Generate server-wide charts")
     async def chart_server(self, interaction: discord.Interaction):
 
+        # Check permissions
+        if not await self.check_permission(interaction):
+            await self.send_permission_error(interaction)
+            return
+
         await interaction.response.defer()
 
         view = ChartView(self, "server", int(
@@ -1236,7 +1664,14 @@ class ChartSystem(commands.Cog):
         await view.update_chart(interaction)
 
     @chart_group.command(name="channel", description="Generate channel-specific charts")
-    async def chart_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    async def chart_channel(self, interaction: discord.Interaction, channel: Union[discord.TextChannel, discord.VoiceChannel]):
+        """
+        Generate charts for a specific channel (text or voice)
+        """
+        # Check permissions
+        if not await self.check_permission(interaction):
+            await self.send_permission_error(interaction)
+            return
 
         await interaction.response.defer()
 
@@ -1246,6 +1681,11 @@ class ChartSystem(commands.Cog):
 
     @chart_group.command(name="category", description="Generate category-specific charts")
     async def chart_category(self, interaction: discord.Interaction, category: discord.CategoryChannel):
+
+        # Check permissions
+        if not await self.check_permission(interaction):
+            await self.send_permission_error(interaction)
+            return
 
         await interaction.response.defer()
 
