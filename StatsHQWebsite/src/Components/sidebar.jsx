@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const API_BASE_URL = 'https://statshq.xyz';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 // PRIVILEGED USERS - can see Debug option
 const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];

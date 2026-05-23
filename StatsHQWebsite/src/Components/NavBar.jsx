@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import Login from '../Pages/login';
 
-const API_BASE_URL = 'https://statshq.xyz';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 const NavBar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);

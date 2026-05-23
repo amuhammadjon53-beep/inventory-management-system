@@ -7,7 +7,7 @@ import Leaderboard from "../../../Components/Leaderboard.jsx";
 import EnhancedMultiLineChart from "../../../Components/EnhancedMultiLineChart.jsx";
 
 // API base URL - your FastAPI backend
-const API_BASE_URL = '';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 // PUBLIC GUILD ID for unauthenticated users
 const PUBLIC_GUILD_ID = '1424021358680998022';

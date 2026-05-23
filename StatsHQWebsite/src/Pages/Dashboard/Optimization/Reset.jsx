@@ -5,7 +5,7 @@ import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
 
 // API base URL
-const API_BASE_URL = '';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 const NAVBAR_HEIGHT = "80px";
 
 // PRIVILEGED USERS - bypass all access levels
