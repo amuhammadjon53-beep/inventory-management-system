@@ -38397,13 +38397,13 @@ async def auth_callback(
     background_tasks: BackgroundTasks = None
 ):
     """Handle Discord OAuth callback"""
+    is_production = os.getenv('NODE_ENV') == 'production'
+
     try:
         token_data = await discord_api.exchange_code(code)
         user_info = await discord_api.get_user_info(token_data['access_token'])
-
         token_expiry = datetime.utcnow(
         ) + timedelta(seconds=token_data['expires_in'])
-
         user_data = {
             'discord_id': user_info['id'],
             'username': user_info['username'],
@@ -38415,13 +38415,10 @@ async def auth_callback(
             'refresh_token': token_data.get('refresh_token'),
             'token_expiry': token_expiry
         }
-
         existing_user = await auth_db.get_user_by_discord_id(user_info['id'])
         is_new_user = existing_user is None
-
         # Save/update user immediately
         user = await auth_db.create_or_update_user(user_data)
-
         # Queue background guild sync for new users
         if is_new_user and background_tasks:
             background_tasks.add_task(
@@ -38430,16 +38427,13 @@ async def auth_callback(
                 token_data['access_token'],
                 is_new_user
             )
-
         # Create session
         client_ip = request.client.host if request.client else None
         user_agent = request.headers.get('user-agent')
         session_id = await auth_db.create_session(user_info['id'], client_ip, user_agent)
-
-        # FIXED: Ensure state is a valid URL and not empty
+        # Ensure state is a valid URL and not empty
         redirect_url = str(state) if state and state.startswith(
             ('http://', 'https://')) else BASE_URL
-
         # If state looks like a path only (starts with /), join it with BASE_URL
         if state and not state.startswith(('http://', 'https://', '/api')):
             redirect_url = BASE_URL.rstrip('/')
@@ -38447,22 +38441,18 @@ async def auth_callback(
             redirect_url = BASE_URL.rstrip('/') + state
         else:
             redirect_url = BASE_URL or 'https://statshq.xyz'
-
         logger.info(f"Redirecting to: {redirect_url}")
-
         response = RedirectResponse(url=redirect_url)
         response.set_cookie(
             key="session",
             value=session_id,
             httponly=True,
-            secure=True,
+            secure=is_production,
             samesite="lax",
             max_age=30 * 24 * 60 * 60,
             path="/"
         )
-
         return response
-
     except (DatabaseError, ExternalAPIError) as e:
         logger.error(f"Auth callback error: {e}", exc_info=True)
         return RedirectResponse(url=f"{BASE_URL}?error=auth_failed")
