@@ -14,21 +14,17 @@ const NavBar = () => {
   const mobileMenuRef = useRef(null);
   const menuButtonRef = useRef(null);
 
-  // Helper function to get decoded path - same as DashboardSidebar
   const getDecodedPath = () => {
     const rawPath = window.location.pathname;
     return decodeURIComponent(rawPath);
   };
 
-  // Fetch the current selected server from the backend
   const fetchSelectedServer = async () => {
     setLoadingServer(true);
     try {
       const authResponse = await fetch(`${API_BASE_URL}/api/auth/status`, {
         credentials: 'include',
-        headers: {
-          'Accept': 'application/json'
-        }
+        headers: { 'Accept': 'application/json' }
       });
       
       if (authResponse.ok) {
@@ -42,18 +38,14 @@ const NavBar = () => {
           
           if (serversResponse.ok) {
             const servers = await serversResponse.json();
-            
             if (Array.isArray(servers) && servers.length > 0) {
               let selectedServer = null;
-              
               if (authData.user.selected_server) {
                 selectedServer = servers.find(s => s.id === authData.user.selected_server);
               }
-              
               if (!selectedServer && servers.length > 0) {
                 selectedServer = servers[0];
               }
-              
               if (selectedServer) {
                 setServerInfo({
                   id: selectedServer.id,
@@ -72,11 +64,7 @@ const NavBar = () => {
         } else {
           const path = getDecodedPath();
           if (path.includes("/Dashboard/")) {
-            setServerInfo({
-              id: "1424021358680998022",
-              name: "StatsHQ",
-              avatarUrl: null
-            });
+            setServerInfo({ id: "1424021358680998022", name: "StatsHQ", avatarUrl: null });
           } else {
             setServerInfo(null);
           }
@@ -84,11 +72,7 @@ const NavBar = () => {
       } else {
         const path = getDecodedPath();
         if (path.includes("/Dashboard/")) {
-          setServerInfo({
-            id: "1424021358680998022",
-            name: "StatsHQ",
-            avatarUrl: null
-          });
+          setServerInfo({ id: "1424021358680998022", name: "StatsHQ", avatarUrl: null });
         } else {
           setServerInfo(null);
         }
@@ -97,11 +81,7 @@ const NavBar = () => {
       console.error('Error fetching selected server:', error);
       const path = getDecodedPath();
       if (path.includes("/Dashboard/")) {
-        setServerInfo({
-          id: "1424021358680998022",
-          name: "StatsHQ",
-          avatarUrl: null
-        });
+        setServerInfo({ id: "1424021358680998022", name: "StatsHQ", avatarUrl: null });
       } else {
         setServerInfo(null);
       }
@@ -126,31 +106,21 @@ const NavBar = () => {
       if (path.includes("/Dashboard/")) {
         setCurrentPage("Dashboard");
         fetchSelectedServer();
-      } else if (path.includes("/docs/")) {
-        if (pageParam === 'setup') {
-          setCurrentPage("setup");
-        } else if (pageParam === 'faq') {
-          setCurrentPage("faq");
-        } else if (pageParam === 'privacy') {
-          setCurrentPage("privacy");
-        } else if (pageParam === 'terms') {
-          setCurrentPage("terms");
-        } else if (pageParam === 'cookies') {
-          setCurrentPage("cookies");
-        } else if (pageParam === 'invite-tracking') {
-          setCurrentPage("invite-tracking");
-        } else if (pageParam === 'distribution') {
-          setCurrentPage("distribution");
-        } else if (pageParam === 'ships') {
-          setCurrentPage("ships");
-        } else {
-          setCurrentPage("introduction");
-        }
+      } else if (path.includes("/docs/") || path === '/docs') {
+        if (pageParam === 'setup') setCurrentPage("setup");
+        else if (pageParam === 'faq') setCurrentPage("faq");
+        else if (pageParam === 'privacy') setCurrentPage("privacy");
+        else if (pageParam === 'terms') setCurrentPage("terms");
+        else if (pageParam === 'cookies') setCurrentPage("cookies");
+        else if (pageParam === 'invite-tracking') setCurrentPage("invite-tracking");
+        else if (pageParam === 'distribution') setCurrentPage("distribution");
+        else if (pageParam === 'ships') setCurrentPage("ships");
+        else setCurrentPage("introduction");
         setServerInfo(null);
-      } else if (path.includes("/Commands/")) {
+      } else if (path.includes("/Commands/") || path === '/Commands') {
         setCurrentPage("commands");
         setServerInfo(null);
-      } else if (path.includes("/Manage Servers/")) {
+      } else if (path.includes("/Manage Servers/") || path === '/Manage Servers') {
         setCurrentPage("manage-servers");
         setServerInfo(null);
       } else {
@@ -160,12 +130,8 @@ const NavBar = () => {
     };
 
     determineCurrentPage();
-
     window.addEventListener('popstate', determineCurrentPage);
-    
-    const handleUrlChange = () => {
-      determineCurrentPage();
-    };
+    const handleUrlChange = () => { determineCurrentPage(); };
     window.addEventListener('urlchange', handleUrlChange);
 
     const ua = navigator.userAgent.toLowerCase();
@@ -190,7 +156,6 @@ const NavBar = () => {
         setMenuLevel("main");
       }
     };
-
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
@@ -217,9 +182,7 @@ const NavBar = () => {
     setMenuLevel("docs");
   };
 
-  const handleBackClick = () => {
-    setMenuLevel("main");
-  };
+  const handleBackClick = () => { setMenuLevel("main"); };
 
   const handleMobileLogoClick = (e) => {
     e.preventDefault();
@@ -228,7 +191,7 @@ const NavBar = () => {
 
   const handleManageServersClick = (e) => {
     e.preventDefault();
-    window.location.href = '/Manage Servers';
+    window.location.href = '/Manage Servers/';
   };
 
   const ServerInfoBox = () => (
@@ -262,7 +225,7 @@ const NavBar = () => {
             <div className="mobile-server-name">{serverInfo.name}</div>
             <div className="mobile-server-edit">
               <a 
-                href="/Manage Servers"
+                href="/Manage Servers/"
                 onClick={handleManageServersClick}
                 className="mobile-edit-link"
               >
@@ -272,14 +235,11 @@ const NavBar = () => {
           </div>
         </div>
       ) : (
-        <div className="mobile-server-not-found">
-          No server selected
-        </div>
+        <div className="mobile-server-not-found">No server selected</div>
       )}
     </div>
   );
 
-  // Helper function to check if a dashboard page is active - same logic as DashboardSidebar
   const isDashboardPageActive = (pageName) => {
     const path = getDecodedPath();
     return path.includes(`/Dashboard/${pageName}/`) || path.includes(`/Dashboard/${pageName}`);
@@ -290,70 +250,34 @@ const NavBar = () => {
       <ServerInfoBox />
       <div className="submenu-category">
         <h3 className="category-title">ANALYTICS</h3>
-        <a 
-          href="/Dashboard/Messages" 
-          className={`mobile-nav-link ${isDashboardPageActive('Messages') ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/Dashboard/Messages/" className={`mobile-nav-link ${isDashboardPageActive('Messages') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">💬</span>Messages
         </a>
-        <a 
-          href="/Dashboard/Voice Activity" 
-          className={`mobile-nav-link ${isDashboardPageActive('Voice Activity') ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/Dashboard/Voice Activity/" className={`mobile-nav-link ${isDashboardPageActive('Voice Activity') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">🔊</span>Voice Activity
         </a>
-        <a 
-          href="/Dashboard/Activity" 
-          className={`mobile-nav-link ${isDashboardPageActive('Activity') ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/Dashboard/Activity/" className={`mobile-nav-link ${isDashboardPageActive('Activity') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">🎮</span>Status Activity
         </a>
-        <a 
-          href="/Dashboard/Emoji Tracking" 
-          className={`mobile-nav-link ${isDashboardPageActive('Emoji Tracking') ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/Dashboard/Emoji Tracking/" className={`mobile-nav-link ${isDashboardPageActive('Emoji Tracking') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">😊</span>Emojis
         </a>
-        <a 
-          href="/Dashboard/Invite Tracking" 
-          className={`mobile-nav-link ${isDashboardPageActive('Invite Tracking') ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/Dashboard/Invite Tracking/" className={`mobile-nav-link ${isDashboardPageActive('Invite Tracking') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">📨</span>Invites
         </a>
-        <a 
-          href="/Dashboard/Growth" 
-          className={`mobile-nav-link ${isDashboardPageActive('Growth') ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/Dashboard/Growth/" className={`mobile-nav-link ${isDashboardPageActive('Growth') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">📈</span>Growth
         </a>
       </div>
       <div className="submenu-category">
         <h3 className="category-title">OPTIMIZATION</h3>
-        <a 
-          href="/Dashboard/Settings" 
-          className={`mobile-nav-link ${isDashboardPageActive('Settings') ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/Dashboard/Settings/" className={`mobile-nav-link ${isDashboardPageActive('Settings') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">⚙️</span>Settings
         </a>
-        <a 
-          href="/Dashboard/Blacklist" 
-          className={`mobile-nav-link ${isDashboardPageActive('Blacklist') ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/Dashboard/Blacklist/" className={`mobile-nav-link ${isDashboardPageActive('Blacklist') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">🚫</span>Blacklist
         </a>
-        <a 
-          href="/Dashboard/Reset" 
-          className={`mobile-nav-link ${isDashboardPageActive('Reset') ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/Dashboard/Reset/" className={`mobile-nav-link ${isDashboardPageActive('Reset') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">🗑️</span>Reset Stats
         </a>
       </div>
@@ -364,76 +288,37 @@ const NavBar = () => {
     <div className="mobile-submenu">
       <div className="submenu-category">
         <h3 className="category-title">THE BASICS</h3>
-        <a 
-          href="/docs" 
-          className={`mobile-nav-link ${currentPage === 'introduction' ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/docs/" className={`mobile-nav-link ${currentPage === 'introduction' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           Introduction
         </a>
-        <a 
-          href="/docs?page=setup" 
-          className={`mobile-nav-link ${currentPage === 'setup' ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/docs/?page=setup" className={`mobile-nav-link ${currentPage === 'setup' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           Set Up
         </a>
-        <a 
-          href="/docs?page=faq" 
-          className={`mobile-nav-link ${currentPage === 'faq' ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/docs/?page=faq" className={`mobile-nav-link ${currentPage === 'faq' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           FAQ
         </a>
       </div>
-      
-      {/* New FEATURES Category */}
       <div className="submenu-category">
         <h3 className="category-title">FEATURES</h3>
-        <a 
-          href="/docs?page=invite-tracking" 
-          className={`mobile-nav-link ${currentPage === 'invite-tracking' ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/docs/?page=invite-tracking" className={`mobile-nav-link ${currentPage === 'invite-tracking' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           Invite Tracking
         </a>
-        <a 
-          href="/docs?page=distribution" 
-          className={`mobile-nav-link ${currentPage === 'distribution' ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/docs/?page=distribution" className={`mobile-nav-link ${currentPage === 'distribution' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           Distribution
         </a>
-        <a 
-          href="/docs?page=ships" 
-          className={`mobile-nav-link ${currentPage === 'ships' ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/docs/?page=ships" className={`mobile-nav-link ${currentPage === 'ships' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           Ships
         </a>
       </div>
-      
       <div className="submenu-category">
         <h3 className="category-title">LEGAL</h3>
-        <a 
-          href="/docs?page=privacy" 
-          className={`mobile-nav-link ${currentPage === 'privacy' ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/docs/?page=privacy" className={`mobile-nav-link ${currentPage === 'privacy' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           Privacy Policy
         </a>
-        <a 
-          href="/docs?page=terms" 
-          className={`mobile-nav-link ${currentPage === 'terms' ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/docs/?page=terms" className={`mobile-nav-link ${currentPage === 'terms' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           Terms of Service
         </a>
-        <a 
-          href="/docs?page=cookies" 
-          className={`mobile-nav-link ${currentPage === 'cookies' ? 'active' : ''}`}
-          onClick={() => setIsMobileMenuOpen(false)}
-        >
+        <a href="/docs/?page=cookies" className={`mobile-nav-link ${currentPage === 'cookies' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           Cookie Policy
         </a>
       </div>
@@ -442,41 +327,19 @@ const NavBar = () => {
 
   const MainMenu = () => (
     <>
-      <a 
-        href="/" 
-        className={`mobile-nav-link ${currentPage === 'home' ? 'active' : ''}`}
-        onClick={() => setIsMobileMenuOpen(false)}
-      >
+      <a href="/" className={`mobile-nav-link ${currentPage === 'home' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
         Home
       </a>
-      <a 
-        href="#" 
-        className={`mobile-nav-link ${currentPage === 'Dashboard' ? 'active' : ''}`}
-        onClick={handleDashboardClick}
-      >
+      <a href="#" className={`mobile-nav-link ${currentPage === 'Dashboard' ? 'active' : ''}`} onClick={handleDashboardClick}>
         Dashboard
       </a>
-      <a 
-        href="/Commands" 
-        className={`mobile-nav-link ${currentPage === 'commands' ? 'active' : ''}`}
-        onClick={() => setIsMobileMenuOpen(false)}
-      >
+      <a href="/Commands/" className={`mobile-nav-link ${currentPage === 'commands' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
         Commands
       </a>
-      <a 
-        href="#" 
-        className={`mobile-nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'invite-tracking', 'distribution', 'ships'].includes(currentPage) ? 'active' : ''}`}
-        onClick={handleDocsClick}
-      >
+      <a href="#" className={`mobile-nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'invite-tracking', 'distribution', 'ships'].includes(currentPage) ? 'active' : ''}`} onClick={handleDocsClick}>
         Docs
       </a>
-      <a 
-        href="https://discord.gg/hreJvck8cK" 
-        className="mobile-nav-link" 
-        target="_blank" 
-        rel="noopener noreferrer" 
-        onClick={() => setIsMobileMenuOpen(false)}
-      >
+      <a href="https://discord.gg/hreJvck8cK" className="mobile-nav-link" target="_blank" rel="noopener noreferrer" onClick={() => setIsMobileMenuOpen(false)}>
         Support
       </a>
     </>
@@ -492,43 +355,24 @@ const NavBar = () => {
             <img src="/Stats logo.png" alt="Stats Logo" className="logo-image" />
             <span className="logo-text">STATS</span>
           </a>
-          
           <nav className="desktop-nav">
-            <a 
-              href="/" 
-              className={`nav-link ${currentPage === 'home' ? 'active' : ''}`}
-            >
+            <a href="/" className={`nav-link ${currentPage === 'home' ? 'active' : ''}`}>
               Home
             </a>
-            <a 
-              href="/Dashboard/Messages" 
-              className={`nav-link ${currentPage === 'Dashboard' ? 'active' : ''}`}
-            >
+            <a href="/Dashboard/Messages/" className={`nav-link ${currentPage === 'Dashboard' ? 'active' : ''}`}>
               Dashboard
             </a>
-            <a 
-              href="/Commands" 
-              className={`nav-link ${currentPage === 'commands' ? 'active' : ''}`}
-            >
+            <a href="/Commands/" className={`nav-link ${currentPage === 'commands' ? 'active' : ''}`}>
               Commands
             </a>
-            <a 
-              href="/docs" 
-              className={`nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies'].includes(currentPage) ? 'active' : ''}`}
-            >
+            <a href="/docs/" className={`nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies'].includes(currentPage) ? 'active' : ''}`}>
               Docs
             </a>
-            <a 
-              href="https://discord.gg/hreJvck8cK" 
-              className="nav-link" 
-              target="_blank" 
-              rel="noopener noreferrer"
-            >
+            <a href="https://discord.gg/hreJvck8cK" className="nav-link" target="_blank" rel="noopener noreferrer">
               Support
             </a>
           </nav>
         </div>
-        
         <div className={`login-container desktop ${isDashboardPage ? 'dashboard-login' : ''}`}>
           <Login />
         </div>
@@ -543,23 +387,19 @@ const NavBar = () => {
         >
           <span className="menu-icon">☰</span>
         </button>
-        
         <div 
           className={`mobile-logo-container ${isSamsung ? 'samsung-only' : ''}`} 
           onClick={handleMobileLogoClick}
           role="link"
           tabIndex={0}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              handleMobileLogoClick(e);
-            }
+            if (e.key === 'Enter' || e.key === ' ') handleMobileLogoClick(e);
           }}
           style={{ outline: 'none', WebkitTapHighlightColor: 'transparent' }}
         >
           <img src="/Stats logo.png" alt="Stats Logo" className="logo-image" />
           {!isSamsung && <span className="mobile-logo-text">STATS</span>}
         </div>
-        
         <div className={`login-container mobile ${isDashboardPage ? 'dashboard-login' : ''}`}>
           <Login />
         </div>
@@ -567,10 +407,7 @@ const NavBar = () => {
 
       {isMobileMenuOpen && (
         <>
-          <div className="mobile-menu-overlay" onClick={() => {
-            setIsMobileMenuOpen(false);
-            setMenuLevel("main");
-          }} />
+          <div className="mobile-menu-overlay" onClick={() => { setIsMobileMenuOpen(false); setMenuLevel("main"); }} />
           <div ref={mobileMenuRef} className="mobile-menu">
             <div className="mobile-menu-header">
               {menuLevel !== "main" ? (
@@ -582,29 +419,18 @@ const NavBar = () => {
                   </div>
                 </button>
               ) : (
-                <button className="close-menu" onClick={() => {
-                  setIsMobileMenuOpen(false);
-                  setMenuLevel("main");
-                }}>
+                <button className="close-menu" onClick={() => { setIsMobileMenuOpen(false); setMenuLevel("main"); }}>
                   <svg className="close-icon" viewBox="0 0 24 24" width="20" height="20">
                     <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor"/>
                   </svg>
                 </button>
               )}
               <h2 className="menu-title">
-                {menuLevel === "Dashboard" ? "DASHBOARD" : 
-                 menuLevel === "docs" ? "DOCS" : "MENU"}
+                {menuLevel === "Dashboard" ? "DASHBOARD" : menuLevel === "docs" ? "DOCS" : "MENU"}
               </h2>
             </div>
-            
             <div className="mobile-menu-content">
-              {menuLevel === "Dashboard" ? (
-                <DashboardMenu />
-              ) : menuLevel === "docs" ? (
-                <DocsMenu />
-              ) : (
-                <MainMenu />
-              )}
+              {menuLevel === "Dashboard" ? <DashboardMenu /> : menuLevel === "docs" ? <DocsMenu /> : <MainMenu />}
             </div>
           </div>
         </>
@@ -692,14 +518,12 @@ const NavBar = () => {
           text-shadow: 0 0 15px #aa00ff;
         }
 
-        /* Login container base styles */
         .login-container {
           display: flex;
           align-items: center;
           position: relative;
         }
 
-        /* DASHBOARD SPECIFIC LOGIN STYLES - DESKTOP ONLY */
         .login-container.desktop.dashboard-login {
           margin-top: -12px;
         }
@@ -718,7 +542,6 @@ const NavBar = () => {
           max-height: 40px !important;
         }
 
-        /* Mobile dashboard login styles */
         .login-container.mobile.dashboard-login {
           margin-top: -8px;
         }
@@ -764,9 +587,7 @@ const NavBar = () => {
           justify-content: center;
         }
 
-        .menu-icon {
-          font-size: 28px;
-        }
+        .menu-icon { font-size: 28px; }
 
         .mobile-logo-container {
           display: flex;
@@ -780,22 +601,10 @@ const NavBar = () => {
           transition: opacity 0.2s ease;
         }
 
-        /* Samsung Internet specific - remove gap and center only the logo */
-        .mobile-logo-container.samsung-only {
-          gap: 0 !important;
-        }
-
-        .mobile-logo-container.samsung-only .logo-image {
-          width: 32px;
-        }
-
-        .mobile-logo-container:hover {
-          opacity: 0.8;
-        }
-
-        .mobile-logo-container:active {
-          opacity: 0.6;
-        }
+        .mobile-logo-container.samsung-only { gap: 0 !important; }
+        .mobile-logo-container.samsung-only .logo-image { width: 32px; }
+        .mobile-logo-container:hover { opacity: 0.8; }
+        .mobile-logo-container:active { opacity: 0.6; }
 
         .mobile-logo-text {
           font-family: 'Horndon', serif;
@@ -810,7 +619,6 @@ const NavBar = () => {
           line-height: 1;
         }
 
-        /* Samsung Internet specific styles - purple color scheme with existing font and stroke */
         .samsung-logo-text {
           font-family: 'Horndon', serif !important;
           font-weight: 600 !important;
@@ -831,20 +639,15 @@ const NavBar = () => {
           pointer-events: none;
         }
 
-        .menu-button:hover {
-          color: #aa00ff;
-        }
+        .menu-button:hover { color: #aa00ff; }
 
-        /* FIX: Allow login dropdown to overflow the mobile header */
         .login-container.mobile {
           position: relative;
           z-index: 1001;
           overflow: visible !important;
         }
 
-        .login-container.mobile :global(*) {
-          overflow: visible !important;
-        }
+        .login-container.mobile :global(*) { overflow: visible !important; }
 
         .login-container.mobile :global(.dropdown-menu),
         .login-container.mobile :global(.user-menu),
@@ -883,12 +686,8 @@ const NavBar = () => {
         }
 
         @keyframes slideIn {
-          from {
-            transform: translateX(-100%);
-          }
-          to {
-            transform: translateX(0);
-          }
+          from { transform: translateX(-100%); }
+          to { transform: translateX(0); }
         }
 
         .mobile-menu-header {
@@ -923,28 +722,18 @@ const NavBar = () => {
           justify-content: center;
           background: linear-gradient(135deg, #2c2f3a 0%, #1a1c24 100%);
           border-radius: 16px;
-          box-shadow: 
-            0 4px 10px rgba(0, 0, 0, 0.3),
-            0 0 0 1px rgba(170, 0, 255, 0.2) inset,
-            0 0 15px rgba(170, 0, 255, 0.3);
+          box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(170, 0, 255, 0.2) inset, 0 0 15px rgba(170, 0, 255, 0.3);
           transition: all 0.3s ease;
         }
 
-        .back-button:hover {
-          transform: translateX(-3px);
-        }
+        .back-button:hover { transform: translateX(-3px); }
 
         .back-button:hover .back-button-inner {
           background: linear-gradient(135deg, #3a3d4a 0%, #2a2c34 100%);
-          box-shadow: 
-            0 6px 15px rgba(0, 0, 0, 0.4),
-            0 0 0 1px rgba(170, 0, 255, 0.4) inset,
-            0 0 20px rgba(170, 0, 255, 0.5);
+          box-shadow: 0 6px 15px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(170, 0, 255, 0.4) inset, 0 0 20px rgba(170, 0, 255, 0.5);
         }
 
-        .back-button:active {
-          transform: translateX(0) scale(0.95);
-        }
+        .back-button:active { transform: translateX(0) scale(0.95); }
 
         .back-arrow {
           width: 22px;
@@ -964,24 +753,16 @@ const NavBar = () => {
           border: none;
           cursor: pointer;
           padding: 0;
-          width: 48px;
-          height: 48px;
+          width: 40px;
+          height: 40px;
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: all 0.3s ease;
-          color: #ffffff;
-        }
-
-        .close-menu {
-          width: 40px;
-          height: 40px;
           background: linear-gradient(135deg, #2c2f3a 0%, #1a1c24 100%);
           border-radius: 50%;
-          box-shadow: 
-            0 4px 10px rgba(0, 0, 0, 0.3),
-            0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+          box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
           transition: all 0.3s ease;
+          color: #ffffff;
         }
 
         .close-menu:hover {
@@ -1014,9 +795,7 @@ const NavBar = () => {
           letter-spacing: 1px;
         }
 
-        .mobile-menu-content {
-          padding: 20px;
-        }
+        .mobile-menu-content { padding: 20px; }
 
         .mobile-nav-link {
           display: flex;
@@ -1036,9 +815,7 @@ const NavBar = () => {
           transition: transform 0.2s ease;
         }
 
-        .mobile-nav-link:hover .mobile-nav-icon {
-          transform: scale(1.1);
-        }
+        .mobile-nav-link:hover .mobile-nav-icon { transform: scale(1.1); }
 
         .mobile-nav-link:hover,
         .mobile-nav-link.active {
@@ -1046,13 +823,8 @@ const NavBar = () => {
           transform: translateX(5px);
         }
 
-        .mobile-submenu {
-          margin-top: 0;
-        }
-
-        .submenu-category {
-          margin-bottom: 24px;
-        }
+        .mobile-submenu { margin-top: 0; }
+        .submenu-category { margin-bottom: 24px; }
 
         .category-title {
           color: #aa00ff;
@@ -1116,10 +888,7 @@ const NavBar = () => {
           color: #aa00ff;
         }
 
-        .mobile-server-text {
-          flex: 1;
-          min-width: 0;
-        }
+        .mobile-server-text { flex: 1; min-width: 0; }
 
         .mobile-server-name {
           color: #ffffff;
@@ -1131,9 +900,7 @@ const NavBar = () => {
           margin-bottom: 4px;
         }
 
-        .mobile-server-edit {
-          font-size: 12px;
-        }
+        .mobile-server-edit { font-size: 12px; }
 
         .mobile-edit-link {
           color: #aa00ff;
@@ -1184,7 +951,6 @@ const NavBar = () => {
           border: 1px solid #2c2f3a;
         }
 
-        /* Remove tap highlight and focus outlines on mobile */
         .menu-button,
         .mobile-logo-container,
         .back-button,
@@ -1205,17 +971,9 @@ const NavBar = () => {
         }
 
         @media (max-width: 768px) {
-          header {
-            padding: 0;
-          }
-          
-          .desktop-header {
-            display: none;
-          }
-
-          .mobile-header {
-            display: flex;
-          }
+          header { padding: 0; }
+          .desktop-header { display: none; }
+          .mobile-header { display: flex; }
         }
 
         @media (max-width: 480px) {
@@ -1235,32 +993,13 @@ const NavBar = () => {
             letter-spacing: 1.8px !important;
           }
 
-          .mobile-logo-container .logo-image {
-            width: 28px;
-          }
-          
-          .mobile-logo-container.samsung-only .logo-image {
-            width: 28px;
-          }
+          .mobile-logo-container .logo-image { width: 28px; }
+          .mobile-logo-container.samsung-only .logo-image { width: 28px; }
+          .mobile-menu { width: 75%; }
 
-          .mobile-menu {
-            width: 75%;
-          }
-
-          .back-button, .close-menu {
-            width: 44px;
-            height: 44px;
-          }
-
-          .back-button-inner {
-            width: 36px;
-            height: 36px;
-          }
-
-          .back-arrow {
-            width: 20px;
-            height: 20px;
-          }
+          .back-button, .close-menu { width: 44px; height: 44px; }
+          .back-button-inner { width: 36px; height: 36px; }
+          .back-arrow { width: 20px; height: 20px; }
 
           .mobile-server-avatar,
           .mobile-server-avatar-placeholder {
@@ -1269,29 +1008,11 @@ const NavBar = () => {
             font-size: 18px;
           }
 
-          .mobile-server-name {
-            font-size: 14px;
-          }
-          
-          .mobile-nav-link {
-            padding: 14px 0;
-            font-size: 16px;
-          }
-          
-          .mobile-nav-icon {
-            font-size: 18px;
-            min-width: 24px;
-          }
-          
-          .submenu-category .mobile-nav-link {
-            padding: 10px 0 10px 12px;
-            font-size: 14px;
-          }
-          
-          .submenu-category .mobile-nav-link .mobile-nav-icon {
-            font-size: 16px;
-            min-width: 22px;
-          }
+          .mobile-server-name { font-size: 14px; }
+          .mobile-nav-link { padding: 14px 0; font-size: 16px; }
+          .mobile-nav-icon { font-size: 18px; min-width: 24px; }
+          .submenu-category .mobile-nav-link { padding: 10px 0 10px 12px; font-size: 14px; }
+          .submenu-category .mobile-nav-link .mobile-nav-icon { font-size: 16px; min-width: 22px; }
         }
       `}</style>
     </>

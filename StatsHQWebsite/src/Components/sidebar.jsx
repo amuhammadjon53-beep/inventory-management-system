@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
-// PRIVILEGED USERS - can see Debug option
 const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
 
 const DashboardSidebar = ({ 
@@ -22,11 +21,10 @@ const DashboardSidebar = ({
 
   const fetchedRef = React.useRef(false);
 
-  // Inject styles into document head
   useEffect(() => {
     const styleId = 'dashboard-sidebar-styles';
     const existing = document.getElementById(styleId);
-    if (existing) existing.remove(); // always re-inject so topOffset is fresh
+    if (existing) existing.remove();
 
     const styleEl = document.createElement('style');
     styleEl.id = styleId;
@@ -84,9 +82,7 @@ const DashboardSidebar = ({
         transition: width 0.3s ease;
       }
 
-      .dashboard-sidebar .sidebar-title:hover::after {
-        width: 100%;
-      }
+      .dashboard-sidebar .sidebar-title:hover::after { width: 100%; }
 
       .dashboard-sidebar .server-info-container {
         padding: 20px;
@@ -115,9 +111,7 @@ const DashboardSidebar = ({
         background-color: #22242e !important;
       }
 
-      .dashboard-sidebar .server-info-box:active {
-        transform: translateY(0) !important;
-      }
+      .dashboard-sidebar .server-info-box:active { transform: translateY(0) !important; }
 
       .dashboard-sidebar .server-avatar {
         width: 48px !important;
@@ -152,10 +146,7 @@ const DashboardSidebar = ({
         box-shadow: 0 0 15px rgba(170, 0, 255, 0.3) !important;
       }
 
-      .dashboard-sidebar .server-details {
-        flex: 1 !important;
-        min-width: 0 !important;
-      }
+      .dashboard-sidebar .server-details { flex: 1 !important; min-width: 0 !important; }
 
       .dashboard-sidebar .server-name {
         color: #ffffff !important;
@@ -167,10 +158,7 @@ const DashboardSidebar = ({
         margin-bottom: 4px !important;
       }
 
-      .dashboard-sidebar .server-members {
-        color: #b0b0b0 !important;
-        font-size: 13px !important;
-      }
+      .dashboard-sidebar .server-members { color: #b0b0b0 !important; font-size: 13px !important; }
 
       .dashboard-sidebar .server-loading {
         color: #b0b0b0 !important;
@@ -270,9 +258,7 @@ const DashboardSidebar = ({
         overflow-y: auto !important;
       }
 
-      .dashboard-sidebar .nav-section {
-        margin-bottom: 32px !important;
-      }
+      .dashboard-sidebar .nav-section { margin-bottom: 32px !important; }
 
       .dashboard-sidebar .section-title {
         color: #ffffff !important;
@@ -302,9 +288,7 @@ const DashboardSidebar = ({
         box-shadow: 0 0 10px #aa00ff, 0 0 20px #aa00ff;
       }
 
-      .dashboard-sidebar .section-title:hover::after {
-        width: 100%;
-      }
+      .dashboard-sidebar .section-title:hover::after { width: 100%; }
 
       .dashboard-sidebar .nav-item {
         display: flex !important;
@@ -342,9 +326,7 @@ const DashboardSidebar = ({
         transition: transform 0.2s ease !important;
       }
 
-      .dashboard-sidebar .nav-item:hover .nav-icon {
-        transform: scale(1.1) !important;
-      }
+      .dashboard-sidebar .nav-item:hover .nav-icon { transform: scale(1.1) !important; }
 
       .dashboard-sidebar .privileged-indicator {
         margin: 16px 20px 20px !important;
@@ -362,31 +344,22 @@ const DashboardSidebar = ({
         text-shadow: 0 0 5px rgba(255, 215, 0, 0.3) !important;
       }
 
-      .dashboard-sidebar .privileged-icon {
-        font-size: 14px !important;
-      }
-
-      .dashboard-sidebar .privileged-text {
-        letter-spacing: 0.5px !important;
-      }
+      .dashboard-sidebar .privileged-icon { font-size: 14px !important; }
+      .dashboard-sidebar .privileged-text { letter-spacing: 0.5px !important; }
 
       .dashboard-sidebar::-webkit-scrollbar { width: 8px; }
       .dashboard-sidebar::-webkit-scrollbar-track { background: #0a0b12; }
       .dashboard-sidebar::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
       .dashboard-sidebar::-webkit-scrollbar-thumb:hover { background: #aa00ff; }
 
-      @media (max-width: 1024px) {
-        .dashboard-sidebar { width: 250px !important; }
-      }
+      @media (max-width: 1024px) { .dashboard-sidebar { width: 250px !important; } }
 
       @media (max-width: 768px) {
         .dashboard-sidebar {
           transform: translateX(-100%);
           transition: transform 0.3s ease;
         }
-        .dashboard-sidebar.mobile-open {
-          transform: translateX(0);
-        }
+        .dashboard-sidebar.mobile-open { transform: translateX(0); }
       }
     `;
     document.head.appendChild(styleEl);
@@ -401,12 +374,8 @@ const DashboardSidebar = ({
     try {
       const response = await fetch(`${API_BASE_URL}/api/auth/status`, {
         credentials: 'include',
-        headers: {
-          'Accept': 'application/json',
-          'Cache-Control': 'no-cache'
-        }
+        headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }
       });
-      
       if (response.ok) {
         const authData = await response.json();
         if (authData.authenticated && authData.user) {
@@ -423,32 +392,19 @@ const DashboardSidebar = ({
     const rawPath = window.location.pathname;
     const path = decodeURIComponent(rawPath);
     
-    if (path.includes('/Dashboard/Messages/')) {
-      setCurrentPage('messages');
-    } else if (path.includes('/Dashboard/Voice Activity/')) {
-      setCurrentPage('voice-activity');
-    } else if (path.includes('/Dashboard/Activity/')) {
-      setCurrentPage('activity');
-    } else if (path.includes('/Dashboard/Emoji Tracking/')) {
-      setCurrentPage('emojis');
-    } else if (path.includes('/Dashboard/Invite Tracking/')) {
-      setCurrentPage('invites');
-    } else if (path.includes('/Dashboard/Growth/')) {
-      setCurrentPage('growth');
-    } else if (path.includes('/Dashboard/Settings/')) {
-      setCurrentPage('settings');
-    } else if (path.includes('/Dashboard/Blacklist/')) {
-      setCurrentPage('blacklist');
-    } else if (path.includes('/Dashboard/Reset/')) {
-      setCurrentPage('reset');
-    } else if (path.includes('/Dashboard/Debug/')) {
-      setCurrentPage('debug');
-    }
+    if (path.includes('/Dashboard/Messages')) setCurrentPage('messages');
+    else if (path.includes('/Dashboard/Voice Activity')) setCurrentPage('voice-activity');
+    else if (path.includes('/Dashboard/Activity')) setCurrentPage('activity');
+    else if (path.includes('/Dashboard/Emoji Tracking')) setCurrentPage('emojis');
+    else if (path.includes('/Dashboard/Invite Tracking')) setCurrentPage('invites');
+    else if (path.includes('/Dashboard/Growth')) setCurrentPage('growth');
+    else if (path.includes('/Dashboard/Settings')) setCurrentPage('settings');
+    else if (path.includes('/Dashboard/Blacklist')) setCurrentPage('blacklist');
+    else if (path.includes('/Dashboard/Reset')) setCurrentPage('reset');
+    else if (path.includes('/Dashboard/Debug')) setCurrentPage('debug');
   }, []);
 
-  useEffect(() => {
-    checkPrivilegedStatus();
-  }, []);
+  useEffect(() => { checkPrivilegedStatus(); }, []);
 
   useEffect(() => {
     if (isPublicMode) {
@@ -463,30 +419,20 @@ const DashboardSidebar = ({
       return;
     }
 
-    if (!currentServerId) {
-      setLoading(false);
-      return;
-    }
+    if (!currentServerId) { setLoading(false); return; }
 
-    if (fetchedRef.current && serverInfo?.id === currentServerId) {
-      return;
-    }
+    if (fetchedRef.current && serverInfo?.id === currentServerId) return;
 
     const fetchServerInfo = async () => {
       setLoading(true);
       try {
         const response = await fetch(`${API_BASE_URL}/api/user/servers`, {
           credentials: 'include',
-          headers: {
-            'Accept': 'application/json',
-            'Cache-Control': 'no-cache'
-          }
+          headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }
         });
-        
         if (response.ok) {
           const servers = await response.json();
           const server = servers?.find(s => s.id === currentServerId);
-          
           if (server) {
             setServerInfo({
               ...server,
@@ -514,7 +460,7 @@ const DashboardSidebar = ({
 
   const handleManageServersClick = (e) => {
     e.preventDefault();
-    window.location.href = '/Manage Servers';
+    window.location.href = '/Manage Servers/';
   };
 
   const startFadeOut = () => {
@@ -530,10 +476,7 @@ const DashboardSidebar = ({
 
   const showTooltipWithTimer = () => {
     if (tooltipTimer) clearTimeout(tooltipTimer);
-    if (fadeOutTimer) {
-      clearTimeout(fadeOutTimer);
-      setFadeOutTimer(null);
-    }
+    if (fadeOutTimer) { clearTimeout(fadeOutTimer); setFadeOutTimer(null); }
     if (isFadingOut) setIsFadingOut(false);
     setShowTooltip(true);
     const timer = setTimeout(() => {
@@ -570,9 +513,7 @@ const DashboardSidebar = ({
                   onError={(e) => {
                     e.target.onerror = null;
                     e.target.style.display = 'none';
-                    if (e.target.nextSibling) {
-                      e.target.nextSibling.style.display = 'flex';
-                    }
+                    if (e.target.nextSibling) e.target.nextSibling.style.display = 'flex';
                   }}
                 />
               ) : (
@@ -597,7 +538,7 @@ const DashboardSidebar = ({
             <div className={`server-tooltip ${isFadingOut ? 'fade-out' : 'fade-in'}`}>
               You can edit the server in{' '}
               <a 
-                href="/Manage Servers"
+                href="/Manage Servers/"
                 onClick={handleManageServersClick}
                 className="tooltip-link"
               >
@@ -611,43 +552,39 @@ const DashboardSidebar = ({
       <nav className="sidebar-nav">
         <div className="nav-section">
           <h3 className="section-title">ANALYTICS</h3>
-          <a href="/Dashboard/Messages" className={`nav-item ${currentPage === 'messages' ? 'active' : ''}`}>
+          <a href="/Dashboard/Messages/" className={`nav-item ${currentPage === 'messages' ? 'active' : ''}`}>
             <span className="nav-icon">💬</span>Messages
           </a>
-          <a href="/Dashboard/Voice Activity" className={`nav-item ${currentPage === 'voice-activity' ? 'active' : ''}`}>
+          <a href="/Dashboard/Voice Activity/" className={`nav-item ${currentPage === 'voice-activity' ? 'active' : ''}`}>
             <span className="nav-icon">🔊</span>Voice Activity
           </a>
-          <a href="/Dashboard/Activity" className={`nav-item ${currentPage === 'activity' ? 'active' : ''}`}>
+          <a href="/Dashboard/Activity/" className={`nav-item ${currentPage === 'activity' ? 'active' : ''}`}>
             <span className="nav-icon">🎮</span>Status Activity
           </a>
-          <a href="/Dashboard/Emoji Tracking" className={`nav-item ${currentPage === 'emojis' ? 'active' : ''}`}>
+          <a href="/Dashboard/Emoji Tracking/" className={`nav-item ${currentPage === 'emojis' ? 'active' : ''}`}>
             <span className="nav-icon">😊</span>Emojis
           </a>
-          <a href="/Dashboard/Invite Tracking" className={`nav-item ${currentPage === 'invites' ? 'active' : ''}`}>
+          <a href="/Dashboard/Invite Tracking/" className={`nav-item ${currentPage === 'invites' ? 'active' : ''}`}>
             <span className="nav-icon">📨</span>Invites
           </a>
-          <a href="/Dashboard/Growth" className={`nav-item ${currentPage === 'growth' ? 'active' : ''}`}>
+          <a href="/Dashboard/Growth/" className={`nav-item ${currentPage === 'growth' ? 'active' : ''}`}>
             <span className="nav-icon">📈</span>Growth
           </a>
         </div>
         
         <div className="nav-section">
           <h3 className="section-title">OPTIMIZATION</h3>
-          <a href="/Dashboard/Settings" className={`nav-item ${currentPage === 'settings' ? 'active' : ''}`}>
+          <a href="/Dashboard/Settings/" className={`nav-item ${currentPage === 'settings' ? 'active' : ''}`}>
             <span className="nav-icon">⚙️</span>Settings
           </a>
-          <a href="/Dashboard/Blacklist" className={`nav-item ${currentPage === 'blacklist' ? 'active' : ''}`}>
+          <a href="/Dashboard/Blacklist/" className={`nav-item ${currentPage === 'blacklist' ? 'active' : ''}`}>
             <span className="nav-icon">🚫</span>Blacklist
           </a>
-          <a href="/Dashboard/Reset" className={`nav-item ${currentPage === 'reset' ? 'active' : ''}`}>
+          <a href="/Dashboard/Reset/" className={`nav-item ${currentPage === 'reset' ? 'active' : ''}`}>
             <span className="nav-icon">🗑️</span>Reset Stats
           </a>
-          
           {isPrivileged && (
-            <a 
-              href="/Dashboard/Debug" 
-              className={`nav-item ${currentPage === 'debug' ? 'active' : ''}`}
-            >
+            <a href="/Dashboard/Debug/" className={`nav-item ${currentPage === 'debug' ? 'active' : ''}`}>
               <span className="nav-icon">🐛</span>Debug
             </a>
           )}

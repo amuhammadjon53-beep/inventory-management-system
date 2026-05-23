@@ -262,8 +262,33 @@ class DatabaseStats(commands.Cog):
             '0 0 * * *', func=self.update_activity_streaks, tz=ZoneInfo('UTC'))
         self.server_count_cron = aiocron.crontab(
             '0 */3 * * *', func=self.send_server_count_message, tz=ZoneInfo('UTC'))
+        self.reset_schedule_cron = aiocron.crontab(
+            '0 */12 * * *', func=self.check_and_execute_scheduled_resets, tz=ZoneInfo('UTC'))
 
-        print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, Server count message every 3 hours")
+        print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, Server count message every 3 hours, Reset schedule checker every 12 hours")
+
+    async def check_and_execute_scheduled_resets(self):
+        """Check for due reset schedules and execute them - runs every 12 hours."""
+        try:
+            # Get the ResetStats cog
+            reset_cog = self.bot.get_cog('ResetStats')
+            if not reset_cog:
+                print("⚠️ ResetStats cog not found - cannot check scheduled resets")
+                return
+
+            # Check if the cog has the required method
+            if hasattr(reset_cog, 'check_and_execute_scheduled_resets'):
+                await reset_cog.check_and_execute_scheduled_resets()
+                print(
+                    f"✅ Scheduled reset check completed at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+            else:
+                print(
+                    "⚠️ ResetStats cog does not have check_and_execute_scheduled_resets method")
+
+        except Exception as e:
+            print(f"❌ Error in scheduled reset check: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def send_server_count_message(self):
         """Send a message with the total server count and total users every 3 hours, and update bot lists."""
@@ -2659,6 +2684,20 @@ class DatabaseStats(commands.Cog):
                         member_count INT NOT NULL,
                         UNIQUE(guild_id, recorded_at)
                     )
+                    ''',
+                    # NEW: reset_schedules table for managing automated data resets
+                    '''
+                    CREATE TABLE IF NOT EXISTS reset_schedules (
+                        id SERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        requested_by_id BIGINT NOT NULL,
+                        target_time TIMESTAMPTZ NOT NULL,
+                        reset_types TEXT[] NOT NULL,
+                        completed BOOLEAN DEFAULT FALSE NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                        executed_at TIMESTAMPTZ,
+                        reason TEXT
+                    )
                     '''
                 ]
 
@@ -2969,6 +3008,28 @@ class DatabaseStats(commands.Cog):
                             context={'operation': 'initialize_database'},
                             original=e
                         )
+
+                # ===== CREATE RESET SCHEDULES INDEXES =====
+                print("\n" + "="*60)
+                print("📊 CREATING RESET SCHEDULES INDEXES")
+                print("="*60)
+
+                reset_schedules_indexes = [
+                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_pending ON reset_schedules (target_time) WHERE completed = FALSE',
+                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_guild ON reset_schedules (guild_id)',
+                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_completed ON reset_schedules (completed, target_time)'
+                ]
+
+                for query in reset_schedules_indexes:
+                    try:
+                        await conn.execute(query)
+                        import re
+                        match = re.search(r'INDEX IF NOT EXISTS (\w+)', query)
+                        if match:
+                            print(f"  ✅ Created index: {match.group(1)}")
+                    except asyncpg.exceptions.PostgresError as e:
+                        print(
+                            f"  ⚠️ Warning: Could not create reset_schedules index: {e}")
 
                 # ===== CREATE HYPERTABLES =====
                 print("\n" + "="*60)
