@@ -377,12 +377,15 @@ class ResetServerRequest(BaseModel):
     guild_id: str
     stat_type: str = Field(
         ...,
-        pattern="^(all|messages|voice activity|invite tracking|emoji stats|activity|mentions|role growth|member growth)$",        description="Type of statistics to reset"
+        pattern="^(all|messages|voice activity|invite tracking|emoji stats|activity|mentions|role growth|member growth)$",
+        description="Type of statistics to reset"
     )
     channel_id: Optional[str] = Field(
         None, description="Optional channel ID for channel-specific reset")
     category_id: Optional[str] = Field(
         None, description="Optional category ID for category-specific reset")
+    time_period_days: Optional[int] = Field(
+        None, description="Delete only stats from the last X days (null = all time)", ge=1, le=365)
 
 
 class ResetUserRequest(BaseModel):
@@ -398,6 +401,39 @@ class ResetUserRequest(BaseModel):
         None, description="Optional channel ID for channel-specific reset")
     category_id: Optional[str] = Field(
         None, description="Optional category ID for category-specific reset")
+    time_period_days: Optional[int] = Field(
+        None, description="Delete only stats from the last X days (null = all time)", ge=1, le=365)
+
+
+class CreateScheduleRequest(BaseModel):
+    """Request model for creating a reset schedule"""
+    guild_id: str
+    requested_by_id: str
+    reset_types: List[str] = Field(...,
+                                   description="List of stat types to reset")
+    interval_days: int = Field(...,
+                               description="Days between resets", ge=1, le=365)
+    reason: Optional[str] = Field(
+        None, description="Optional reason for the schedule")
+    scope: Literal["server", "channel",
+                   "category"] = Field(..., description="Reset scope")
+    scope_details: Optional[str] = Field(
+        None, description="Details about the target (channel name, category name, etc)")
+    channel_id: Optional[str] = Field(
+        None, description="Channel ID if scope is channel")
+    category_id: Optional[str] = Field(
+        None, description="Category ID if scope is category")
+    time_period_days: Optional[int] = Field(
+        None, description="Delete only stats from the last X days (null = all time)", ge=1, le=365)
+
+
+class CreateScheduleResponse(BaseModel):
+    """Response model for schedule creation"""
+    success: bool
+    message: str
+    schedule_id: Optional[int] = None
+    next_reset_time: Optional[str] = None
+    error: Optional[str] = None
 
 
 class ResetResponse(BaseModel):
@@ -408,6 +444,48 @@ class ResetResponse(BaseModel):
         None, description="Counts of deleted records per table")
     error: Optional[str] = Field(
         None, description="Error message if success is False")
+
+
+class ResetServerTimePeriodRequest(BaseModel):
+    """Request model for resetting server stats with time period"""
+    guild_id: str
+    stat_type: str
+    days_back: int = Field(...,
+                           description="Number of days to go back", ge=1, le=365)
+    channel_id: Optional[str] = None
+    category_id: Optional[str] = None
+
+
+class ResetUserTimePeriodRequest(BaseModel):
+    """Request model for resetting user stats with time period"""
+    guild_id: str
+    user_id: str
+    stat_type: str
+    days_back: int = Field(...,
+                           description="Number of days to go back", ge=1, le=365)
+    channel_id: Optional[str] = None
+    category_id: Optional[str] = None
+
+
+class GetSchedulesRequest(BaseModel):
+    guild_id: str
+
+
+class GetSchedulesResponse(BaseModel):
+    success: bool
+    schedules: List[Dict[str, Any]] = []
+    error: Optional[str] = None
+
+
+class CancelScheduleRequest(BaseModel):
+    schedule_id: int
+    guild_id: str
+
+
+class CancelScheduleResponse(BaseModel):
+    success: bool
+    message: str
+    error: Optional[str] = None
 
 
 # ============================================
@@ -3544,8 +3622,9 @@ class DatabaseStatsAPI:
 
     async def reset_server_stats(self, guild_id: str, stat_type: str,
                                  channel_id: Optional[str] = None,
-                                 category_id: Optional[str] = None) -> dict:
-        """Reset server statistics from aggregated tables"""
+                                 category_id: Optional[str] = None,
+                                 time_period_days: Optional[int] = None) -> dict:
+        """Reset server statistics from aggregated tables with optional time period filtering"""
         try:
             conn = await self.get_connection()
             try:
@@ -3570,53 +3649,104 @@ class DatabaseStatsAPI:
                     stat_type_lower = stat_type.lower()
 
                     if stat_type_lower == "all" or stat_type_lower == "messages":
-                        result = await conn.execute(f"DELETE FROM message_tracking_hourly WHERE {where_clause}", *params)
+                        query = f"DELETE FROM message_tracking_hourly WHERE {where_clause}"
+                        if time_period_days:
+                            query += f" AND hour >= NOW() - INTERVAL '{time_period_days} days'"
+                        result = await conn.execute(query, *params)
                         deleted_counts['message_tracking_hourly'] = result.split(
                         )[-1]
                         await self._invalidate_leaderboard_cache(guild_id, 'users')
                         await self._invalidate_leaderboard_cache(guild_id, 'channels')
 
                     if stat_type_lower == "all" or stat_type_lower == "voice activity":
-                        result = await conn.execute(f"DELETE FROM voice_session_history_hourly WHERE {where_clause}", *params)
+                        query = f"DELETE FROM voice_session_history_hourly WHERE {where_clause}"
+                        if time_period_days:
+                            query += f" AND hour >= NOW() - INTERVAL '{time_period_days} days'"
+                        result = await conn.execute(query, *params)
                         deleted_counts['voice_session_history_hourly'] = result.split(
                         )[-1]
 
                     if stat_type_lower == "all" or stat_type_lower == "emoji stats":
-                        result = await conn.execute(f"DELETE FROM emoji_usage_hourly WHERE {where_clause}", *params)
+                        query = f"DELETE FROM emoji_usage_hourly WHERE {where_clause}"
+                        if time_period_days:
+                            query += f" AND hour >= NOW() - INTERVAL '{time_period_days} days'"
+                        result = await conn.execute(query, *params)
                         deleted_counts['emoji_usage_hourly'] = result.split(
                         )[-1]
                         await self._invalidate_leaderboard_cache(guild_id, 'emojis')
 
                     if stat_type_lower == "all" or stat_type_lower == "mentions":
-                        result = await conn.execute(f"DELETE FROM user_mentions_hourly WHERE {where_clause}", *params)
+                        query = f"DELETE FROM user_mentions_hourly WHERE {where_clause}"
+                        if time_period_days:
+                            query += f" AND hour >= NOW() - INTERVAL '{time_period_days} days'"
+                        result = await conn.execute(query, *params)
                         deleted_counts['user_mentions_hourly'] = result.split(
                         )[-1]
                         await self._invalidate_leaderboard_cache(guild_id, 'mentions')
 
                     if (stat_type_lower == "all" or stat_type_lower == "invite tracking") and not channel_id and not category_id:
-                        result = await conn.execute(f"DELETE FROM invite_tracking WHERE guild_id = $1", int(guild_id))
+                        if time_period_days:
+                            result = await conn.execute(
+                                f"DELETE FROM invite_tracking WHERE guild_id = $1 AND created_at >= NOW() - INTERVAL '{time_period_days} days'",
+                                int(guild_id)
+                            )
+                        else:
+                            result = await conn.execute(f"DELETE FROM invite_tracking WHERE guild_id = $1", int(guild_id))
                         deleted_counts['invite_tracking'] = result.split()[-1]
                         await self._invalidate_leaderboard_cache(guild_id, 'invites')
 
                     if (stat_type_lower == "all" or stat_type_lower == "activity") and not channel_id and not category_id:
-                        result = await conn.execute(f"DELETE FROM activity_sessions_hourly WHERE guild_id = $1", int(guild_id))
+                        if time_period_days:
+                            result = await conn.execute(
+                                f"DELETE FROM activity_sessions_hourly WHERE guild_id = $1 AND hour >= NOW() - INTERVAL '{time_period_days} days'",
+                                int(guild_id)
+                            )
+                        else:
+                            result = await conn.execute(f"DELETE FROM activity_sessions_hourly WHERE guild_id = $1", int(guild_id))
                         deleted_counts['activity_sessions_hourly'] = result.split(
+                        )[-1]
+
+                    if (stat_type_lower == "all" or stat_type_lower == "role growth") and not channel_id and not category_id:
+                        if time_period_days:
+                            result = await conn.execute(
+                                f"DELETE FROM role_growth_hourly WHERE guild_id = $1 AND hour >= NOW() - INTERVAL '{time_period_days} days'",
+                                int(guild_id)
+                            )
+                        else:
+                            result = await conn.execute(f"DELETE FROM role_growth_hourly WHERE guild_id = $1", int(guild_id))
+                        deleted_counts['role_growth_hourly'] = result.split(
+                        )[-1]
+
+                    if (stat_type_lower == "all" or stat_type_lower == "member growth") and not channel_id and not category_id:
+                        if time_period_days:
+                            result1 = await conn.execute(
+                                f"DELETE FROM member_joins_hourly WHERE guild_id = $1 AND hour >= NOW() - INTERVAL '{time_period_days} days'",
+                                int(guild_id)
+                            )
+                            result2 = await conn.execute(
+                                f"DELETE FROM member_leaves_hourly WHERE guild_id = $1 AND hour >= NOW() - INTERVAL '{time_period_days} days'",
+                                int(guild_id)
+                            )
+                        else:
+                            result1 = await conn.execute(f"DELETE FROM member_joins_hourly WHERE guild_id = $1", int(guild_id))
+                            result2 = await conn.execute(f"DELETE FROM member_leaves_hourly WHERE guild_id = $1", int(guild_id))
+                        deleted_counts['member_joins_hourly'] = result1.split(
+                        )[-1]
+                        deleted_counts['member_leaves_hourly'] = result2.split(
                         )[-1]
 
                     return deleted_counts
             finally:
                 await self.release_connection(conn)
-        except asyncpg.PostgresError as e:
-            raise DatabaseQueryError(
-                "Failed to reset server stats",
-                context={'guild_id': guild_id, 'stat_type': stat_type},
-                original=e
-            )
+        except Exception as e:
+            logger.error(f"Error resetting server stats: {e}")
+            raise
 
     async def reset_user_stats(self, guild_id: str, user_id: str, stat_type: str,
                                channel_id: Optional[str] = None,
-                               category_id: Optional[str] = None) -> dict:
-        """Reset user statistics from aggregated tables"""
+                               category_id: Optional[str] = None,
+                               time_period_days: Optional[int] = None) -> dict:
+        """Reset user statistics from aggregated tables with optional time period filtering"""
         try:
             conn = await self.get_connection()
             try:
@@ -3641,18 +3771,27 @@ class DatabaseStatsAPI:
                     stat_type_lower = stat_type.lower()
 
                     if stat_type_lower == "all" or stat_type_lower == "messages":
-                        result = await conn.execute(f"DELETE FROM message_tracking_hourly WHERE {where_clause}", *params)
+                        query = f"DELETE FROM message_tracking_hourly WHERE {where_clause}"
+                        if time_period_days:
+                            query += f" AND hour >= NOW() - INTERVAL '{time_period_days} days'"
+                        result = await conn.execute(query, *params)
                         deleted_counts['message_tracking_hourly'] = result.split(
                         )[-1]
                         await self._invalidate_leaderboard_cache(guild_id, 'users')
 
                     if stat_type_lower == "all" or stat_type_lower == "voice activity":
-                        result = await conn.execute(f"DELETE FROM voice_session_history_hourly WHERE {where_clause}", *params)
+                        query = f"DELETE FROM voice_session_history_hourly WHERE {where_clause}"
+                        if time_period_days:
+                            query += f" AND hour >= NOW() - INTERVAL '{time_period_days} days'"
+                        result = await conn.execute(query, *params)
                         deleted_counts['voice_session_history_hourly'] = result.split(
                         )[-1]
 
                     if stat_type_lower == "all" or stat_type_lower == "emoji stats":
-                        result = await conn.execute(f"DELETE FROM emoji_usage_hourly WHERE {where_clause}", *params)
+                        query = f"DELETE FROM emoji_usage_hourly WHERE {where_clause}"
+                        if time_period_days:
+                            query += f" AND hour >= NOW() - INTERVAL '{time_period_days} days'"
+                        result = await conn.execute(query, *params)
                         deleted_counts['emoji_usage_hourly'] = result.split(
                         )[-1]
                         await self._invalidate_leaderboard_cache(guild_id, 'emojis')
@@ -3677,6 +3816,10 @@ class DatabaseStatsAPI:
                             mention_params.append(int(category_id))
                             mention_counter += 1
 
+                        if time_period_days:
+                            mention_conditions.append(
+                                f"hour >= NOW() - INTERVAL '{time_period_days} days'")
+
                         mention_where = " AND ".join(mention_conditions)
                         result = await conn.execute(f"DELETE FROM user_mentions_hourly WHERE {mention_where}", *mention_params)
                         deleted_counts['user_mentions_hourly'] = result.split(
@@ -3684,31 +3827,53 @@ class DatabaseStatsAPI:
                         await self._invalidate_leaderboard_cache(guild_id, 'mentions')
 
                     if (stat_type_lower == "all" or stat_type_lower == "invite tracking") and not channel_id and not category_id:
-                        result = await conn.execute(
-                            "DELETE FROM invite_tracking WHERE guild_id = $1 AND (inviter_id = $2 OR invitee_id = $2)",
-                            int(guild_id), int(user_id)
-                        )
+                        if time_period_days:
+                            result = await conn.execute(
+                                f"DELETE FROM invite_tracking WHERE guild_id = $1 AND (inviter_id = $2 OR invitee_id = $2) AND created_at >= NOW() - INTERVAL '{time_period_days} days'",
+                                int(guild_id), int(user_id)
+                            )
+                        else:
+                            result = await conn.execute(
+                                "DELETE FROM invite_tracking WHERE guild_id = $1 AND (inviter_id = $2 OR invitee_id = $2)",
+                                int(guild_id), int(user_id)
+                            )
                         deleted_counts['invite_tracking'] = result.split()[-1]
                         await self._invalidate_leaderboard_cache(guild_id, 'invites')
 
                     if (stat_type_lower == "all" or stat_type_lower == "activity") and not channel_id and not category_id:
-                        result = await conn.execute(
-                            "DELETE FROM activity_sessions_hourly WHERE guild_id = $1 AND user_id = $2",
-                            int(guild_id), int(user_id)
-                        )
+                        if time_period_days:
+                            result = await conn.execute(
+                                f"DELETE FROM activity_sessions_hourly WHERE guild_id = $1 AND user_id = $2 AND hour >= NOW() - INTERVAL '{time_period_days} days'",
+                                int(guild_id), int(user_id)
+                            )
+                        else:
+                            result = await conn.execute(
+                                "DELETE FROM activity_sessions_hourly WHERE guild_id = $1 AND user_id = $2",
+                                int(guild_id), int(user_id)
+                            )
                         deleted_counts['activity_sessions_hourly'] = result.split(
+                        )[-1]
+
+                    if (stat_type_lower == "all" or stat_type_lower == "role growth") and not channel_id and not category_id:
+                        if time_period_days:
+                            result = await conn.execute(
+                                f"DELETE FROM role_growth_hourly WHERE guild_id = $1 AND user_id = $2 AND hour >= NOW() - INTERVAL '{time_period_days} days'",
+                                int(guild_id), int(user_id)
+                            )
+                        else:
+                            result = await conn.execute(
+                                "DELETE FROM role_growth_hourly WHERE guild_id = $1 AND user_id = $2",
+                                int(guild_id), int(user_id)
+                            )
+                        deleted_counts['role_growth_hourly'] = result.split(
                         )[-1]
 
                     return deleted_counts
             finally:
                 await self.release_connection(conn)
-        except asyncpg.PostgresError as e:
-            raise DatabaseQueryError(
-                "Failed to reset user stats",
-                context={'guild_id': guild_id,
-                         'user_id': user_id, 'stat_type': stat_type},
-                original=e
-            )
+        except Exception as e:
+            logger.error(f"Error resetting user stats: {e}")
+            raise
 
     # ============================================
     # SETTINGS FUNCTIONS
@@ -22319,7 +22484,7 @@ async def category_top_channels_voice(
 @app.post("/api/reset/server", response_model=ResetResponse)
 async def reset_server_stats(request: ResetServerRequest):
     """
-    Reset server statistics with optional channel/category filtering.
+    Reset server statistics with optional channel/category filtering and time period.
 
     **Stat Types:**
     - `all`: Reset ALL statistics for the server
@@ -22336,6 +22501,10 @@ async def reset_server_stats(request: ResetServerRequest):
     - Provide `channel_id` to reset stats only in a specific channel
     - Provide `category_id` to reset stats only in a specific category
     - Omit both to reset server-wide stats
+
+    **Time Period:**
+    - Provide `time_period_days` to only delete stats from the last X days
+    - Omit to delete ALL stats
     """
     try:
         # Validate guild_id
@@ -22380,7 +22549,8 @@ async def reset_server_stats(request: ResetServerRequest):
             guild_id=request.guild_id,
             stat_type=request.stat_type,
             channel_id=request.channel_id,
-            category_id=request.category_id
+            category_id=request.category_id,
+            time_period_days=request.time_period_days
         )
 
         scope_text = "server-wide"
@@ -22389,9 +22559,11 @@ async def reset_server_stats(request: ResetServerRequest):
         elif request.category_id:
             scope_text = f"category {request.category_id}"
 
+        time_period_text = f" from the last {request.time_period_days} days" if request.time_period_days else " (all time)"
+
         return ResetResponse(
             success=True,
-            message=f"Successfully reset {request.stat_type} statistics for {scope_text}",
+            message=f"Successfully reset {request.stat_type} statistics for {scope_text}{time_period_text}",
             deleted_counts=deleted_counts
         )
 
@@ -22414,7 +22586,7 @@ async def reset_server_stats(request: ResetServerRequest):
 @app.post("/api/reset/user", response_model=ResetResponse)
 async def reset_user_stats(request: ResetUserRequest):
     """
-    Reset user statistics with optional channel/category filtering.
+    Reset user statistics with optional channel/category filtering and time period.
 
     **Stat Types:**
     - `all`: Reset ALL statistics for the user
@@ -22430,6 +22602,10 @@ async def reset_user_stats(request: ResetUserRequest):
     - Provide `channel_id` to reset stats only in a specific channel
     - Provide `category_id` to reset stats only in a specific category
     - Omit both to reset user's server-wide stats
+
+    **Time Period:**
+    - Provide `time_period_days` to only delete stats from the last X days
+    - Omit to delete ALL stats
     """
     try:
         # Validate guild_id
@@ -22484,7 +22660,8 @@ async def reset_user_stats(request: ResetUserRequest):
             user_id=request.user_id,
             stat_type=request.stat_type,
             channel_id=request.channel_id,
-            category_id=request.category_id
+            category_id=request.category_id,
+            time_period_days=request.time_period_days
         )
 
         scope_text = "server-wide"
@@ -22493,9 +22670,11 @@ async def reset_user_stats(request: ResetUserRequest):
         elif request.category_id:
             scope_text = f"category {request.category_id}"
 
+        time_period_text = f" from the last {request.time_period_days} days" if request.time_period_days else " (all time)"
+
         return ResetResponse(
             success=True,
-            message=f"Successfully reset {request.stat_type} statistics for user {request.user_id} in {scope_text}",
+            message=f"Successfully reset {request.stat_type} statistics for user {request.user_id} in {scope_text}{time_period_text}",
             deleted_counts=deleted_counts
         )
 
@@ -22516,21 +22695,23 @@ async def reset_user_stats(request: ResetUserRequest):
 
 
 # ============================================
-# RESET SERVER - SPECIFIC ENDPOINTS
+# RESET SERVER - SPECIFIC ENDPOINTS (WITH TIME PERIOD)
 # ============================================
 
 @app.post("/api/reset/server/all", response_model=ResetResponse)
 async def reset_server_all(
     guild_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset ALL server statistics (alias for stat_type='all')"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="all",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
@@ -22538,14 +22719,16 @@ async def reset_server_all(
 async def reset_server_messages(
     guild_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset server message tracking statistics"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="messages",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
@@ -22553,23 +22736,29 @@ async def reset_server_messages(
 async def reset_server_voice(
     guild_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset server voice session statistics"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="voice activity",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/invites", response_model=ResetResponse)
-async def reset_server_invites(guild_id: str):
+async def reset_server_invites(
+    guild_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset server invite tracking statistics (server-wide only)"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
-        stat_type="invite tracking"
+        stat_type="invite tracking",
+        time_period_days=time_period_days
     ))
 
 
@@ -22577,23 +22766,29 @@ async def reset_server_invites(guild_id: str):
 async def reset_server_emojis(
     guild_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset server emoji usage statistics"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="emoji stats",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/activity", response_model=ResetResponse)
-async def reset_server_activity(guild_id: str):
+async def reset_server_activity(
+    guild_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset server activity tracking statistics (server-wide only)"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
-        stat_type="activity"
+        stat_type="activity",
+        time_period_days=time_period_days
     ))
 
 
@@ -22601,145 +22796,205 @@ async def reset_server_activity(guild_id: str):
 async def reset_server_mentions(
     guild_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset server user mentions statistics"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="mentions",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/role-growth", response_model=ResetResponse)
-async def reset_server_role_growth(guild_id: str):
+async def reset_server_role_growth(
+    guild_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset server role growth tracking statistics (server-wide only)"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
-        stat_type="role growth"
+        stat_type="role growth",
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/member-growth", response_model=ResetResponse)
-async def reset_server_member_growth(guild_id: str):
+async def reset_server_member_growth(
+    guild_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset server member growth (joins/leaves) statistics (server-wide only)"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
-        stat_type="member growth"
+        stat_type="member growth",
+        time_period_days=time_period_days
     ))
 
 
 # ============================================
-# RESET SERVER - CHANNEL-SPECIFIC ENDPOINTS
+# RESET SERVER - CHANNEL-SPECIFIC ENDPOINTS (WITH TIME PERIOD)
 # ============================================
 
 @app.post("/api/reset/server/channel/all", response_model=ResetResponse)
-async def reset_server_channel_all(guild_id: str, channel_id: str):
+async def reset_server_channel_all(
+    guild_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset ALL statistics in a specific channel"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="all",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/channel/messages", response_model=ResetResponse)
-async def reset_server_channel_messages(guild_id: str, channel_id: str):
+async def reset_server_channel_messages(
+    guild_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset message statistics in a specific channel"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="messages",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/channel/voice", response_model=ResetResponse)
-async def reset_server_channel_voice(guild_id: str, channel_id: str):
+async def reset_server_channel_voice(
+    guild_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset voice statistics in a specific voice channel"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="voice activity",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/channel/emojis", response_model=ResetResponse)
-async def reset_server_channel_emojis(guild_id: str, channel_id: str):
+async def reset_server_channel_emojis(
+    guild_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset emoji statistics in a specific channel"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="emoji stats",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/channel/mentions", response_model=ResetResponse)
-async def reset_server_channel_mentions(guild_id: str, channel_id: str):
+async def reset_server_channel_mentions(
+    guild_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset mention statistics in a specific channel"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="mentions",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 # ============================================
-# RESET SERVER - CATEGORY-SPECIFIC ENDPOINTS
+# RESET SERVER - CATEGORY-SPECIFIC ENDPOINTS (WITH TIME PERIOD)
 # ============================================
 
 @app.post("/api/reset/server/category/all", response_model=ResetResponse)
-async def reset_server_category_all(guild_id: str, category_id: str):
+async def reset_server_category_all(
+    guild_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset ALL statistics in a specific category"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="all",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/category/messages", response_model=ResetResponse)
-async def reset_server_category_messages(guild_id: str, category_id: str):
+async def reset_server_category_messages(
+    guild_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset message statistics in a specific category"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="messages",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/category/voice", response_model=ResetResponse)
-async def reset_server_category_voice(guild_id: str, category_id: str):
+async def reset_server_category_voice(
+    guild_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset voice statistics in a specific category"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="voice activity",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/category/emojis", response_model=ResetResponse)
-async def reset_server_category_emojis(guild_id: str, category_id: str):
+async def reset_server_category_emojis(
+    guild_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset emoji statistics in a specific category"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="emoji stats",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/server/category/mentions", response_model=ResetResponse)
-async def reset_server_category_mentions(guild_id: str, category_id: str):
+async def reset_server_category_mentions(
+    guild_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset mention statistics in a specific category"""
     return await reset_server_stats(ResetServerRequest(
         guild_id=guild_id,
         stat_type="mentions",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 # ============================================
-# RESET USER - SPECIFIC ENDPOINTS
+# RESET USER - SPECIFIC ENDPOINTS (WITH TIME PERIOD)
 # ============================================
 
 @app.post("/api/reset/user/all", response_model=ResetResponse)
@@ -22747,7 +23002,8 @@ async def reset_user_all(
     guild_id: str,
     user_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset ALL statistics for a specific user"""
     return await reset_user_stats(ResetUserRequest(
@@ -22755,7 +23011,8 @@ async def reset_user_all(
         user_id=user_id,
         stat_type="all",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
@@ -22764,7 +23021,8 @@ async def reset_user_messages(
     guild_id: str,
     user_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset message statistics for a specific user"""
     return await reset_user_stats(ResetUserRequest(
@@ -22772,7 +23030,8 @@ async def reset_user_messages(
         user_id=user_id,
         stat_type="messages",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
@@ -22781,7 +23040,8 @@ async def reset_user_voice(
     guild_id: str,
     user_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset voice statistics for a specific user"""
     return await reset_user_stats(ResetUserRequest(
@@ -22789,17 +23049,23 @@ async def reset_user_voice(
         user_id=user_id,
         stat_type="voice activity",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/invites", response_model=ResetResponse)
-async def reset_user_invites(guild_id: str, user_id: str):
+async def reset_user_invites(
+    guild_id: str,
+    user_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset invite statistics for a specific user (server-wide only)"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
-        stat_type="invite tracking"
+        stat_type="invite tracking",
+        time_period_days=time_period_days
     ))
 
 
@@ -22808,7 +23074,8 @@ async def reset_user_emojis(
     guild_id: str,
     user_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset emoji statistics for a specific user"""
     return await reset_user_stats(ResetUserRequest(
@@ -22816,17 +23083,23 @@ async def reset_user_emojis(
         user_id=user_id,
         stat_type="emoji stats",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/activity", response_model=ResetResponse)
-async def reset_user_activity(guild_id: str, user_id: str):
+async def reset_user_activity(
+    guild_id: str,
+    user_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset activity tracking statistics for a specific user (server-wide only)"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
-        stat_type="activity"
+        stat_type="activity",
+        time_period_days=time_period_days
     ))
 
 
@@ -22835,7 +23108,8 @@ async def reset_user_mentions(
     guild_id: str,
     user_id: str,
     channel_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    time_period_days: Optional[int] = None
 ):
     """Reset mention statistics for a specific user"""
     return await reset_user_stats(ResetUserRequest(
@@ -22843,136 +23117,563 @@ async def reset_user_mentions(
         user_id=user_id,
         stat_type="mentions",
         channel_id=channel_id,
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/role-growth", response_model=ResetResponse)
-async def reset_user_role_growth(guild_id: str, user_id: str):
+async def reset_user_role_growth(
+    guild_id: str,
+    user_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset role growth statistics for a specific user (server-wide only)"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
-        stat_type="role growth"
+        stat_type="role growth",
+        time_period_days=time_period_days
     ))
 
 
 # ============================================
-# RESET USER - CHANNEL-SPECIFIC ENDPOINTS
+# RESET USER - CHANNEL-SPECIFIC ENDPOINTS (WITH TIME PERIOD)
 # ============================================
 
 @app.post("/api/reset/user/channel/all", response_model=ResetResponse)
-async def reset_user_channel_all(guild_id: str, user_id: str, channel_id: str):
+async def reset_user_channel_all(
+    guild_id: str,
+    user_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset ALL statistics for a specific user in a specific channel"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="all",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/channel/messages", response_model=ResetResponse)
-async def reset_user_channel_messages(guild_id: str, user_id: str, channel_id: str):
+async def reset_user_channel_messages(
+    guild_id: str,
+    user_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset message statistics for a specific user in a specific channel"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="messages",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/channel/voice", response_model=ResetResponse)
-async def reset_user_channel_voice(guild_id: str, user_id: str, channel_id: str):
+async def reset_user_channel_voice(
+    guild_id: str,
+    user_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset voice statistics for a specific user in a specific voice channel"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="voice activity",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/channel/emojis", response_model=ResetResponse)
-async def reset_user_channel_emojis(guild_id: str, user_id: str, channel_id: str):
+async def reset_user_channel_emojis(
+    guild_id: str,
+    user_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset emoji statistics for a specific user in a specific channel"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="emoji stats",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/channel/mentions", response_model=ResetResponse)
-async def reset_user_channel_mentions(guild_id: str, user_id: str, channel_id: str):
+async def reset_user_channel_mentions(
+    guild_id: str,
+    user_id: str,
+    channel_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset mention statistics for a specific user in a specific channel"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="mentions",
-        channel_id=channel_id
+        channel_id=channel_id,
+        time_period_days=time_period_days
     ))
 
 
 # ============================================
-# RESET USER - CATEGORY-SPECIFIC ENDPOINTS
+# RESET USER - CATEGORY-SPECIFIC ENDPOINTS (WITH TIME PERIOD)
 # ============================================
 
 @app.post("/api/reset/user/category/all", response_model=ResetResponse)
-async def reset_user_category_all(guild_id: str, user_id: str, category_id: str):
+async def reset_user_category_all(
+    guild_id: str,
+    user_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset ALL statistics for a specific user in a specific category"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="all",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/category/messages", response_model=ResetResponse)
-async def reset_user_category_messages(guild_id: str, user_id: str, category_id: str):
+async def reset_user_category_messages(
+    guild_id: str,
+    user_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset message statistics for a specific user in a specific category"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="messages",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/category/voice", response_model=ResetResponse)
-async def reset_user_category_voice(guild_id: str, user_id: str, category_id: str):
+async def reset_user_category_voice(
+    guild_id: str,
+    user_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset voice statistics for a specific user in a specific category"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="voice activity",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/category/emojis", response_model=ResetResponse)
-async def reset_user_category_emojis(guild_id: str, user_id: str, category_id: str):
+async def reset_user_category_emojis(
+    guild_id: str,
+    user_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset emoji statistics for a specific user in a specific category"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="emoji stats",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
 
 
 @app.post("/api/reset/user/category/mentions", response_model=ResetResponse)
-async def reset_user_category_mentions(guild_id: str, user_id: str, category_id: str):
+async def reset_user_category_mentions(
+    guild_id: str,
+    user_id: str,
+    category_id: str,
+    time_period_days: Optional[int] = None
+):
     """Reset mention statistics for a specific user in a specific category"""
     return await reset_user_stats(ResetUserRequest(
         guild_id=guild_id,
         user_id=user_id,
         stat_type="mentions",
-        category_id=category_id
+        category_id=category_id,
+        time_period_days=time_period_days
     ))
+
+
+@app.post("/api/reset/schedule/create", response_model=CreateScheduleResponse)
+async def create_reset_schedule(request: CreateScheduleRequest):
+    """
+    Create a scheduled recurring reset.
+
+    **Example:**
+    - Create a schedule that resets messages and voice activity every 7 days
+    - The first reset will occur after the interval days
+    - The schedule will automatically repeat every X days
+
+    **Note:** The actual reset uses the same time period and scope as configured when creating the schedule.
+    """
+    try:
+        # Validate guild_id
+        try:
+            guild_id_int = int(request.guild_id)
+        except ValueError:
+            return CreateScheduleResponse(
+                success=False,
+                message=f"Invalid guild_id format: {request.guild_id}",
+                error="Invalid guild_id format"
+            )
+
+        # Validate requested_by_id
+        try:
+            requested_by_id_int = int(request.requested_by_id)
+        except ValueError:
+            return CreateScheduleResponse(
+                success=False,
+                message=f"Invalid requested_by_id format: {request.requested_by_id}",
+                error="Invalid requested_by_id format"
+            )
+
+        # Validate channel_id if scope is channel
+        if request.scope == "channel" and not request.channel_id:
+            return CreateScheduleResponse(
+                success=False,
+                message="channel_id required when scope is 'channel'",
+                error="Missing channel_id"
+            )
+
+        # Validate category_id if scope is category
+        if request.scope == "category" and not request.category_id:
+            return CreateScheduleResponse(
+                success=False,
+                message="category_id required when scope is 'category'",
+                error="Missing category_id"
+            )
+
+        # Validate reset_types
+        valid_stat_types = ["all", "messages", "voice activity", "invite tracking",
+                            "emoji stats", "activity", "mentions", "role growth", "member growth"]
+        for reset_type in request.reset_types:
+            if reset_type.lower() not in valid_stat_types:
+                return CreateScheduleResponse(
+                    success=False,
+                    message=f"Invalid reset_type: {reset_type}. Valid types: {', '.join(valid_stat_types)}",
+                    error="Invalid reset_type"
+                )
+
+        if not db_stats.db_connected:
+            return CreateScheduleResponse(
+                success=False,
+                message="Database not connected",
+                error="Database connection unavailable"
+            )
+
+        # Calculate target time based on interval
+        target_time = datetime.now(timezone.utc) + \
+            timedelta(days=request.interval_days)
+
+        # Build reason string with all details
+        time_period_text = f"Deleting stats from the last {request.time_period_days} days" if request.time_period_days else "Deleting ALL stats (no time limit)"
+
+        scope_details_str = request.scope_details or ""
+        if request.scope == "channel" and request.channel_id:
+            scope_details_str = f"Channel ID: {request.channel_id}"
+        elif request.scope == "category" and request.category_id:
+            scope_details_str = f"Category ID: {request.category_id}"
+
+        reason = f"Scheduled every {request.interval_days} days | Scope: {request.scope} | Details: {scope_details_str} | Time Period: {time_period_text}"
+        if request.reason:
+            reason += f" | User Reason: {request.reason}"
+
+        # Insert into database
+        async with db_stats.pool.acquire() as conn:
+            result = await conn.fetchrow("""
+                INSERT INTO reset_schedules (guild_id, requested_by_id, reset_types, target_time, reason)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id
+            """, guild_id_int, requested_by_id_int, request.reset_types, target_time, reason)
+
+            schedule_id = result['id'] if result else None
+
+            return CreateScheduleResponse(
+                success=True,
+                message=f"Reset schedule created successfully. Will run every {request.interval_days} days.",
+                schedule_id=schedule_id,
+                next_reset_time=target_time.isoformat()
+            )
+
+    except Exception as e:
+        logger.error(f"Error creating reset schedule: {e}")
+        return CreateScheduleResponse(
+            success=False,
+            message=f"Failed to create schedule: {str(e)}",
+            error=str(e)
+        )
+
+
+@app.post("/api/reset/schedules", response_model=GetSchedulesResponse)
+async def get_reset_schedules(request: GetSchedulesRequest):
+    """
+    Get all pending reset schedules for a guild.
+    """
+    try:
+        # Validate guild_id
+        try:
+            guild_id_int = int(request.guild_id)
+        except ValueError:
+            return GetSchedulesResponse(
+                success=False,
+                error=f"Invalid guild_id format: {request.guild_id}"
+            )
+
+        if not db_stats.db_connected:
+            return GetSchedulesResponse(
+                success=False,
+                error="Database not connected"
+            )
+
+        async with db_stats.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, guild_id, requested_by_id, target_time, reset_types, 
+                       completed, created_at, executed_at, reason
+                FROM reset_schedules
+                WHERE guild_id = $1 AND completed = FALSE
+                ORDER BY target_time ASC
+            """, guild_id_int)
+
+            schedules = []
+            for row in rows:
+                schedule = dict(row)
+                # Convert datetime objects to ISO format strings for JSON serialization
+                if schedule.get('target_time'):
+                    schedule['target_time'] = schedule['target_time'].isoformat()
+                if schedule.get('created_at'):
+                    schedule['created_at'] = schedule['created_at'].isoformat()
+                if schedule.get('executed_at'):
+                    schedule['executed_at'] = schedule['executed_at'].isoformat()
+                schedules.append(schedule)
+
+            return GetSchedulesResponse(
+                success=True,
+                schedules=schedules
+            )
+
+    except Exception as e:
+        logger.error(f"Error getting schedules: {e}")
+        return GetSchedulesResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.post("/api/reset/schedule/cancel", response_model=CancelScheduleResponse)
+async def cancel_reset_schedule(request: CancelScheduleRequest):
+    """
+    Cancel a pending reset schedule.
+    """
+    try:
+        # Validate schedule_id
+        if request.schedule_id <= 0:
+            return CancelScheduleResponse(
+                success=False,
+                message="Invalid schedule_id",
+                error="Schedule ID must be positive"
+            )
+
+        # Validate guild_id
+        try:
+            guild_id_int = int(request.guild_id)
+        except ValueError:
+            return CancelScheduleResponse(
+                success=False,
+                message=f"Invalid guild_id format: {request.guild_id}",
+                error="Invalid guild_id format"
+            )
+
+        if not db_stats.db_connected:
+            return CancelScheduleResponse(
+                success=False,
+                message="Database not connected",
+                error="Database connection unavailable"
+            )
+
+        async with db_stats.pool.acquire() as conn:
+            # First check if the schedule exists and belongs to this guild
+            schedule = await conn.fetchrow("""
+                SELECT id, completed, reset_types, target_time
+                FROM reset_schedules
+                WHERE id = $1 AND guild_id = $2
+            """, request.schedule_id, guild_id_int)
+
+            if not schedule:
+                return CancelScheduleResponse(
+                    success=False,
+                    message=f"Schedule #{request.schedule_id} not found in this guild."
+                )
+
+            if schedule['completed']:
+                return CancelScheduleResponse(
+                    success=False,
+                    message=f"Schedule #{request.schedule_id} has already been completed and cannot be cancelled."
+                )
+
+            # Delete the schedule
+            result = await conn.execute("""
+                DELETE FROM reset_schedules 
+                WHERE id = $1 AND guild_id = $2 AND completed = FALSE
+            """, request.schedule_id, guild_id_int)
+
+            if result.split()[-1] == '1':
+                reset_types = "', '".join(schedule['reset_types'])
+                target_time = schedule['target_time']
+
+                return CancelScheduleResponse(
+                    success=True,
+                    message=f"✅ Schedule #{request.schedule_id} has been cancelled.\n\n"
+                    f"**Reset Types:** {reset_types}\n"
+                    f"**Scheduled Time:** <t:{int(target_time.timestamp())}:F>"
+                )
+            else:
+                return CancelScheduleResponse(
+                    success=False,
+                    message=f"Schedule #{request.schedule_id} could not be cancelled."
+                )
+
+    except Exception as e:
+        logger.error(f"Error cancelling schedule: {e}")
+        return CancelScheduleResponse(
+            success=False,
+            message=f"Failed to cancel schedule: {str(e)}",
+            error=str(e)
+        )
+
+
+@app.post("/api/reset/schedule/upcoming", response_model=GetSchedulesResponse)
+async def get_upcoming_reset_schedules(request: GetSchedulesRequest):
+    """
+    Get upcoming reset schedules for a guild (within the next 30 days).
+    """
+    try:
+        # Validate guild_id
+        try:
+            guild_id_int = int(request.guild_id)
+        except ValueError:
+            return GetSchedulesResponse(
+                success=False,
+                error=f"Invalid guild_id format: {request.guild_id}"
+            )
+
+        if not db_stats.db_connected:
+            return GetSchedulesResponse(
+                success=False,
+                error="Database not connected"
+            )
+
+        async with db_stats.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, guild_id, requested_by_id, target_time, reset_types, 
+                       completed, created_at, executed_at, reason
+                FROM reset_schedules
+                WHERE guild_id = $1 
+                AND completed = FALSE 
+                AND target_time <= NOW() + INTERVAL '30 days'
+                ORDER BY target_time ASC
+                LIMIT 20
+            """, guild_id_int)
+
+            schedules = []
+            for row in rows:
+                schedule = dict(row)
+                # Convert datetime objects to ISO format strings for JSON serialization
+                if schedule.get('target_time'):
+                    schedule['target_time'] = schedule['target_time'].isoformat()
+                if schedule.get('created_at'):
+                    schedule['created_at'] = schedule['created_at'].isoformat()
+                if schedule.get('executed_at'):
+                    schedule['executed_at'] = schedule['executed_at'].isoformat()
+                schedules.append(schedule)
+
+            return GetSchedulesResponse(
+                success=True,
+                schedules=schedules
+            )
+
+    except Exception as e:
+        logger.error(f"Error getting upcoming schedules: {e}")
+        return GetSchedulesResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+@app.post("/api/reset/schedule/history", response_model=GetSchedulesResponse)
+async def get_reset_schedule_history(request: GetSchedulesRequest):
+    """
+    Get completed reset schedule history for a guild.
+    """
+    try:
+        # Validate guild_id
+        try:
+            guild_id_int = int(request.guild_id)
+        except ValueError:
+            return GetSchedulesResponse(
+                success=False,
+                error=f"Invalid guild_id format: {request.guild_id}"
+            )
+
+        if not db_stats.db_connected:
+            return GetSchedulesResponse(
+                success=False,
+                error="Database not connected"
+            )
+
+        async with db_stats.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, guild_id, requested_by_id, target_time, reset_types, 
+                       completed, created_at, executed_at, reason
+                FROM reset_schedules
+                WHERE guild_id = $1 AND completed = TRUE
+                ORDER BY executed_at DESC
+                LIMIT 20
+            """, guild_id_int)
+
+            schedules = []
+            for row in rows:
+                schedule = dict(row)
+                # Convert datetime objects to ISO format strings for JSON serialization
+                if schedule.get('target_time'):
+                    schedule['target_time'] = schedule['target_time'].isoformat()
+                if schedule.get('created_at'):
+                    schedule['created_at'] = schedule['created_at'].isoformat()
+                if schedule.get('executed_at'):
+                    schedule['executed_at'] = schedule['executed_at'].isoformat()
+                schedules.append(schedule)
+
+            return GetSchedulesResponse(
+                success=True,
+                schedules=schedules
+            )
+
+    except Exception as e:
+        logger.error(f"Error getting schedule history: {e}")
+        return GetSchedulesResponse(
+            success=False,
+            error=str(e)
+        )
 
 
 class ScopeSelectionRequest(BaseModel):
@@ -23036,6 +23737,8 @@ class ConfirmResetRequest(BaseModel):
         None, description="Required when scope is 'category'")
     target_user_id: Optional[str] = Field(
         None, description="Required when command_type is 'user'")
+    time_period_days: Optional[int] = Field(
+        None, description="Delete only stats from the last X days (null = all time)", ge=1, le=365)
 
 
 @app.post("/api/reset/ui/scope", response_model=ScopeSelectionResponse)
@@ -23187,7 +23890,7 @@ async def reset_ui_stat_types(request: StatTypesRequest):
 @app.post("/api/reset/ui/confirm", response_model=ResetResponse)
 async def reset_ui_confirm(request: ConfirmResetRequest):
     """
-    Confirm and execute the reset operation.
+    Confirm and execute the reset operation with optional time period.
     """
     # Validate required fields based on scope
     if request.scope == "channel" and not request.channel_id:
@@ -23202,13 +23905,19 @@ async def reset_ui_confirm(request: ConfirmResetRequest):
         raise HTTPException(
             status_code=400, detail="target_user_id required when command_type is 'user'")
 
+    # Validate time_period_days if provided
+    if request.time_period_days and (request.time_period_days < 1 or request.time_period_days > 365):
+        raise HTTPException(
+            status_code=400, detail="time_period_days must be between 1 and 365")
+
     try:
         if request.command_type == "server":
             return await reset_server_stats(ResetServerRequest(
                 guild_id=request.guild_id,
                 stat_type=request.stat_type,
                 channel_id=request.channel_id if request.scope == "channel" else None,
-                category_id=request.category_id if request.scope == "category" else None
+                category_id=request.category_id if request.scope == "category" else None,
+                time_period_days=request.time_period_days
             ))
         else:
             return await reset_user_stats(ResetUserRequest(
@@ -23216,12 +23925,14 @@ async def reset_ui_confirm(request: ConfirmResetRequest):
                 user_id=request.target_user_id,
                 stat_type=request.stat_type,
                 channel_id=request.channel_id if request.scope == "channel" else None,
-                category_id=request.category_id if request.scope == "category" else None
+                category_id=request.category_id if request.scope == "category" else None,
+                time_period_days=request.time_period_days
             ))
 
     except Exception as e:
         logger.error(f"Error in reset_ui_confirm: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ============================================
 # FIXED CHANNEL STATS WITH MESSAGES PER USER IN AVERAGES

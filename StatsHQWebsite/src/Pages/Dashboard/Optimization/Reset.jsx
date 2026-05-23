@@ -79,7 +79,7 @@ const getCacheKey = (type, id, params) => {
   return `${type}:${id}:${JSON.stringify(sortedParams)}`;
 };
 
-// Access Denied Component - UPDATED TO MATCH SETTINGS STYLE
+// Access Denied Component
 const AccessDenied = () => {
   let requiredPermission = "Administrator";
   const accessLevel = window.accessLevel || 'Member';
@@ -545,6 +545,123 @@ const styles = `
     line-height: 1.4;
   }
 
+  .options-section {
+    margin-top: 24px;
+    padding: 20px;
+    background-color: #1a1a1a;
+    border-radius: 12px;
+    border: 1px solid #2a2a2a;
+  }
+
+  .options-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #aa00ff;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .time-period-control {
+    margin-bottom: 20px;
+  }
+
+  .time-period-label {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+
+  .time-period-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+  }
+
+  .time-period-checkbox input {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #aa00ff;
+  }
+
+  .days-input {
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: white;
+    width: 100px;
+    font-size: 14px;
+  }
+
+  .days-input:focus {
+    outline: none;
+    border-color: #aa00ff;
+  }
+
+  .schedule-control {
+    border-top: 1px solid #2a2a2a;
+    padding-top: 16px;
+  }
+
+  .schedule-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    margin-bottom: 12px;
+  }
+
+  .schedule-checkbox input {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #aa00ff;
+  }
+
+  .interval-control {
+    margin-left: 26px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .interval-input {
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: white;
+    width: 100px;
+    font-size: 14px;
+  }
+
+  .interval-input:focus {
+    outline: none;
+    border-color: #aa00ff;
+  }
+
+  .interval-unit {
+    color: #888;
+    font-size: 14px;
+  }
+
+  .schedule-info {
+    margin-top: 12px;
+    padding: 10px;
+    background-color: #0a0a0a;
+    border-radius: 8px;
+    font-size: 12px;
+    color: #00b894;
+    border-left: 3px solid #00b894;
+  }
+
   .reset-button-container {
     display: flex;
     justify-content: flex-end;
@@ -954,6 +1071,9 @@ const styles = `
       margin: 16px;
       width: calc(100% - 32px);
     }
+    .options-section {
+      padding: 16px;
+    }
   }
 
   @media (max-width: 480px) {
@@ -1065,6 +1185,12 @@ const ResetDashboard = () => {
   const [scope, setScope] = useState("server");
   const [selectedStatTypes, setSelectedStatTypes] = useState([]);
   
+  // Time period and scheduling options
+  const [useTimePeriod, setUseTimePeriod] = useState(false);
+  const [timePeriodDays, setTimePeriodDays] = useState(7);
+  const [useSchedule, setUseSchedule] = useState(false);
+  const [scheduleIntervalDays, setScheduleIntervalDays] = useState(7);
+  
   // Channel/Category selection
   const [channelSearch, setChannelSearch] = useState("");
   const [categorySearch, setCategorySearch] = useState("");
@@ -1159,10 +1285,6 @@ const ResetDashboard = () => {
         }
         
         setHasAccess(hasAccessFlag);
-        
-        if (!hasAccessFlag) {
-        }
-        
       } else {
         console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
@@ -1191,6 +1313,14 @@ const ResetDashboard = () => {
       setCategorySearch("");
     }
   }, [scope]);
+
+  // Reset schedule/time options when view changes
+  useEffect(() => {
+    setUseSchedule(false);
+    setUseTimePeriod(false);
+    setTimePeriodDays(7);
+    setScheduleIntervalDays(7);
+  }, [selectedView, scope, selectedChannel, selectedCategory, selectedUser]);
 
   // Filter channels based on search
   useEffect(() => {
@@ -1455,11 +1585,27 @@ const ResetDashboard = () => {
     setShowConfirmModal(true);
   };
 
-  const executeReset = async () => {
+  const executeResetOrSchedule = async () => {
     setShowConfirmModal(false);
     setActionLoading(true);
-    setResetResults(null);
     
+    try {
+      if (useSchedule) {
+        // Create a schedule instead of executing immediately
+        await executeSchedule();
+      } else {
+        // Execute reset immediately
+        await executeReset();
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      showToast("Failed to process request", "error");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const executeReset = async () => {
     const results = [];
     
     try {
@@ -1500,6 +1646,11 @@ const ResetDashboard = () => {
           }
         }
         
+        // Add time period if enabled
+        if (useTimePeriod) {
+          body.time_period_days = timePeriodDays;
+        }
+        
         const response = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1537,8 +1688,84 @@ const ResetDashboard = () => {
     } catch (error) {
       console.error('Error resetting stats:', error);
       showToast("Failed to reset statistics", "error");
-    } finally {
-      setActionLoading(false);
+    }
+  };
+
+  const executeSchedule = async () => {
+    // Build scope details
+    let scopeValue = scope;
+    let scopeDetails = "";
+    let channelId = null;
+    let categoryId = null;
+    
+    if (scope === "channel" && selectedChannel) {
+      scopeDetails = `Channel: #${selectedChannel.name} (ID: ${selectedChannel.id})`;
+      channelId = selectedChannel.id;
+    } else if (scope === "category" && selectedCategory) {
+      scopeDetails = `Category: ${selectedCategory.name} (ID: ${selectedCategory.id})`;
+      categoryId = selectedCategory.id;
+    } else {
+      scopeDetails = "Entire Server";
+    }
+    
+    const resetTypes = selectedStatTypes;
+    const intervalDays = scheduleIntervalDays;
+    
+    const body = {
+      guild_id: currentServer.id,
+      requested_by_id: currentUserId,
+      reset_types: resetTypes,
+      interval_days: intervalDays,
+      reason: `Scheduled via dashboard. Time period: ${useTimePeriod ? `${timePeriodDays} days` : "All time"}`,
+      scope: scopeValue,
+      scope_details: scopeDetails,
+      channel_id: channelId,
+      category_id: categoryId,
+      time_period_days: useTimePeriod ? timePeriodDays : null
+    };
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reset/schedule/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body)
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        const nextResetTime = new Date(result.next_reset_time);
+        showToast(`✅ Schedule created! Schedule #${result.schedule_id} - Next reset: ${nextResetTime.toLocaleString()}`, "success");
+        
+        // Add to results display
+        setResetResults([{
+          statType: "schedule",
+          label: `Schedule Created (${resetTypes.length} types)`,
+          success: true,
+          message: result.message,
+          schedule_id: result.schedule_id,
+          next_reset_time: result.next_reset_time
+        }]);
+      } else {
+        showToast(`❌ Failed to create schedule: ${result.message}`, "error");
+        setResetResults([{
+          statType: "schedule",
+          label: "Schedule Creation",
+          success: false,
+          message: result.message || "Unknown error"
+        }]);
+      }
+      
+    } catch (error) {
+      console.error('Error creating schedule:', error);
+      showToast("Failed to create schedule", "error");
+      setResetResults([{
+        statType: "schedule",
+        label: "Schedule Creation",
+        success: false,
+        message: error.message || "Network error"
+      }]);
     }
   };
 
@@ -1549,13 +1776,22 @@ const ResetDashboard = () => {
     return "the selected scope";
   };
 
-  const getResetDescription = () => {
-    if (selectedView === "server") {
-      return `Are you sure you want to reset ${selectedStatTypes.length} statistic type(s) from ${getScopeLabel()}?`;
+  const getActionDescription = () => {
+    if (useSchedule) {
+      return `schedule ${selectedStatTypes.length} statistic type(s) to reset every ${scheduleIntervalDays} days from ${getScopeLabel()}`;
     } else {
-      const userName = selectedUser ? (selectedUser.display_name || selectedUser.username || selectedUser.global_name || selectedUser.name || selectedUser.id) : "this user";
-      return `Are you sure you want to reset ${selectedStatTypes.length} statistic type(s) for ${userName} from ${getScopeLabel()}?`;
+      const timePeriodText = useTimePeriod ? ` (only data from last ${timePeriodDays} days)` : " (all data)";
+      if (selectedView === "server") {
+        return `reset ${selectedStatTypes.length} statistic type(s) from ${getScopeLabel()}${timePeriodText}`;
+      } else {
+        const userName = selectedUser ? (selectedUser.display_name || selectedUser.username || selectedUser.global_name || selectedUser.name || selectedUser.id) : "this user";
+        return `reset ${selectedStatTypes.length} statistic type(s) for ${userName} from ${getScopeLabel()}${timePeriodText}`;
+      }
     }
+  };
+
+  const getConfirmationTitle = () => {
+    return useSchedule ? "📅 Confirm Schedule" : "⚠️ Confirm Reset";
   };
 
   // Loading state
@@ -1715,6 +1951,8 @@ const ResetDashboard = () => {
                   setScope("server");
                   setSelectedUser(null);
                   setUserSearch("");
+                  setUseSchedule(false);
+                  setUseTimePeriod(false);
                 }}
               >
                 Server
@@ -1727,6 +1965,8 @@ const ResetDashboard = () => {
                   setScope("server");
                   setSelectedUser(null);
                   setUserSearch("");
+                  setUseSchedule(false);
+                  setUseTimePeriod(false);
                 }}
               >
                 User
@@ -1745,6 +1985,8 @@ const ResetDashboard = () => {
                       onChange={(e) => {
                         setScope(e.target.value);
                         setSelectedStatTypes([]);
+                        setUseSchedule(false);
+                        setUseTimePeriod(false);
                       }}
                     >
                       <option value="server">Server</option>
@@ -1776,6 +2018,8 @@ const ResetDashboard = () => {
                                 setSelectedChannel(channel);
                                 setChannelSearch(channel.name);
                                 setShowChannelDropdown(false);
+                                setUseSchedule(false);
+                                setUseTimePeriod(false);
                               }}
                             >
                               <div className="entity-option-info">
@@ -1818,6 +2062,8 @@ const ResetDashboard = () => {
                                 setSelectedCategory(category);
                                 setCategorySearch(category.name);
                                 setShowCategoryDropdown(false);
+                                setUseSchedule(false);
+                                setUseTimePeriod(false);
                               }}
                             >
                               <div className="entity-option-info">
@@ -1862,6 +2108,8 @@ const ResetDashboard = () => {
                               setSelectedUser(user);
                               setUserSearch(user.display_name || user.username || user.global_name || user.name);
                               setShowUserDropdown(false);
+                              setUseSchedule(false);
+                              setUseTimePeriod(false);
                             }}
                           >
                             <div className="entity-option-info">
@@ -1943,7 +2191,83 @@ const ResetDashboard = () => {
               </div>
             </div>
 
-            {/* Reset Button */}
+            {/* Options Section - Time Period & Scheduling */}
+            {hasSelection && (
+              <div className="options-section">
+                <div className="options-title">
+                  <span>⚙️</span> Reset Options
+                </div>
+                
+                {/* Time Period Option */}
+                <div className="time-period-control">
+                  <label className="time-period-checkbox">
+                    <input 
+                      type="checkbox" 
+                      checked={useTimePeriod}
+                      onChange={(e) => {
+                        setUseTimePeriod(e.target.checked);
+                        if (e.target.checked) {
+                          setUseSchedule(false);
+                        }
+                      }}
+                    />
+                    <span>🗓️ Only delete stats from the last</span>
+                  </label>
+                  {useTimePeriod && (
+                    <div className="time-period-label">
+                      <input 
+                        type="number"
+                        className="days-input"
+                        min="1"
+                        max="365"
+                        value={timePeriodDays}
+                        onChange={(e) => setTimePeriodDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
+                      />
+                      <span>days</span>
+                      <span style={{ color: "#888", fontSize: "12px" }}>(1-365 days)</span>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Schedule Option */}
+                <div className="schedule-control">
+                  <label className="schedule-checkbox">
+                    <input 
+                      type="checkbox" 
+                      checked={useSchedule}
+                      onChange={(e) => {
+                        setUseSchedule(e.target.checked);
+                        if (e.target.checked) {
+                          setUseTimePeriod(false);
+                        }
+                      }}
+                    />
+                    <span>⏰ Schedule recurring reset</span>
+                  </label>
+                  {useSchedule && (
+                    <div className="interval-control">
+                      <span>Every</span>
+                      <input 
+                        type="number"
+                        className="interval-input"
+                        min="1"
+                        max="365"
+                        value={scheduleIntervalDays}
+                        onChange={(e) => setScheduleIntervalDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
+                      />
+                      <span className="interval-unit">days</span>
+                      {useTimePeriod && (
+                        <div className="schedule-info">
+                          ℹ️ Time period setting will be applied to each scheduled reset
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Action Button */}
             <div className="reset-button-container">
               <button 
                 className="reset-button"
@@ -1957,8 +2281,8 @@ const ResetDashboard = () => {
                   </>
                 ) : (
                   <>
-                    <span>⚠️</span>
-                    RESET
+                    {useSchedule ? "📅" : "⚠️"}
+                    {useSchedule ? " SCHEDULE" : " RESET"}
                   </>
                 )}
               </button>
@@ -1969,7 +2293,7 @@ const ResetDashboard = () => {
               <div className="results-section">
                 <div className="results-header">
                   <div className="results-title">
-                    <span>📋</span> Reset Results
+                    <span>📋</span> {resetResults[0].statType === "schedule" ? "Schedule Results" : "Reset Results"}
                   </div>
                   <div className="results-stats">
                     {resetResults.filter(r => r.success).length} of {resetResults.length} successful
@@ -1979,7 +2303,7 @@ const ResetDashboard = () => {
                   <table className="results-table">
                     <thead>
                       <tr>
-                        <th>Stat Type</th>
+                        <th>Type</th>
                         <th>Status</th>
                         <th>Message</th>
                       </tr>
@@ -1999,7 +2323,7 @@ const ResetDashboard = () => {
                         </tr>
                       ))}
                     </tbody>
-                  </table>
+                   </table>
                 </div>
               </div>
             )}
@@ -2013,22 +2337,34 @@ const ResetDashboard = () => {
         <div className="modal-overlay" onClick={() => setShowConfirmModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">⚠️ Confirm Reset</h3>
+              <h3 className="modal-title">{getConfirmationTitle()}</h3>
               <button className="modal-close" onClick={() => setShowConfirmModal(false)}>✕</button>
             </div>
             <div className="warning-box">
-              <span style={{ fontSize: "20px" }}>⚠️</span>
-              <span>This action is PERMANENT and CANNOT be undone!</span>
+              <span style={{ fontSize: "20px" }}>{useSchedule ? "📅" : "⚠️"}</span>
+              <span>{useSchedule ? "This will create a recurring reset schedule." : "This action is PERMANENT and CANNOT be undone!"}</span>
             </div>
-            <p style={{ wordBreak: 'break-word' }}>{getResetDescription()}</p>
+            <p style={{ wordBreak: 'break-word' }}>Are you sure you want to {getActionDescription()}?</p>
             {selectedStatTypes.length > 0 && (
               <p style={{ marginTop: "16px", fontSize: "13px", color: "#888", wordBreak: 'break-word' }}>
-                Will reset: {selectedStatTypes.map(t => STAT_TYPES[selectedView][t]?.label || t).join(", ")}
+                Will affect: {selectedStatTypes.map(t => STAT_TYPES[selectedView][t]?.label || t).join(", ")}
+              </p>
+            )}
+            {useSchedule && (
+              <p style={{ marginTop: "8px", fontSize: "13px", color: "#aa00ff" }}>
+                📅 First reset will occur in {scheduleIntervalDays} days, then every {scheduleIntervalDays} days thereafter.
+              </p>
+            )}
+            {useTimePeriod && !useSchedule && (
+              <p style={{ marginTop: "8px", fontSize: "13px", color: "#ffaa00" }}>
+                🗓️ Only data from the last {timePeriodDays} days will be deleted.
               </p>
             )}
             <div className="modal-footer">
               <button className="modal-cancel" onClick={() => setShowConfirmModal(false)}>Cancel</button>
-              <button className="modal-confirm" onClick={executeReset}>Confirm Reset</button>
+              <button className="modal-confirm" onClick={executeResetOrSchedule}>
+                {useSchedule ? "Create Schedule" : "Confirm Reset"}
+              </button>
             </div>
           </div>
         </div>
