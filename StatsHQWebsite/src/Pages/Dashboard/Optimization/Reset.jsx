@@ -15,7 +15,6 @@ const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
 // ADVANCED CACHING SYSTEM
 // ============================================
 
-// Enhanced cache for server data with size limits and TTL
 class ServerDataCache {
   constructor(maxSize = 30, ttl = 5 * 60 * 1000) {
     this.cache = new Map();
@@ -58,10 +57,8 @@ class ServerDataCache {
   }
 }
 
-// Initialize cache
 const serverDataCache = new ServerDataCache(30, 5 * 60 * 1000);
 
-// Stable cache key generator
 const getCacheKey = (type, id, params) => {
   const sortObject = (obj) => {
     if (!obj || typeof obj !== 'object') return obj;
@@ -205,6 +202,694 @@ const styles = `
     box-sizing: border-box;
   }
 
+  /* Section styles */
+  .reset-section {
+    background: linear-gradient(135deg, #0f0f0f 0%, #0a0a0a 100%);
+    border: 1px solid #1f1f1f;
+    border-radius: 20px;
+    padding: 28px;
+    margin-bottom: 24px;
+    transition: all 0.3s ease;
+  }
+
+  .reset-section:hover {
+    border-color: #2a2a2a;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #1f1f1f;
+  }
+
+  .section-icon {
+    font-size: 28px;
+  }
+
+  .section-title {
+    font-size: 22px;
+    font-weight: 600;
+    color: #ffffff;
+  }
+
+  .section-subtitle {
+    font-size: 14px;
+    color: #888;
+    margin-left: auto;
+  }
+
+  /* Stat types grid */
+  .stat-types-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+
+  .stat-card {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 14px 16px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .stat-card:hover {
+    border-color: #aa00ff;
+    background-color: #222;
+    transform: translateY(-2px);
+  }
+
+  .stat-card.selected {
+    border-color: #aa00ff;
+    background-color: rgba(170, 0, 255, 0.1);
+    box-shadow: 0 4px 12px rgba(170, 0, 255, 0.1);
+  }
+
+  .stat-card-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .stat-checkbox {
+    width: 20px;
+    height: 20px;
+    margin-top: 2px;
+    cursor: pointer;
+    accent-color: #aa00ff;
+    flex-shrink: 0;
+  }
+
+  .stat-info {
+    flex: 1;
+  }
+
+  .stat-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+
+  .stat-emoji {
+    font-size: 18px;
+  }
+
+  .stat-label {
+    font-size: 14px;
+    font-weight: 600;
+    color: #ffffff;
+  }
+
+  .stat-badge {
+    font-size: 10px;
+    background-color: rgba(255, 68, 68, 0.2);
+    padding: 2px 8px;
+    border-radius: 12px;
+    color: #ff8888;
+  }
+
+  .stat-description {
+    font-size: 12px;
+    color: #888;
+    line-height: 1.4;
+  }
+
+  .action-buttons-group {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .action-button {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #b0b0b0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .action-button:hover {
+    border-color: #aa00ff;
+    color: #aa00ff;
+    background-color: rgba(170, 0, 255, 0.1);
+  }
+
+  .selection-counter {
+    background-color: #1a1a1a;
+    border: 1px solid #aa00ff;
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #aa00ff;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Time period controls */
+  .time-period-control {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+
+  .time-period-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    font-size: 15px;
+  }
+
+  .time-period-checkbox input {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #aa00ff;
+  }
+
+  .days-input-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background-color: #1a1a1a;
+    padding: 8px 16px;
+    border-radius: 12px;
+    border: 1px solid #2a2a2a;
+  }
+
+  .days-input {
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: white;
+    width: 80px;
+    font-size: 14px;
+    text-align: center;
+  }
+
+  .days-input:focus {
+    outline: none;
+    border-color: #aa00ff;
+  }
+
+  /* Schedule section */
+  .schedule-section {
+    margin-top: 8px;
+  }
+
+  .add-schedule-button {
+    width: 100%;
+    background: linear-gradient(135deg, #1a1a1a 0%, #0f0f0f 100%);
+    border: 2px dashed #2a2a2a;
+    border-radius: 16px;
+    padding: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    color: #888;
+    font-size: 16px;
+    font-weight: 500;
+  }
+
+  .add-schedule-button:hover {
+    border-color: #aa00ff;
+    color: #aa00ff;
+    background: linear-gradient(135deg, #1f1f1f 0%, #151515 100%);
+  }
+
+  .schedule-preview {
+    background-color: #1a1a1a;
+    border-radius: 16px;
+    padding: 20px;
+    border: 1px solid #2a2a2a;
+    position: relative;
+  }
+
+  .schedule-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .schedule-preview-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #aa00ff;
+  }
+
+  .remove-schedule {
+    background: none;
+    border: none;
+    color: #ff4444;
+    cursor: pointer;
+    font-size: 18px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+  }
+
+  .remove-schedule:hover {
+    background-color: rgba(255, 68, 68, 0.1);
+  }
+
+  .schedule-preview-content {
+    font-size: 15px;
+    color: #ffffff;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .schedule-preview-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background-color: #0a0a0a;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 13px;
+  }
+
+  /* Reset button */
+  .reset-button-container {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 32px;
+  }
+
+  .reset-button {
+    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
+    color: white;
+    border: none;
+    border-radius: 12px;
+    padding: 14px 32px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .reset-button:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(170, 0, 255, 0.4);
+  }
+
+  .reset-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Results section */
+  .results-section {
+    background-color: #0a0a0a;
+    border: 1px solid #1a1a1a;
+    border-radius: 16px;
+    padding: 24px;
+    margin-top: 32px;
+  }
+
+  .results-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .results-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #aa00ff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .results-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .results-table th,
+  .results-table td {
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  .results-table th {
+    background-color: #0f0f0f;
+    color: #aa00ff;
+    font-weight: 600;
+    font-size: 13px;
+  }
+
+  .success-badge {
+    background-color: rgba(0, 184, 148, 0.2);
+    color: #00b894;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    display: inline-block;
+  }
+
+  .error-badge {
+    background-color: rgba(255, 118, 117, 0.2);
+    color: #ff7675;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    display: inline-block;
+  }
+
+  /* Modal overlay */
+  .schedule-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    padding: 20px;
+    animation: fadeIn 0.2s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slideUp {
+    from {
+      transform: translateY(30px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  .schedule-modal {
+    background: linear-gradient(135deg, #1a1a1a 0%, #0f0f0f 100%);
+    border-radius: 24px;
+    width: 100%;
+    max-width: 500px;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+    border: 1px solid #2a2a2a;
+    animation: slideUp 0.3s ease;
+    overflow: hidden;
+  }
+
+  .schedule-modal-header {
+    padding: 24px 24px 16px 24px;
+    border-bottom: 1px solid #2a2a2a;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .schedule-modal-title {
+    font-size: 20px;
+    font-weight: 600;
+    background: linear-gradient(135deg, #aa00ff, #ff66cc);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .schedule-modal-close {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+  }
+
+  .schedule-modal-close:hover {
+    color: #ff4444;
+    background-color: rgba(255, 68, 68, 0.1);
+  }
+
+  .schedule-modal-content {
+    padding: 24px;
+    min-height: 300px;
+  }
+
+  /* Schedule type options */
+  .schedule-type-options {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .schedule-type-option {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 16px;
+    padding: 18px 20px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .schedule-type-option:hover {
+    border-color: #aa00ff;
+    background-color: #222;
+    transform: translateX(4px);
+  }
+
+  .schedule-type-option.selected {
+    border-color: #aa00ff;
+    background-color: rgba(170, 0, 255, 0.1);
+  }
+
+  .schedule-type-icon {
+    font-size: 32px;
+  }
+
+  .schedule-type-info {
+    flex: 1;
+  }
+
+  .schedule-type-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: #ffffff;
+    margin-bottom: 4px;
+  }
+
+  .schedule-type-desc {
+    font-size: 12px;
+    color: #888;
+  }
+
+  .schedule-type-check {
+    color: #aa00ff;
+    font-size: 20px;
+  }
+
+  /* Form inputs */
+  .form-group {
+    margin-bottom: 20px;
+  }
+
+  .form-label {
+    display: block;
+    font-size: 14px;
+    font-weight: 500;
+    color: #aa00ff;
+    margin-bottom: 8px;
+  }
+
+  .form-input, .form-select {
+    width: 100%;
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 12px 16px;
+    color: #ffffff;
+    font-size: 14px;
+    transition: all 0.2s ease;
+  }
+
+  .form-input:focus, .form-select:focus {
+    outline: none;
+    border-color: #aa00ff;
+    box-shadow: 0 0 0 3px rgba(170, 0, 255, 0.1);
+  }
+
+  .weekday-options {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+
+  .weekday-option {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 12px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .weekday-option:hover {
+    border-color: #aa00ff;
+  }
+
+  .weekday-option.selected {
+    border-color: #aa00ff;
+    background-color: rgba(170, 0, 255, 0.2);
+  }
+
+  /* Confirmation page */
+  .confirmation-details {
+    background-color: #1a1a1a;
+    border-radius: 16px;
+    padding: 20px;
+    margin-top: 16px;
+  }
+
+  .confirmation-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid #2a2a2a;
+  }
+
+  .confirmation-row:last-child {
+    border-bottom: none;
+  }
+
+  .confirmation-label {
+    font-size: 14px;
+    color: #888;
+  }
+
+  .confirmation-value {
+    font-size: 14px;
+    font-weight: 500;
+    color: #aa00ff;
+  }
+
+  .modal-footer {
+    padding: 16px 24px 24px 24px;
+    border-top: 1px solid #2a2a2a;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .modal-btn {
+    padding: 10px 20px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: none;
+  }
+
+  .modal-btn-back {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    color: #ffffff;
+  }
+
+  .modal-btn-back:hover {
+    border-color: #aa00ff;
+    color: #aa00ff;
+  }
+
+  .modal-btn-next {
+    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
+    color: white;
+  }
+
+  .modal-btn-next:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(170, 0, 255, 0.3);
+  }
+
+  .modal-btn-cancel {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    color: #888;
+  }
+
+  .modal-btn-cancel:hover {
+    border-color: #ff4444;
+    color: #ff4444;
+  }
+
+  /* Step indicator */
+  .step-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+
+  .step-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #2a2a2a;
+    transition: all 0.3s ease;
+  }
+
+  .step-dot.active {
+    width: 24px;
+    border-radius: 4px;
+    background: linear-gradient(135deg, #aa00ff, #8800cc);
+  }
+
+  .step-dot.completed {
+    background-color: #00b894;
+  }
+
+  /* Other existing styles */
   .view-selector {
     display: flex;
     gap: 12px;
@@ -277,10 +962,6 @@ const styles = `
     min-width: 250px;
   }
 
-  .scope-dropdown-wrapper {
-    position: relative;
-  }
-
   .scope-dropdown {
     width: 100%;
     background-color: #1a1a1a;
@@ -291,24 +972,11 @@ const styles = `
     font-size: 14px;
     cursor: pointer;
     outline: none;
-    transition: all 0.2s ease;
     appearance: none;
-    -webkit-appearance: none;
     background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23aa00ff'%3e%3cpath d='M7 10l5 5 5-5z'/%3e%3c/svg%3e");
     background-repeat: no-repeat;
     background-position: right 12px center;
     background-size: 20px;
-  }
-
-  .scope-dropdown option {
-    background-color: #1a1a1a;
-    color: #ffffff;
-    padding: 12px;
-  }
-
-  .scope-dropdown:focus {
-    border-color: #aa00ff;
-    box-shadow: 0 0 0 3px rgba(170, 0, 255, 0.15);
   }
 
   .entity-selector-wrapper {
@@ -321,12 +989,10 @@ const styles = `
   .entity-selector-input-wrapper {
     position: relative;
     width: 100%;
-    max-width: 100%;
   }
 
   .entity-search-input {
     width: 100%;
-    max-width: 100%;
     background-color: #1a1a1a;
     color: #ffffff;
     border: 1px solid #2a2a2a;
@@ -335,7 +1001,10 @@ const styles = `
     font-size: 14px;
     outline: none;
     transition: all 0.2s ease;
-    box-sizing: border-box;
+  }
+
+  .entity-search-input:focus {
+    border-color: #aa00ff;
   }
 
   .entity-dropdown {
@@ -343,57 +1012,28 @@ const styles = `
     top: 100%;
     left: 0;
     right: 0;
-    width: 100%;
-    max-width: 100%;
     background-color: #1a1a1a;
     border: 1px solid #2a2a2a;
     border-radius: 12px;
     margin-top: 8px;
     max-height: 300px;
     overflow-y: auto;
-    overflow-x: hidden;
     z-index: 1000;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-    box-sizing: border-box;
   }
 
   .entity-option {
     padding: 12px 16px;
-    color: #ffffff;
     cursor: pointer;
     transition: all 0.2s ease;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 8px;
     border-bottom: 1px solid #2a2a2a;
-    width: 100%;
-    box-sizing: border-box;
   }
 
-  .entity-option-info {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .entity-name {
-    font-weight: 500;
-    color: #ffffff;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
-  }
-
-  .entity-subtext {
-    color: #888;
-    font-size: 12px;
-    flex-shrink: 0;
-    white-space: nowrap;
+  .entity-option:hover {
+    background-color: #2a2a2a;
   }
 
   .selected-entity-info {
@@ -403,10 +1043,6 @@ const styles = `
     border-radius: 8px;
     border-left: 3px solid #aa00ff;
     font-size: 14px;
-    word-break: break-word;
-    overflow-wrap: break-word;
-    max-width: 100%;
-    box-sizing: border-box;
   }
 
   .selected-entity-label {
@@ -415,546 +1051,26 @@ const styles = `
     margin-right: 8px;
   }
 
-  .stat-types-section {
-    margin-top: 24px;
+  .user-avatar-small {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    object-fit: cover;
   }
 
-  .stat-types-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 24px;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-
-  .action-buttons-group {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .action-button {
-    background-color: #1a1a1a;
-    border: 1px solid #2a2a2a;
-    border-radius: 10px;
-    padding: 8px 16px;
-    font-size: 14px;
-    font-weight: 500;
-    color: #b0b0b0;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .action-button:hover {
-    border-color: #aa00ff;
-    color: #aa00ff;
-    background-color: rgba(170, 0, 255, 0.1);
-  }
-
-  .selection-counter {
-    background-color: #1a1a1a;
-    border: 1px solid #aa00ff;
-    border-radius: 20px;
-    padding: 6px 14px;
-    font-size: 13px;
-    font-weight: 500;
-    color: #aa00ff;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .stat-types-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 16px;
-  }
-
-  .stat-card {
-    background-color: #1a1a1a;
-    border: 1px solid #2a2a2a;
-    border-radius: 12px;
-    padding: 16px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .stat-card:hover {
-    border-color: #aa00ff;
-    background-color: #222;
-    transform: translateY(-2px);
-  }
-
-  .stat-card.selected {
-    border-color: #aa00ff;
-    background-color: rgba(170, 0, 255, 0.1);
-  }
-
-  .stat-card-content {
-    display: flex;
-    align-items: flex-start;
-    gap: 14px;
-  }
-
-  .stat-checkbox {
+  .loading-spinner {
     width: 18px;
     height: 18px;
-    margin-top: 2px;
-    cursor: pointer;
-    accent-color: #aa00ff;
-    flex-shrink: 0;
-  }
-
-  .stat-info {
-    flex: 1;
-  }
-
-  .stat-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
-    flex-wrap: wrap;
-  }
-
-  .stat-emoji {
-    font-size: 20px;
-  }
-
-  .stat-label {
-    font-size: 15px;
-    font-weight: 600;
-    color: #ffffff;
-  }
-
-  .stat-badge {
-    font-size: 10px;
-    background-color: rgba(255, 68, 68, 0.2);
-    padding: 2px 8px;
-    border-radius: 12px;
-    color: #ff8888;
-  }
-
-  .stat-description {
-    font-size: 12px;
-    color: #888;
-    line-height: 1.4;
-  }
-
-  .options-section {
-    margin-top: 24px;
-    padding: 20px;
-    background-color: #1a1a1a;
-    border-radius: 12px;
-    border: 1px solid #2a2a2a;
-  }
-
-  .options-title {
-    font-size: 16px;
-    font-weight: 600;
-    color: #aa00ff;
-    margin-bottom: 16px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .time-period-control {
-    margin-bottom: 20px;
-  }
-
-  .time-period-label {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-    margin-bottom: 12px;
-  }
-
-  .time-period-checkbox {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-  }
-
-  .time-period-checkbox input {
-    width: 18px;
-    height: 18px;
-    cursor: pointer;
-    accent-color: #aa00ff;
-  }
-
-  .days-input {
-    background-color: #0a0a0a;
-    border: 1px solid #2a2a2a;
-    border-radius: 8px;
-    padding: 8px 12px;
-    color: white;
-    width: 100px;
-    font-size: 14px;
-  }
-
-  .days-input:focus {
-    outline: none;
-    border-color: #aa00ff;
-  }
-
-  .schedule-control {
-    border-top: 1px solid #2a2a2a;
-    padding-top: 16px;
-  }
-
-  .schedule-checkbox {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    margin-bottom: 12px;
-  }
-
-  .schedule-checkbox input {
-    width: 18px;
-    height: 18px;
-    cursor: pointer;
-    accent-color: #aa00ff;
-  }
-
-  .interval-control {
-    margin-left: 26px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .interval-input {
-    background-color: #0a0a0a;
-    border: 1px solid #2a2a2a;
-    border-radius: 8px;
-    padding: 8px 12px;
-    color: white;
-    width: 100px;
-    font-size: 14px;
-  }
-
-  .interval-input:focus {
-    outline: none;
-    border-color: #aa00ff;
-  }
-
-  .interval-unit {
-    color: #888;
-    font-size: 14px;
-  }
-
-  .schedule-info {
-    margin-top: 12px;
-    padding: 10px;
-    background-color: #0a0a0a;
-    border-radius: 8px;
-    font-size: 12px;
-    color: #00b894;
-    border-left: 3px solid #00b894;
-  }
-
-  .reset-button-container {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 32px;
-  }
-
-  .reset-button {
-    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
-    color: white;
-    border: none;
-    border-radius: 12px;
-    padding: 14px 32px;
-    font-size: 16px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .reset-button:hover:not(:disabled) {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(170, 0, 255, 0.4);
-  }
-
-  .reset-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .results-section {
-    background-color: #0a0a0a;
-    border: 1px solid #1a1a1a;
-    border-radius: 16px;
-    padding: 24px;
-    margin-top: 32px;
-    overflow: hidden;
-  }
-
-  .results-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-
-  .results-title {
-    font-size: 18px;
-    font-weight: 600;
-    color: #aa00ff;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .results-stats {
-    font-size: 13px;
-    color: #888;
-    background-color: #1a1a1a;
-    padding: 4px 12px;
-    border-radius: 20px;
-  }
-
-  .results-table-wrapper {
-    overflow-x: auto;
-    width: 100%;
-    max-width: 100%;
-  }
-
-  .results-table {
-    width: 100%;
-    border-collapse: collapse;
-    table-layout: auto;
-    min-width: 100%;
-  }
-
-  .results-table th,
-  .results-table td {
-    padding: 12px 16px;
-    text-align: left;
-    border-bottom: 1px solid #1a1a1a;
-    word-break: break-word;
-  }
-
-  .results-table th {
-    background-color: #0f0f0f;
-    color: #aa00ff;
-    font-weight: 600;
-    font-size: 13px;
-    white-space: nowrap;
-  }
-
-  .results-table tr:hover {
-    background-color: #1a1a1a;
-  }
-
-  .success-badge {
-    background-color: rgba(0, 184, 148, 0.2);
-    color: #00b894;
-    padding: 4px 10px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 500;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top: 2px solid white;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
     display: inline-block;
-    white-space: nowrap;
-  }
-
-  .error-badge {
-    background-color: rgba(255, 118, 117, 0.2);
-    color: #ff7675;
-    padding: 4px 10px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 500;
-    display: inline-block;
-    white-space: nowrap;
-  }
-
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.8);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 10000;
-    padding: 16px;
-  }
-
-  .modal {
-    background-color: #1a1a1a;
-    border-radius: 16px;
-    max-width: 500px;
-    width: 100%;
-    max-height: 90vh;
-    overflow-y: auto;
-    padding: 24px;
-    border: 1px solid #2a2a2a;
-  }
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
-  }
-
-  .modal-title {
-    font-size: 20px;
-    font-weight: 600;
-    color: #ff4444;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .modal-close {
-    background: none;
-    border: none;
-    color: #888;
-    font-size: 24px;
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-
-  .modal-close:hover {
-    color: #ff4444;
-  }
-
-  .warning-box {
-    background-color: rgba(255, 68, 68, 0.1);
-    border: 1px solid #ff4444;
-    border-radius: 12px;
-    padding: 14px;
-    margin-bottom: 20px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    word-break: break-word;
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 12px;
-    margin-top: 24px;
-    flex-wrap: wrap;
-  }
-
-  .modal-cancel {
-    background-color: #1a1a1a;
-    border: 1px solid #2a2a2a;
-    border-radius: 8px;
-    padding: 10px 20px;
-    color: #ffffff;
-    cursor: pointer;
-  }
-
-  .modal-cancel:hover {
-    border-color: #aa00ff;
-  }
-
-  .modal-confirm {
-    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
-    border: none;
-    border-radius: 8px;
-    padding: 10px 20px;
-    color: white;
-    cursor: pointer;
-    font-weight: 600;
-  }
-
-  .modal-confirm:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 2px 8px rgba(170, 0, 255, 0.3);
-  }
-
-  .loading-container {
-    text-align: center;
-    padding: 80px 60px;
-    background-color: #0a0a0a;
-    border: 1px solid #1a1a1a;
-    border-radius: 16px;
-  }
-
-  .error-message-container {
-    text-align: center;
-    padding: 80px 40px;
-    background-color: #1a1a1a;
-    border: 1px solid #ff4444;
-    border-radius: 16px;
-    margin-top: 0;
-  }
-
-  .error-icon {
-    font-size: 64px;
-    margin-bottom: 20px;
-  }
-
-  .error-title {
-    color: #ff4444;
-    font-size: 28px;
-    font-weight: 600;
-    margin-bottom: 16px;
-  }
-
-  .error-message {
-    color: #b0b0b0;
-    font-size: 16px;
-    line-height: 1.6;
-    margin-bottom: 8px;
-  }
-
-  .no-server {
-    text-align: center;
-    padding: 80px 60px;
-    background-color: #0a0a0a;
-    border: 1px solid #1a1a1a;
-    border-radius: 16px;
-    color: #b0b0b0;
-  }
-
-  .invite-button, .login-button {
-    display: inline-block;
-    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
-    color: white;
-    padding: 12px 28px;
-    border-radius: 10px;
-    text-decoration: none;
-    font-weight: 600;
-    margin-top: 20px;
   }
 
   @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
-  }
-
-  @keyframes slideIn {
-    from {
-      transform: translateX(100%);
-      opacity: 0;
-    }
-    to {
-      transform: translateX(0);
-      opacity: 1;
-    }
   }
 
   .toast-message {
@@ -972,153 +1088,75 @@ const styles = `
     font-weight: 500;
   }
 
-  .loading-spinner {
-    width: 18px;
-    height: 18px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top: 2px solid white;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
+  @keyframes slideIn {
+    from {
+      transform: translateX(100%);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+
+  .error-message-container {
+    text-align: center;
+    padding: 80px 40px;
+    background-color: #1a1a1a;
+    border: 1px solid #ff4444;
+    border-radius: 16px;
+  }
+
+  .error-icon {
+    font-size: 64px;
+    margin-bottom: 20px;
+  }
+
+  .error-title {
+    color: #ff4444;
+    font-size: 28px;
+    font-weight: 600;
+    margin-bottom: 16px;
+  }
+
+  .no-server {
+    text-align: center;
+    padding: 80px 60px;
+    background-color: #0a0a0a;
+    border: 1px solid #1a1a1a;
+    border-radius: 16px;
+  }
+
+  .invite-button, .login-button {
     display: inline-block;
-  }
-
-  .user-avatar-small {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    object-fit: cover;
-  }
-
-  @media (max-width: 1024px) {
-    .dashboard-main {
-      margin-left: 250px;
-    }
-    .dashboard-content {
-      padding: 30px;
-    }
-    .scope-controls {
-      flex-direction: column;
-    }
-    .entity-selector-wrapper {
-      width: 100%;
-    }
-    .stat-types-grid {
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    }
+    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
+    color: white;
+    padding: 12px 28px;
+    border-radius: 10px;
+    text-decoration: none;
+    font-weight: 600;
+    margin-top: 20px;
   }
 
   @media (max-width: 768px) {
     .dashboard-main {
       margin-left: 0;
-      width: 100%;
     }
     .dashboard-content {
       padding: 16px;
-      width: 100%;
     }
-    .view-selector {
-      flex-direction: column;
-    }
-    .view-button {
-      text-align: center;
+    .reset-section {
+      padding: 20px;
     }
     .stat-types-grid {
       grid-template-columns: 1fr;
     }
-    .stat-types-header {
-      flex-direction: column;
-      align-items: flex-start;
-    }
-    .scope-selector-section {
-      padding: 16px;
-    }
-    .results-section {
-      padding: 16px;
-      margin-left: -16px;
-      margin-right: -16px;
-      width: calc(100% + 32px);
-      border-radius: 0;
-      border-left: none;
-      border-right: none;
-    }
-    .results-table th,
-    .results-table td {
-      padding: 10px 12px;
-      font-size: 13px;
-    }
-    .results-table th:nth-child(3),
-    .results-table td:nth-child(3) {
-      max-width: 150px;
-    }
-    .action-buttons-group {
-      width: 100%;
-    }
-    .action-button {
-      flex: 1;
-      justify-content: center;
-    }
-    .reset-button-container {
-      justify-content: center;
-    }
-    .reset-button {
-      width: 100%;
-      justify-content: center;
-    }
-    .selected-entity-info {
-      font-size: 13px;
-    }
-    .modal {
+    .schedule-modal {
       margin: 16px;
       width: calc(100% - 32px);
     }
-    .options-section {
-      padding: 16px;
-    }
-  }
-
-  @media (max-width: 480px) {
-    .dashboard-content {
-      padding: 12px;
-    }
-    .results-section {
-      margin-left: -12px;
-      margin-right: -12px;
-      width: calc(100% + 24px);
-    }
-    .results-table th,
-    .results-table td {
-      padding: 8px 8px;
-      font-size: 12px;
-    }
-    .results-table th:nth-child(2),
-    .results-table td:nth-child(2) {
-      max-width: 80px;
-    }
-    .success-badge, .error-badge {
-      padding: 3px 6px;
-      font-size: 10px;
-    }
-    .section-title {
-      font-size: 20px;
-    }
-    .scope-selector-section {
-      padding: 12px;
-    }
-    .stat-card {
-      padding: 12px;
-    }
-    .entity-option {
-      padding: 10px 12px;
-    }
-    .user-avatar-small {
-      width: 28px;
-      height: 28px;
-    }
-    .entity-name {
-      font-size: 13px;
-    }
-    .entity-subtext {
-      font-size: 11px;
+    .section-header {
+      flex-wrap: wrap;
     }
   }
 `;
@@ -1148,7 +1186,16 @@ const STAT_TYPES = {
   }
 };
 
-// Helper function to filter stat types based on scope
+const weekdays = [
+  { value: 0, label: "Monday", short: "Mon" },
+  { value: 1, label: "Tuesday", short: "Tue" },
+  { value: 2, label: "Wednesday", short: "Wed" },
+  { value: 3, label: "Thursday", short: "Thu" },
+  { value: 4, label: "Friday", short: "Fri" },
+  { value: 5, label: "Saturday", short: "Sat" },
+  { value: 6, label: "Sunday", short: "Sun" }
+];
+
 const getFilteredStatTypes = (commandType, scope) => {
   const types = STAT_TYPES[commandType];
   if (!types) return [];
@@ -1166,6 +1213,281 @@ const getFilteredStatTypes = (commandType, scope) => {
     }));
 };
 
+// Schedule Modal Component
+const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
+  const [step, setStep] = useState(1);
+  const [scheduleType, setScheduleType] = useState(null);
+  const [selectedWeekday, setSelectedWeekday] = useState(null);
+  const [intervalDays, setIntervalDays] = useState(7);
+  const [dayOfMonth, setDayOfMonth] = useState(1);
+  const [timeOfDay, setTimeOfDay] = useState("18:00");
+
+  const resetState = () => {
+    setStep(1);
+    setScheduleType(null);
+    setSelectedWeekday(null);
+    setIntervalDays(7);
+    setDayOfMonth(1);
+    setTimeOfDay("18:00");
+  };
+
+  const handleClose = () => {
+    resetState();
+    onClose();
+  };
+
+  const handleNext = () => {
+    if (step === 1 && scheduleType) {
+      setStep(2);
+    } else if (step === 2) {
+      setStep(3);
+    }
+  };
+
+  const handleBack = () => {
+    if (step > 1) {
+      setStep(step - 1);
+    }
+  };
+
+  const handleConfirm = () => {
+    let scheduleDescription = "";
+    let scheduleData = {};
+
+    if (scheduleType === "weekly") {
+      const weekday = weekdays.find(w => w.value === selectedWeekday);
+      scheduleDescription = `Every ${weekday?.label} at ${timeOfDay}`;
+      scheduleData = { pattern: "weekly", weekday: selectedWeekday, time: timeOfDay };
+    } else if (scheduleType === "daily") {
+      scheduleDescription = `Every day at ${timeOfDay}`;
+      scheduleData = { pattern: "daily", time: timeOfDay };
+    } else if (scheduleType === "monthly") {
+      scheduleDescription = `Every ${dayOfMonth}${getOrdinal(dayOfMonth)} of the month at ${timeOfDay}`;
+      scheduleData = { pattern: "monthly", dayOfMonth: dayOfMonth, time: timeOfDay };
+    } else if (scheduleType === "custom") {
+      scheduleDescription = `Every ${intervalDays} days at ${timeOfDay}`;
+      scheduleData = { pattern: "custom", intervalDays: intervalDays, time: timeOfDay };
+    }
+
+    onConfirm(scheduleDescription, scheduleData);
+    resetState();
+    onClose();
+  };
+
+  const getOrdinal = (n) => {
+    if (n > 3 && n < 21) return 'th';
+    switch (n % 10) {
+      case 1: return 'st';
+      case 2: return 'nd';
+      case 3: return 'rd';
+      default: return 'th';
+    }
+  };
+
+  const getSchedulePreview = () => {
+    if (!scheduleType) return null;
+    if (scheduleType === "weekly") {
+      const weekday = weekdays.find(w => w.value === selectedWeekday);
+      return `${weekday?.label || "Select a day"} at ${timeOfDay}`;
+    }
+    if (scheduleType === "daily") return `Every day at ${timeOfDay}`;
+    if (scheduleType === "monthly") return `Every ${dayOfMonth}${getOrdinal(dayOfMonth)} at ${timeOfDay}`;
+    if (scheduleType === "custom") return `Every ${intervalDays} days at ${timeOfDay}`;
+    return "";
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="schedule-modal-overlay" onClick={handleClose}>
+      <div className="schedule-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="schedule-modal-header">
+          <h3 className="schedule-modal-title">Create Reset Schedule</h3>
+          <button className="schedule-modal-close" onClick={handleClose}>✕</button>
+        </div>
+
+        <div className="step-indicator">
+          <div className={`step-dot ${step >= 1 ? 'active' : ''} ${step > 1 ? 'completed' : ''}`}></div>
+          <div className={`step-dot ${step >= 2 ? 'active' : ''} ${step > 2 ? 'completed' : ''}`}></div>
+          <div className={`step-dot ${step >= 3 ? 'active' : ''}`}></div>
+        </div>
+
+        <div className="schedule-modal-content">
+          {step === 1 && (
+            <div>
+              <h4 style={{ marginBottom: '20px', fontSize: '16px', color: '#fff' }}>Choose schedule type</h4>
+              <div className="schedule-type-options">
+                <div 
+                  className={`schedule-type-option ${scheduleType === 'daily' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('daily')}
+                >
+                  <div className="schedule-type-icon">📅</div>
+                  <div className="schedule-type-info">
+                    <div className="schedule-type-name">Every Day</div>
+                    <div className="schedule-type-desc">Runs at the same time every day</div>
+                  </div>
+                  {scheduleType === 'daily' && <div className="schedule-type-check">✓</div>}
+                </div>
+
+                <div 
+                  className={`schedule-type-option ${scheduleType === 'weekly' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('weekly')}
+                >
+                  <div className="schedule-type-icon">📆</div>
+                  <div className="schedule-type-info">
+                    <div className="schedule-type-name">Weekly</div>
+                    <div className="schedule-type-desc">Runs on a specific day of the week</div>
+                  </div>
+                  {scheduleType === 'weekly' && <div className="schedule-type-check">✓</div>}
+                </div>
+
+                <div 
+                  className={`schedule-type-option ${scheduleType === 'monthly' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('monthly')}
+                >
+                  <div className="schedule-type-icon">📅</div>
+                  <div className="schedule-type-info">
+                    <div className="schedule-type-name">Monthly</div>
+                    <div className="schedule-type-desc">Runs on a specific day of the month</div>
+                  </div>
+                  {scheduleType === 'monthly' && <div className="schedule-type-check">✓</div>}
+                </div>
+
+                <div 
+                  className={`schedule-type-option ${scheduleType === 'custom' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('custom')}
+                >
+                  <div className="schedule-type-icon">⚙️</div>
+                  <div className="schedule-type-info">
+                    <div className="schedule-type-name">Custom Interval</div>
+                    <div className="schedule-type-desc">Runs every X days</div>
+                  </div>
+                  {scheduleType === 'custom' && <div className="schedule-type-check">✓</div>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div>
+              <h4 style={{ marginBottom: '20px', fontSize: '16px', color: '#fff' }}>Configure schedule</h4>
+              
+              {scheduleType === 'weekly' && (
+                <div className="form-group">
+                  <label className="form-label">Select Day</label>
+                  <div className="weekday-options">
+                    {weekdays.map(day => (
+                      <div
+                        key={day.value}
+                        className={`weekday-option ${selectedWeekday === day.value ? 'selected' : ''}`}
+                        onClick={() => setSelectedWeekday(day.value)}
+                      >
+                        {day.short}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {scheduleType === 'monthly' && (
+                <div className="form-group">
+                  <label className="form-label">Day of Month</label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    min="1"
+                    max="31"
+                    value={dayOfMonth}
+                    onChange={(e) => setDayOfMonth(Math.min(31, Math.max(1, parseInt(e.target.value) || 1)))}
+                  />
+                </div>
+              )}
+
+              {scheduleType === 'custom' && (
+                <div className="form-group">
+                  <label className="form-label">Interval (Days)</label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    min="1"
+                    max="365"
+                    value={intervalDays}
+                    onChange={(e) => setIntervalDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
+                  />
+                </div>
+              )}
+
+              <div className="form-group">
+                <label className="form-label">Time of Day</label>
+                <input
+                  type="time"
+                  className="form-input"
+                  value={timeOfDay}
+                  onChange={(e) => setTimeOfDay(e.target.value)}
+                  step="60"
+                />
+              </div>
+
+              <div className="confirmation-details" style={{ marginTop: '20px' }}>
+                <div className="confirmation-row">
+                  <span className="confirmation-label">Schedule Preview:</span>
+                  <span className="confirmation-value">{getSchedulePreview()}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div>
+              <h4 style={{ marginBottom: '20px', fontSize: '16px', color: '#fff' }}>Confirm Schedule</h4>
+              <div className="confirmation-details">
+                <div className="confirmation-row">
+                  <span className="confirmation-label">Type:</span>
+                  <span className="confirmation-value">
+                    {scheduleType === 'daily' && 'Daily'}
+                    {scheduleType === 'weekly' && 'Weekly'}
+                    {scheduleType === 'monthly' && 'Monthly'}
+                    {scheduleType === 'custom' && 'Custom Interval'}
+                  </span>
+                </div>
+                <div className="confirmation-row">
+                  <span className="confirmation-label">Schedule:</span>
+                  <span className="confirmation-value">{getSchedulePreview()}</span>
+                </div>
+                <div className="confirmation-row">
+                  <span className="confirmation-label">Next Run:</span>
+                  <span className="confirmation-value">Will be calculated automatically</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="modal-footer">
+          <button className="modal-btn modal-btn-cancel" onClick={handleClose}>Cancel</button>
+          {step > 1 && (
+            <button className="modal-btn modal-btn-back" onClick={handleBack}>Back</button>
+          )}
+          {step < 3 && (
+            <button 
+              className="modal-btn modal-btn-next" 
+              onClick={handleNext}
+              disabled={step === 1 && !scheduleType}
+            >
+              Next
+            </button>
+          )}
+          {step === 3 && (
+            <button className="modal-btn modal-btn-next" onClick={handleConfirm}>
+              Create Schedule
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ResetDashboard = () => {
   const [selectedView, setSelectedView] = useState("server");
   const [currentServer, setCurrentServer] = useState(null);
@@ -1178,18 +1500,19 @@ const ResetDashboard = () => {
   const [actionLoading, setActionLoading] = useState(false);
   const [apiError, setApiError] = useState(null);
   const [toast, setToast] = useState(null);
-  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [resetResults, setResetResults] = useState(null);
   
   // Scope selection
   const [scope, setScope] = useState("server");
   const [selectedStatTypes, setSelectedStatTypes] = useState([]);
   
-  // Time period and scheduling options
+  // Time period
   const [useTimePeriod, setUseTimePeriod] = useState(false);
   const [timePeriodDays, setTimePeriodDays] = useState(7);
-  const [useSchedule, setUseSchedule] = useState(false);
-  const [scheduleIntervalDays, setScheduleIntervalDays] = useState(7);
+  
+  // Schedule
+  const [schedule, setSchedule] = useState(null);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
   
   // Channel/Category selection
   const [channelSearch, setChannelSearch] = useState("");
@@ -1246,12 +1569,8 @@ const ResetDashboard = () => {
     );
   };
 
-  // Check if current user is privileged
-  const isPrivilegedUser = (userId) => {
-    return PRIVILEGED_USERS.includes(userId);
-  };
+  const isPrivilegedUser = (userId) => PRIVILEGED_USERS.includes(userId);
 
-  // Check server access based on dashboard access level
   const checkServerAccess = async (guildId, hasAdmin, hasManageServer) => {
     try {
       const settingsResponse = await fetch(`${API_BASE_URL}/api/settings/get`, {
@@ -1267,26 +1586,20 @@ const ResetDashboard = () => {
         setDashboardAccessLevel(accessLevel);
         window.accessLevel = accessLevel;
         
-        const isAdmin = hasAdmin;
-        const hasManageServerPerm = hasManageServer;
-        
         let hasAccessFlag = false;
         
         if (accessLevel === 'Public') {
           hasAccessFlag = true;
         } else if (accessLevel === 'Member') {
-          hasAccessFlag = isAdmin;
+          hasAccessFlag = hasAdmin;
         } else if (accessLevel === 'Moderator') {
-          hasAccessFlag = isAdmin || hasManageServerPerm;
+          hasAccessFlag = hasAdmin || hasManageServer;
         } else if (accessLevel === 'Admin') {
-          hasAccessFlag = isAdmin;
-        } else {
-          hasAccessFlag = isAdmin;
+          hasAccessFlag = hasAdmin;
         }
         
         setHasAccess(hasAccessFlag);
       } else {
-        console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
       }
     } catch (error) {
@@ -1314,15 +1627,6 @@ const ResetDashboard = () => {
     }
   }, [scope]);
 
-  // Reset schedule/time options when view changes
-  useEffect(() => {
-    setUseSchedule(false);
-    setUseTimePeriod(false);
-    setTimePeriodDays(7);
-    setScheduleIntervalDays(7);
-  }, [selectedView, scope, selectedChannel, selectedCategory, selectedUser]);
-
-  // Filter channels based on search
   useEffect(() => {
     if (channelSearch.trim() === "") {
       setFilteredChannels(channels);
@@ -1335,7 +1639,6 @@ const ResetDashboard = () => {
     }
   }, [channelSearch, channels]);
 
-  // Filter categories based on search
   useEffect(() => {
     if (categorySearch.trim() === "") {
       setFilteredCategories(categories);
@@ -1348,7 +1651,6 @@ const ResetDashboard = () => {
     }
   }, [categorySearch, categories]);
 
-  // Filter users based on search
   useEffect(() => {
     if (userSearch.trim() === "") {
       setFilteredUsers(users);
@@ -1381,13 +1683,11 @@ const ResetDashboard = () => {
         setIsAuthenticated(true);
         setCurrentUserId(authData.user.id);
         
-        // Check if user is privileged
         if (isPrivilegedUser(authData.user.id)) {
           setHasAccess(true);
           setDashboardAccessLevel('Admin');
           window.accessLevel = 'Admin';
           
-          // Still need to get servers for privileged user
           const serversResponse = await fetch(`${API_BASE_URL}/api/user/servers`, {
             credentials: 'include',
             headers: { 'Accept': 'application/json' }
@@ -1576,23 +1876,28 @@ const ResetDashboard = () => {
     showToast('Cleared all selections', 'info');
   };
 
+  const handleAddSchedule = (scheduleDescription, scheduleData) => {
+    setSchedule({ description: scheduleDescription, data: scheduleData });
+    showToast(`Schedule added: ${scheduleDescription}`, 'success');
+  };
+
+  const handleRemoveSchedule = () => {
+    setSchedule(null);
+    showToast('Schedule removed', 'info');
+  };
+
   const handleReset = async () => {
     if (selectedStatTypes.length === 0) {
       showToast("Please select at least one statistic type to reset", "error");
       return;
     }
 
-    setShowConfirmModal(true);
-  };
-
-  const executeResetOrSchedule = async () => {
-    setShowConfirmModal(false);
     setActionLoading(true);
     
     try {
-      if (useSchedule) {
-        // Create a schedule instead of executing immediately
-        await executeSchedule();
+      if (schedule) {
+        // Create schedule
+        await createSchedule();
       } else {
         // Execute reset immediately
         await executeReset();
@@ -1602,6 +1907,102 @@ const ResetDashboard = () => {
       showToast("Failed to process request", "error");
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const createSchedule = async () => {
+    let scopeValue = scope;
+    let scopeDetails = "";
+    let channelId = null;
+    let categoryId = null;
+    
+    if (scope === "channel" && selectedChannel) {
+      scopeDetails = `Channel: #${selectedChannel.name} (ID: ${selectedChannel.id})`;
+      channelId = selectedChannel.id;
+    } else if (scope === "category" && selectedCategory) {
+      scopeDetails = `Category: ${selectedCategory.name} (ID: ${selectedCategory.id})`;
+      categoryId = selectedCategory.id;
+    } else {
+      scopeDetails = "Entire Server";
+    }
+    
+    const resetTypes = selectedStatTypes;
+    
+    // Map schedule data to API format
+    let recurringPattern = null;
+    let recurringWeekday = null;
+    let recurringDayOfMonth = null;
+    let recurringIntervalDays = null;
+    let recurringTime = schedule.data.time;
+    
+    if (schedule.data.pattern === 'daily') {
+      recurringPattern = 'daily';
+    } else if (schedule.data.pattern === 'weekly') {
+      recurringPattern = 'weekly';
+      recurringWeekday = schedule.data.weekday;
+    } else if (schedule.data.pattern === 'monthly') {
+      recurringPattern = 'monthly';
+      recurringDayOfMonth = schedule.data.dayOfMonth;
+    } else if (schedule.data.pattern === 'custom') {
+      recurringPattern = 'custom_days';
+      recurringIntervalDays = schedule.data.intervalDays;
+    }
+    
+    const body = {
+      guild_id: currentServer.id,
+      requested_by_id: currentUserId,
+      reset_types: resetTypes,
+      schedule_type: "recurring",
+      recurring_pattern: recurringPattern,
+      recurring_weekday: recurringWeekday,
+      recurring_day_of_month: recurringDayOfMonth,
+      recurring_time: recurringTime,
+      recurring_interval_days: recurringIntervalDays,
+      time_period_days: useTimePeriod ? timePeriodDays : null,
+      scope_type: scopeValue,
+      scope_details: scopeDetails,
+      channel_id: channelId,
+      category_id: categoryId,
+      reason: `Scheduled via dashboard. ${schedule.description}`
+    };
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reset/schedule/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body)
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        showToast(`✅ Schedule created! Schedule #${result.schedule_id}`, "success");
+        setResetResults([{
+          type: "schedule",
+          label: `Schedule Created (${resetTypes.length} types)`,
+          success: true,
+          message: `${schedule.description}`,
+          schedule_id: result.schedule_id
+        }]);
+      } else {
+        showToast(`❌ Failed to create schedule: ${result.message}`, "error");
+        setResetResults([{
+          type: "schedule",
+          label: "Schedule Creation",
+          success: false,
+          message: result.message || "Unknown error"
+        }]);
+      }
+    } catch (error) {
+      console.error('Error creating schedule:', error);
+      showToast("Failed to create schedule", "error");
+      setResetResults([{
+        type: "schedule",
+        label: "Schedule Creation",
+        success: false,
+        message: error.message || "Network error"
+      }]);
     }
   };
 
@@ -1646,7 +2047,6 @@ const ResetDashboard = () => {
           }
         }
         
-        // Add time period if enabled
         if (useTimePeriod) {
           body.time_period_days = timePeriodDays;
         }
@@ -1671,7 +2071,6 @@ const ResetDashboard = () => {
       
       setResetResults(results);
       
-      // Clear relevant caches after reset
       serverDataCache.clearPattern('reset-users');
       serverDataCache.clearPattern('reset-channels');
       serverDataCache.clearPattern('reset-categories');
@@ -1684,88 +2083,9 @@ const ResetDashboard = () => {
       } else {
         showToast("Failed to reset statistics", "error");
       }
-      
     } catch (error) {
       console.error('Error resetting stats:', error);
       showToast("Failed to reset statistics", "error");
-    }
-  };
-
-  const executeSchedule = async () => {
-    // Build scope details
-    let scopeValue = scope;
-    let scopeDetails = "";
-    let channelId = null;
-    let categoryId = null;
-    
-    if (scope === "channel" && selectedChannel) {
-      scopeDetails = `Channel: #${selectedChannel.name} (ID: ${selectedChannel.id})`;
-      channelId = selectedChannel.id;
-    } else if (scope === "category" && selectedCategory) {
-      scopeDetails = `Category: ${selectedCategory.name} (ID: ${selectedCategory.id})`;
-      categoryId = selectedCategory.id;
-    } else {
-      scopeDetails = "Entire Server";
-    }
-    
-    const resetTypes = selectedStatTypes;
-    const intervalDays = scheduleIntervalDays;
-    
-    const body = {
-      guild_id: currentServer.id,
-      requested_by_id: currentUserId,
-      reset_types: resetTypes,
-      interval_days: intervalDays,
-      reason: `Scheduled via dashboard. Time period: ${useTimePeriod ? `${timePeriodDays} days` : "All time"}`,
-      scope: scopeValue,
-      scope_details: scopeDetails,
-      channel_id: channelId,
-      category_id: categoryId,
-      time_period_days: useTimePeriod ? timePeriodDays : null
-    };
-    
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/reset/schedule/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(body)
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        const nextResetTime = new Date(result.next_reset_time);
-        showToast(`✅ Schedule created! Schedule #${result.schedule_id} - Next reset: ${nextResetTime.toLocaleString()}`, "success");
-        
-        // Add to results display
-        setResetResults([{
-          statType: "schedule",
-          label: `Schedule Created (${resetTypes.length} types)`,
-          success: true,
-          message: result.message,
-          schedule_id: result.schedule_id,
-          next_reset_time: result.next_reset_time
-        }]);
-      } else {
-        showToast(`❌ Failed to create schedule: ${result.message}`, "error");
-        setResetResults([{
-          statType: "schedule",
-          label: "Schedule Creation",
-          success: false,
-          message: result.message || "Unknown error"
-        }]);
-      }
-      
-    } catch (error) {
-      console.error('Error creating schedule:', error);
-      showToast("Failed to create schedule", "error");
-      setResetResults([{
-        statType: "schedule",
-        label: "Schedule Creation",
-        success: false,
-        message: error.message || "Network error"
-      }]);
     }
   };
 
@@ -1774,24 +2094,6 @@ const ResetDashboard = () => {
     if (scope === "channel" && selectedChannel) return `channel #${selectedChannel.name}`;
     if (scope === "category" && selectedCategory) return `category ${selectedCategory.name}`;
     return "the selected scope";
-  };
-
-  const getActionDescription = () => {
-    if (useSchedule) {
-      return `schedule ${selectedStatTypes.length} statistic type(s) to reset every ${scheduleIntervalDays} days from ${getScopeLabel()}`;
-    } else {
-      const timePeriodText = useTimePeriod ? ` (only data from last ${timePeriodDays} days)` : " (all data)";
-      if (selectedView === "server") {
-        return `reset ${selectedStatTypes.length} statistic type(s) from ${getScopeLabel()}${timePeriodText}`;
-      } else {
-        const userName = selectedUser ? (selectedUser.display_name || selectedUser.username || selectedUser.global_name || selectedUser.name || selectedUser.id) : "this user";
-        return `reset ${selectedStatTypes.length} statistic type(s) for ${userName} from ${getScopeLabel()}${timePeriodText}`;
-      }
-    }
-  };
-
-  const getConfirmationTitle = () => {
-    return useSchedule ? "📅 Confirm Schedule" : "⚠️ Confirm Reset";
   };
 
   // Loading state
@@ -1815,7 +2117,6 @@ const ResetDashboard = () => {
     );
   }
 
-  // Permission checking in progress
   if (hasAccess === null && isAuthenticated && currentServer && !isPrivilegedUser(currentUserId)) {
     return (
       <>
@@ -1836,7 +2137,6 @@ const ResetDashboard = () => {
     );
   }
 
-  // Not authenticated
   if (!isAuthenticated) {
     return (
       <>
@@ -1859,7 +2159,6 @@ const ResetDashboard = () => {
     );
   }
 
-  // No server
   if (!currentServer) {
     return (
       <>
@@ -1889,7 +2188,6 @@ const ResetDashboard = () => {
     );
   }
 
-  // Access Denied
   if (hasAccess === false) {
     return (
       <>
@@ -1906,7 +2204,6 @@ const ResetDashboard = () => {
     );
   }
 
-  // Error
   if (apiError) {
     return (
       <>
@@ -1951,8 +2248,8 @@ const ResetDashboard = () => {
                   setScope("server");
                   setSelectedUser(null);
                   setUserSearch("");
-                  setUseSchedule(false);
                   setUseTimePeriod(false);
+                  setSchedule(null);
                 }}
               >
                 Server
@@ -1965,8 +2262,8 @@ const ResetDashboard = () => {
                   setScope("server");
                   setSelectedUser(null);
                   setUserSearch("");
-                  setUseSchedule(false);
                   setUseTimePeriod(false);
+                  setSchedule(null);
                 }}
               >
                 User
@@ -1985,8 +2282,8 @@ const ResetDashboard = () => {
                       onChange={(e) => {
                         setScope(e.target.value);
                         setSelectedStatTypes([]);
-                        setUseSchedule(false);
                         setUseTimePeriod(false);
+                        setSchedule(null);
                       }}
                     >
                       <option value="server">Server</option>
@@ -2018,8 +2315,6 @@ const ResetDashboard = () => {
                                 setSelectedChannel(channel);
                                 setChannelSearch(channel.name);
                                 setShowChannelDropdown(false);
-                                setUseSchedule(false);
-                                setUseTimePeriod(false);
                               }}
                             >
                               <div className="entity-option-info">
@@ -2062,8 +2357,6 @@ const ResetDashboard = () => {
                                 setSelectedCategory(category);
                                 setCategorySearch(category.name);
                                 setShowCategoryDropdown(false);
-                                setUseSchedule(false);
-                                setUseTimePeriod(false);
                               }}
                             >
                               <div className="entity-option-info">
@@ -2108,18 +2401,10 @@ const ResetDashboard = () => {
                               setSelectedUser(user);
                               setUserSearch(user.display_name || user.username || user.global_name || user.name);
                               setShowUserDropdown(false);
-                              setUseSchedule(false);
-                              setUseTimePeriod(false);
                             }}
                           >
                             <div className="entity-option-info">
-                              {user.avatar && (
-                                <img 
-                                  src={user.avatar} 
-                                  alt="" 
-                                  className="user-avatar-small"
-                                />
-                              )}
+                              {user.avatar && <img src={user.avatar} alt="" className="user-avatar-small" />}
                               <span className="entity-name">
                                 {user.display_name || user.global_name || user.username || `User ${user.id}`}
                               </span>
@@ -2141,23 +2426,23 @@ const ResetDashboard = () => {
               )}
             </div>
 
-            {/* Stat Types Section */}
-            <div className="stat-types-section">
-              <div className="stat-types-header">
-                <h2 className="section-title">Select Stat Types to Reset</h2>
-                <div className="action-buttons-group">
-                  <button className="action-button" onClick={handleSelectAll}>
-                    <span>✅</span> Select All
-                  </button>
-                  <button className="action-button" onClick={handleClearAll}>
-                    <span>🗑️</span> Clear All
-                  </button>
-                  {hasSelection && (
-                    <div className="selection-counter">
-                      <span>📌</span> {selectedCount} selected
-                    </div>
-                  )}
+            {/* SECTION 1: STAT TYPES */}
+            <div className="reset-section">
+              <div className="section-header">
+                <div className="section-icon">📊</div>
+                <div className="section-title">Select Stat Types to Reset</div>
+                <div className="section-subtitle">
+                  {selectedCount > 0 && `${selectedCount} selected`}
                 </div>
+              </div>
+              
+              <div className="action-buttons-group">
+                <button className="action-button" onClick={handleSelectAll}>
+                  <span>✅</span> Select All
+                </button>
+                <button className="action-button" onClick={handleClearAll}>
+                  <span>🗑️</span> Clear All
+                </button>
               </div>
               
               <div className="stat-types-grid">
@@ -2179,9 +2464,7 @@ const ResetDashboard = () => {
                         <div className="stat-header">
                           <span className="stat-emoji">{stat.emoji}</span>
                           <span className="stat-label">{stat.label}</span>
-                          {stat.value === "all" && (
-                            <span className="stat-badge">⚠️ DANGER</span>
-                          )}
+                          {stat.value === "all" && <span className="stat-badge">⚠️ DANGER</span>}
                         </div>
                         <div className="stat-description">{stat.description}</div>
                       </div>
@@ -2191,81 +2474,74 @@ const ResetDashboard = () => {
               </div>
             </div>
 
-            {/* Options Section - Time Period & Scheduling */}
-            {hasSelection && (
-              <div className="options-section">
-                <div className="options-title">
-                  <span>⚙️</span> Reset Options
-                </div>
-                
-                {/* Time Period Option */}
-                <div className="time-period-control">
-                  <label className="time-period-checkbox">
-                    <input 
-                      type="checkbox" 
-                      checked={useTimePeriod}
-                      onChange={(e) => {
-                        setUseTimePeriod(e.target.checked);
-                        if (e.target.checked) {
-                          setUseSchedule(false);
-                        }
-                      }}
-                    />
-                    <span>🗓️ Only delete stats from the last</span>
-                  </label>
-                  {useTimePeriod && (
-                    <div className="time-period-label">
-                      <input 
-                        type="number"
-                        className="days-input"
-                        min="1"
-                        max="365"
-                        value={timePeriodDays}
-                        onChange={(e) => setTimePeriodDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
-                      />
-                      <span>days</span>
-                      <span style={{ color: "#888", fontSize: "12px" }}>(1-365 days)</span>
-                    </div>
-                  )}
-                </div>
-                
-                {/* Schedule Option */}
-                <div className="schedule-control">
-                  <label className="schedule-checkbox">
-                    <input 
-                      type="checkbox" 
-                      checked={useSchedule}
-                      onChange={(e) => {
-                        setUseSchedule(e.target.checked);
-                        if (e.target.checked) {
-                          setUseTimePeriod(false);
-                        }
-                      }}
-                    />
-                    <span>⏰ Schedule recurring reset</span>
-                  </label>
-                  {useSchedule && (
-                    <div className="interval-control">
-                      <span>Every</span>
-                      <input 
-                        type="number"
-                        className="interval-input"
-                        min="1"
-                        max="365"
-                        value={scheduleIntervalDays}
-                        onChange={(e) => setScheduleIntervalDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
-                      />
-                      <span className="interval-unit">days</span>
-                      {useTimePeriod && (
-                        <div className="schedule-info">
-                          ℹ️ Time period setting will be applied to each scheduled reset
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+            {/* SECTION 2: TIME PERIOD */}
+            <div className="reset-section">
+              <div className="section-header">
+                <div className="section-icon">⏰</div>
+                <div className="section-title">Time Period</div>
+                <div className="section-subtitle">Choose how far back to delete</div>
               </div>
-            )}
+              
+              <div className="time-period-control">
+                <label className="time-period-checkbox">
+                  <input 
+                    type="checkbox" 
+                    checked={useTimePeriod}
+                    onChange={(e) => setUseTimePeriod(e.target.checked)}
+                  />
+                  <span>🗓️ Only delete stats from the last</span>
+                </label>
+                {useTimePeriod && (
+                  <div className="days-input-group">
+                    <input 
+                      type="number"
+                      className="days-input"
+                      min="1"
+                      max="365"
+                      value={timePeriodDays}
+                      onChange={(e) => setTimePeriodDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
+                    />
+                    <span>days</span>
+                    <span style={{ color: "#888", fontSize: "12px" }}>(1-365 days)</span>
+                  </div>
+                )}
+                {!useTimePeriod && (
+                  <span style={{ color: "#888", fontSize: "14px" }}>Deleting ALL stats (no time limit)</span>
+                )}
+              </div>
+            </div>
+
+            {/* SECTION 3: SCHEDULE */}
+            <div className="reset-section">
+              <div className="section-header">
+                <div className="section-icon">⏱️</div>
+                <div className="section-title">Schedule (Optional)</div>
+                <div className="section-subtitle">Set up automatic recurring resets</div>
+              </div>
+              
+              <div className="schedule-section">
+                {!schedule ? (
+                  <button 
+                    className="add-schedule-button"
+                    onClick={() => setShowScheduleModal(true)}
+                  >
+                    <span>➕</span> Add Schedule
+                  </button>
+                ) : (
+                  <div className="schedule-preview">
+                    <div className="schedule-preview-header">
+                      <span className="schedule-preview-title">📅 Active Schedule</span>
+                      <button className="remove-schedule" onClick={handleRemoveSchedule}>✕</button>
+                    </div>
+                    <div className="schedule-preview-content">
+                      <div className="schedule-preview-item">
+                        <span>🕐</span> {schedule.description}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Action Button */}
             <div className="reset-button-container">
@@ -2281,8 +2557,8 @@ const ResetDashboard = () => {
                   </>
                 ) : (
                   <>
-                    {useSchedule ? "📅" : "⚠️"}
-                    {useSchedule ? " SCHEDULE" : " RESET"}
+                    {schedule ? "📅" : "⚠️"}
+                    {schedule ? " CREATE SCHEDULE" : " RESET NOW"}
                   </>
                 )}
               </button>
@@ -2293,38 +2569,36 @@ const ResetDashboard = () => {
               <div className="results-section">
                 <div className="results-header">
                   <div className="results-title">
-                    <span>📋</span> {resetResults[0].statType === "schedule" ? "Schedule Results" : "Reset Results"}
+                    <span>📋</span> {resetResults[0].type === "schedule" ? "Schedule Results" : "Reset Results"}
                   </div>
                   <div className="results-stats">
                     {resetResults.filter(r => r.success).length} of {resetResults.length} successful
                   </div>
                 </div>
-                <div className="results-table-wrapper">
-                  <table className="results-table">
-                    <thead>
-                      <tr>
-                        <th>Type</th>
-                        <th>Status</th>
-                        <th>Message</th>
+                <table className="results-table">
+                  <thead>
+                    <tr>
+                      <th>Type</th>
+                      <th>Status</th>
+                      <th>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {resetResults.map((result, idx) => (
+                      <tr key={idx}>
+                        <td style={{ fontWeight: 500 }}>{result.label}</td>
+                        <td>
+                          {result.success ? (
+                            <span className="success-badge">✓ Success</span>
+                          ) : (
+                            <span className="error-badge">✗ Failed</span>
+                          )}
+                        </td>
+                        <td style={{ fontSize: "12px", color: "#888" }}>{result.message}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {resetResults.map((result, idx) => (
-                        <tr key={idx}>
-                          <td style={{ fontWeight: 500 }}>{result.label}</td>
-                          <td>
-                            {result.success ? (
-                              <span className="success-badge">✓ Success</span>
-                            ) : (
-                              <span className="error-badge">✗ Failed</span>
-                            )}
-                          </td>
-                          <td style={{ fontSize: "12px", color: "#888" }}>{result.message}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                   </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -2332,44 +2606,14 @@ const ResetDashboard = () => {
         </main>
       </div>
 
-      {/* Confirmation Modal */}
-      {showConfirmModal && (
-        <div className="modal-overlay" onClick={() => setShowConfirmModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 className="modal-title">{getConfirmationTitle()}</h3>
-              <button className="modal-close" onClick={() => setShowConfirmModal(false)}>✕</button>
-            </div>
-            <div className="warning-box">
-              <span style={{ fontSize: "20px" }}>{useSchedule ? "📅" : "⚠️"}</span>
-              <span>{useSchedule ? "This will create a recurring reset schedule." : "This action is PERMANENT and CANNOT be undone!"}</span>
-            </div>
-            <p style={{ wordBreak: 'break-word' }}>Are you sure you want to {getActionDescription()}?</p>
-            {selectedStatTypes.length > 0 && (
-              <p style={{ marginTop: "16px", fontSize: "13px", color: "#888", wordBreak: 'break-word' }}>
-                Will affect: {selectedStatTypes.map(t => STAT_TYPES[selectedView][t]?.label || t).join(", ")}
-              </p>
-            )}
-            {useSchedule && (
-              <p style={{ marginTop: "8px", fontSize: "13px", color: "#aa00ff" }}>
-                📅 First reset will occur in {scheduleIntervalDays} days, then every {scheduleIntervalDays} days thereafter.
-              </p>
-            )}
-            {useTimePeriod && !useSchedule && (
-              <p style={{ marginTop: "8px", fontSize: "13px", color: "#ffaa00" }}>
-                🗓️ Only data from the last {timePeriodDays} days will be deleted.
-              </p>
-            )}
-            <div className="modal-footer">
-              <button className="modal-cancel" onClick={() => setShowConfirmModal(false)}>Cancel</button>
-              <button className="modal-confirm" onClick={executeResetOrSchedule}>
-                {useSchedule ? "Create Schedule" : "Confirm Reset"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
+      {/* Schedule Modal */}
+      <ScheduleModal 
+        isOpen={showScheduleModal}
+        onClose={() => setShowScheduleModal(false)}
+        onConfirm={handleAddSchedule}
+        existingSchedule={schedule}
+      />
+
       <ToastMessage />
       <style>{styles}</style>
     </>

@@ -2685,17 +2685,50 @@ class DatabaseStats(commands.Cog):
                         UNIQUE(guild_id, recorded_at)
                     )
                     ''',
-                    # NEW: reset_schedules table for managing automated data resets
+                    # UPDATED: reset_schedules table with advanced scheduling support
                     '''
                     CREATE TABLE IF NOT EXISTS reset_schedules (
                         id SERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
                         requested_by_id BIGINT NOT NULL,
-                        target_time TIMESTAMPTZ NOT NULL,
                         reset_types TEXT[] NOT NULL,
+                        
+                        -- Schedule type
+                        schedule_type TEXT NOT NULL DEFAULT 'immediate',
+                        
+                        -- For immediate or one-time execution
+                        target_time TIMESTAMPTZ,
+                        
+                        -- For recurring schedules
+                        recurring_pattern TEXT,
+                        recurring_weekday INTEGER,
+                        recurring_day_of_month INTEGER,
+                        recurring_time TIME,
+                        recurring_interval_days INTEGER,
+                        
+                        -- For date range deletion
+                        delete_from_date TIMESTAMPTZ,
+                        delete_to_date TIMESTAMPTZ,
+                        
+                        -- Rolling window time period
+                        time_period_days INTEGER,
+                        
+                        -- Execution tracking
                         completed BOOLEAN DEFAULT FALSE NOT NULL,
+                        last_executed_at TIMESTAMPTZ,
+                        next_execution_at TIMESTAMPTZ,
                         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL,
                         executed_at TIMESTAMPTZ,
+                        failure_count INTEGER DEFAULT 0,
+                        last_error TEXT,
+                        
+                        -- Scope information
+                        scope_type TEXT,
+                        scope_details TEXT,
+                        channel_id BIGINT,
+                        category_id BIGINT,
+                        
+                        -- Metadata
                         reason TEXT
                     )
                     '''
@@ -2717,192 +2750,45 @@ class DatabaseStats(commands.Cog):
                             original=e
                         )
 
-                # ===== HOURLY AGGREGATED TABLES =====
+                # ===== ALTER EXISTING RESET_SCHEDULES TABLE TO ADD NEW COLUMNS =====
                 print("\n" + "="*60)
-                print("📊 CREATING HOURLY AGGREGATED TABLES")
+                print("🔄 ALTERING RESET_SCHEDULES TABLE (ADDING NEW COLUMNS)")
                 print("="*60)
 
-                hourly_aggregated_tables = [
-                    '''
-                    CREATE TABLE IF NOT EXISTS message_tracking_hourly (
-                        hour TIMESTAMPTZ NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        channel_id BIGINT DEFAULT 0,
-                        category_id BIGINT,
-                        message_count INT DEFAULT 0,
-                        total_chars BIGINT DEFAULT 0,
-                        attachment_count INT DEFAULT 0,
-                        embed_count INT DEFAULT 0,
-                        is_bot BOOLEAN DEFAULT FALSE,
-                        encrypted_username TEXT,
-                        
-                        PRIMARY KEY (guild_id, user_id, channel_id, hour)
-                    )
-                    ''',
-                    '''
-                    CREATE TABLE IF NOT EXISTS voice_session_history_hourly (
-                        hour TIMESTAMPTZ NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        channel_id BIGINT DEFAULT 0,
-                        category_id BIGINT,
-                        total_seconds INT DEFAULT 0,
-                        session_count INT DEFAULT 0,
-                        state_flags INT DEFAULT 0,
-                        was_muted_count INT DEFAULT 0,
-                        was_deafened_count INT DEFAULT 0,
-                        was_streaming_count INT DEFAULT 0,
-                        was_video_count INT DEFAULT 0,
-                        is_bot BOOLEAN DEFAULT FALSE,
-                        encrypted_username TEXT,
-                        
-                        PRIMARY KEY (guild_id, user_id, channel_id, hour, state_flags)
-                    )
-                    ''',
-                    '''
-                    CREATE TABLE IF NOT EXISTS emoji_usage_hourly (
-                        hour TIMESTAMPTZ NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        channel_id BIGINT DEFAULT 0,
-                        category_id BIGINT,
-                        emoji_str TEXT NOT NULL,
-                        is_custom BOOLEAN DEFAULT FALSE,
-                        usage_count INT DEFAULT 0,
-                        usage_type TEXT NOT NULL,
-                        is_bot BOOLEAN DEFAULT FALSE,
-                        encrypted_username TEXT,
-                        
-                        PRIMARY KEY (guild_id, user_id, channel_id, emoji_str, usage_type, hour)
-                    )
-                    ''',
-                    '''
-                    CREATE TABLE IF NOT EXISTS user_mentions_hourly (
-                        hour TIMESTAMPTZ NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        mentioned_user_id BIGINT NOT NULL,
-                        mentioner_user_id BIGINT NOT NULL,
-                        channel_id BIGINT DEFAULT 0,
-                        category_id BIGINT,
-                        mention_count INT DEFAULT 0,
-                        is_bot BOOLEAN DEFAULT FALSE,
-                        encrypted_username TEXT,
-                        
-                        PRIMARY KEY (guild_id, mentioned_user_id, mentioner_user_id, channel_id, hour)
-                    )
-                    ''',
-                    '''
-                    CREATE TABLE IF NOT EXISTS activity_sessions_hourly (
-                        hour TIMESTAMPTZ NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        activity_type TEXT NOT NULL,
-                        display_name TEXT NOT NULL DEFAULT 'Unknown',
-                        session_count INT DEFAULT 0,
-                        total_duration_seconds INT DEFAULT 0,
-                        partial_base_seconds INT DEFAULT 0,
-                        is_bot BOOLEAN DEFAULT FALSE,
-                        role_ids BIGINT[] DEFAULT '{}',
-                        last_end_time TIMESTAMPTZ,
-                        created_at TIMESTAMPTZ DEFAULT NOW(),
-                        encrypted_username TEXT,
+                alter_reset_schedules_queries = [
+                    # Schedule type columns
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS schedule_type TEXT NOT NULL DEFAULT \'immediate\'',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_pattern TEXT',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_weekday INTEGER',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_day_of_month INTEGER',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_time TIME',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_interval_days INTEGER',
 
-                        PRIMARY KEY (guild_id, user_id, activity_type, display_name, hour)
-                    );
-                    ''',
-                    '''
-                    CREATE TABLE IF NOT EXISTS role_growth_hourly (
-                        hour TIMESTAMPTZ NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        role_id BIGINT NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        added_count INT DEFAULT 0,
-                        removed_count INT DEFAULT 0,
-                        is_bot BOOLEAN DEFAULT FALSE,
-                        encrypted_username TEXT,
-                        
-                        PRIMARY KEY (guild_id, role_id, user_id, hour)
-                    )
-                    ''',
-                    '''
-                    CREATE TABLE IF NOT EXISTS member_joins_hourly (
-                        hour TIMESTAMPTZ NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        join_count INT DEFAULT 1,
-                        is_bot BOOLEAN DEFAULT FALSE,
-                        encrypted_username TEXT,
-                        
-                        PRIMARY KEY (guild_id, user_id, hour)
-                    )
-                    ''',
-                    '''
-                    CREATE TABLE IF NOT EXISTS member_leaves_hourly (
-                        hour TIMESTAMPTZ NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        user_id BIGINT NOT NULL,
-                        leave_count INT DEFAULT 1,
-                        is_bot BOOLEAN DEFAULT FALSE,
-                        encrypted_username TEXT,
-                        
-                        PRIMARY KEY (guild_id, user_id, hour)
-                    )
-                    '''
+                    # Date range columns
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS delete_from_date TIMESTAMPTZ',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS delete_to_date TIMESTAMPTZ',
+
+                    # Execution tracking columns
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS last_executed_at TIMESTAMPTZ',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS next_execution_at TIMESTAMPTZ',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS failure_count INTEGER DEFAULT 0',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS last_error TEXT',
+
+                    # Scope columns
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS scope_type TEXT',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS scope_details TEXT',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS channel_id BIGINT',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS category_id BIGINT',
                 ]
 
-                for query in hourly_aggregated_tables:
+                for query in alter_reset_schedules_queries:
                     try:
                         await conn.execute(query)
-                        import re
-                        match = re.search(
-                            r'CREATE TABLE IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(
-                                f"  ✅ Created/verified hourly table: {match.group(1)}")
-                    except asyncpg.exceptions.PostgresError as e:
-                        raise DatabaseQueryError(
-                            "Failed to create hourly aggregated table",
-                            context={'operation': 'initialize_database'},
-                            original=e
-                        )
-
-                # ===== DAILY AGGREGATED TABLE (SLASH COMMANDS) =====
-                print("\n" + "="*60)
-                print("📅 CREATING DAILY AGGREGATED TABLE")
-                print("="*60)
-
-                daily_aggregated_tables = [
-                    '''
-                    CREATE TABLE IF NOT EXISTS slash_commands_daily (
-                        day TIMESTAMPTZ NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        command_name TEXT NOT NULL,
-                        command_count INT DEFAULT 0,
-                        unique_users INT DEFAULT 0,
-                        is_bot BOOLEAN DEFAULT FALSE,
-                        encrypted_username TEXT,
-                        
-                        PRIMARY KEY (guild_id, command_name, day)
-                    )
-                    '''
-                ]
-
-                for query in daily_aggregated_tables:
-                    try:
-                        await conn.execute(query)
-                        import re
-                        match = re.search(
-                            r'CREATE TABLE IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(
-                                f"  ✅ Created/verified daily table: {match.group(1)}")
-                    except asyncpg.exceptions.PostgresError as e:
-                        raise DatabaseQueryError(
-                            "Failed to create daily aggregated table",
-                            context={'operation': 'initialize_database'},
-                            original=e
-                        )
+                        print(f"  ✅ Added column to reset_schedules")
+                    except asyncpg.exceptions.DuplicateColumnError:
+                        print(f"  ✅ Column already exists")
+                    except Exception as e:
+                        print(f"  ⚠️ Warning: {e}")
 
                 # ===== ALTER EXISTING TABLES TO ADD ENCRYPTED_USERNAME IF MISSING =====
                 print("\n" + "="*60)
@@ -3015,9 +2901,11 @@ class DatabaseStats(commands.Cog):
                 print("="*60)
 
                 reset_schedules_indexes = [
-                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_pending ON reset_schedules (target_time) WHERE completed = FALSE',
+                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_pending ON reset_schedules (next_execution_at) WHERE completed = FALSE',
                     'CREATE INDEX IF NOT EXISTS idx_reset_schedules_guild ON reset_schedules (guild_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_completed ON reset_schedules (completed, target_time)'
+                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_completed ON reset_schedules (completed, next_execution_at)',
+                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_type ON reset_schedules (schedule_type)',
+                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_recurring ON reset_schedules (recurring_pattern) WHERE schedule_type = \'recurring\'',
                 ]
 
                 for query in reset_schedules_indexes:

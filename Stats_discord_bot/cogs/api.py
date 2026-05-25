@@ -23,6 +23,9 @@ import aiohttp
 import logging
 import uuid
 import secrets
+from pydantic import BaseModel, Field, field_validator
+from datetime import datetime, time
+import re
 import time
 import redis.asyncio as redis
 from exceptions import (
@@ -372,8 +375,31 @@ class CategoryActivityDistributionRequest(BaseModel):
 # RESET RESPONSE MODELS
 # ============================================
 
+# ============================================
+# ENUMS FOR SCHEDULING
+# ============================================
+
+class ScheduleType(str, Enum):
+    IMMEDIATE = "immediate"
+    ONE_TIME = "one_time"
+    RECURRING = "recurring"
+    DATE_RANGE = "date_range"
+
+
+class RecurringPattern(str, Enum):
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    WEEKDAY = "weekday"
+    MONTHLY = "monthly"
+    CUSTOM_DAYS = "custom_days"
+
+
+# ============================================
+# RESET REQUEST MODELS (UPDATED)
+# ============================================
+
 class ResetServerRequest(BaseModel):
-    """Request model for resetting server stats"""
+    """Request model for resetting server stats with optional time period"""
     guild_id: str
     stat_type: str = Field(
         ...,
@@ -389,7 +415,7 @@ class ResetServerRequest(BaseModel):
 
 
 class ResetUserRequest(BaseModel):
-    """Request model for resetting user stats"""
+    """Request model for resetting user stats with optional time period"""
     guild_id: str
     user_id: str
     stat_type: str = Field(
@@ -405,8 +431,120 @@ class ResetUserRequest(BaseModel):
         None, description="Delete only stats from the last X days (null = all time)", ge=1, le=365)
 
 
+# ============================================
+# ADVANCED SCHEDULE REQUEST MODELS
+# ============================================
+
+class CreateAdvancedScheduleRequest(BaseModel):
+    """Request model for creating an advanced reset schedule"""
+    guild_id: str
+    requested_by_id: str
+    reset_types: List[str] = Field(...,
+                                   description="List of stat types to reset")
+
+    # Schedule type
+    schedule_type: ScheduleType = Field(
+        default=ScheduleType.RECURRING, description="Type of schedule")
+
+    # For one-time execution
+    target_time: Optional[datetime] = Field(
+        None, description="Specific date/time for one-time execution")
+
+    # For recurring schedules
+    recurring_pattern: Optional[RecurringPattern] = Field(
+        None, description="Pattern for recurring schedule")
+    recurring_weekday: Optional[int] = Field(
+        None, description="0=Monday to 6=Sunday", ge=0, le=6)
+    recurring_day_of_month: Optional[int] = Field(
+        None, description="1-31 for monthly", ge=1, le=31)
+    recurring_time: Optional[str] = Field(
+        None, description="Time in HH:MM format (e.g., '18:00', '14:30')")
+    recurring_interval_days: Optional[int] = Field(
+        None, description="For custom day intervals", ge=1, le=365)
+
+    # For date range deletion
+    delete_from_date: Optional[datetime] = Field(
+        None, description="Start date for date range deletion")
+    delete_to_date: Optional[datetime] = Field(
+        None, description="End date for date range deletion")
+
+    # Rolling window time period
+    time_period_days: Optional[int] = Field(
+        None, description="Delete stats from last X days", ge=1, le=365)
+
+    # Scope information
+    scope_type: Literal["server", "channel", "category"] = Field(
+        default="server", description="Reset scope")
+    scope_details: Optional[str] = Field(
+        None, description="Human-readable scope description")
+    channel_id: Optional[str] = Field(
+        None, description="Channel ID if scope_type is channel")
+    category_id: Optional[str] = Field(
+        None, description="Category ID if scope_type is category")
+
+    # Metadata
+    reason: Optional[str] = Field(
+        None, description="Optional reason for the schedule")
+
+    @field_validator('recurring_time')
+    @classmethod
+    def validate_recurring_time(cls, v):
+        if v:
+            pattern = r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$'
+            if not re.match(pattern, v):
+                raise ValueError(
+                    'Time must be in HH:MM format (e.g., 18:00, 14:30)')
+        return v
+
+    @field_validator('schedule_type')
+    @classmethod
+    def validate_schedule_type_dependencies(cls, v, info):
+        values = info.data
+        if v == ScheduleType.ONE_TIME and not values.get('target_time'):
+            raise ValueError('target_time required for one_time schedule')
+        elif v == ScheduleType.RECURRING:
+            if not values.get('recurring_pattern'):
+                raise ValueError(
+                    'recurring_pattern required for recurring schedule')
+            pattern = values.get('recurring_pattern')
+            if pattern == RecurringPattern.WEEKLY and values.get('recurring_weekday') is None:
+                raise ValueError(
+                    'recurring_weekday required for weekly schedule')
+            if pattern == RecurringPattern.MONTHLY and values.get('recurring_day_of_month') is None:
+                raise ValueError(
+                    'recurring_day_of_month required for monthly schedule')
+            if pattern == RecurringPattern.CUSTOM_DAYS and not values.get('recurring_interval_days'):
+                raise ValueError(
+                    'recurring_interval_days required for custom_days schedule')
+        elif v == ScheduleType.DATE_RANGE:
+            if not values.get('delete_from_date') or not values.get('delete_to_date'):
+                raise ValueError(
+                    'delete_from_date and delete_to_date required for date_range schedule')
+            if values.get('delete_from_date') and values.get('delete_to_date'):
+                if values['delete_from_date'] >= values['delete_to_date']:
+                    raise ValueError(
+                        'delete_from_date must be before delete_to_date')
+        return v
+
+
+class CreateScheduleResponse(BaseModel):
+    """Response model for schedule creation"""
+    success: bool
+    message: str
+    schedule_id: Optional[int] = None
+    next_reset_time: Optional[str] = Field(
+        None, description="ISO format timestamp of next execution")
+    human_readable: Optional[str] = Field(
+        None, description="Human-readable schedule description")
+    error: Optional[str] = None
+
+
+# ============================================
+# SIMPLE SCHEDULE REQUEST (LEGACY COMPATIBILITY)
+# ============================================
+
 class CreateScheduleRequest(BaseModel):
-    """Request model for creating a reset schedule"""
+    """Request model for creating a simple reset schedule (legacy)"""
     guild_id: str
     requested_by_id: str
     reset_types: List[str] = Field(...,
@@ -418,23 +556,18 @@ class CreateScheduleRequest(BaseModel):
     scope: Literal["server", "channel",
                    "category"] = Field(..., description="Reset scope")
     scope_details: Optional[str] = Field(
-        None, description="Details about the target (channel name, category name, etc)")
+        None, description="Details about the target")
     channel_id: Optional[str] = Field(
         None, description="Channel ID if scope is channel")
     category_id: Optional[str] = Field(
         None, description="Category ID if scope is category")
     time_period_days: Optional[int] = Field(
-        None, description="Delete only stats from the last X days (null = all time)", ge=1, le=365)
+        None, description="Delete only stats from the last X days", ge=1, le=365)
 
 
-class CreateScheduleResponse(BaseModel):
-    """Response model for schedule creation"""
-    success: bool
-    message: str
-    schedule_id: Optional[int] = None
-    next_reset_time: Optional[str] = None
-    error: Optional[str] = None
-
+# ============================================
+# RESET RESPONSE MODEL
+# ============================================
 
 class ResetResponse(BaseModel):
     """Response model for reset operations"""
@@ -446,10 +579,14 @@ class ResetResponse(BaseModel):
         None, description="Error message if success is False")
 
 
+# ============================================
+# TIME PERIOD RESET REQUEST MODELS
+# ============================================
+
 class ResetServerTimePeriodRequest(BaseModel):
     """Request model for resetting server stats with time period"""
     guild_id: str
-    stat_type: str
+    stat_type: str = Field(..., pattern="^(all|messages|voice activity|invite tracking|emoji stats|activity|mentions|role growth|member growth)$")
     days_back: int = Field(...,
                            description="Number of days to go back", ge=1, le=365)
     channel_id: Optional[str] = None
@@ -460,38 +597,108 @@ class ResetUserTimePeriodRequest(BaseModel):
     """Request model for resetting user stats with time period"""
     guild_id: str
     user_id: str
-    stat_type: str
+    stat_type: str = Field(
+        ..., pattern="^(all|messages|voice activity|invite tracking|emoji stats|activity|mentions|role growth)$")
     days_back: int = Field(...,
                            description="Number of days to go back", ge=1, le=365)
     channel_id: Optional[str] = None
     category_id: Optional[str] = None
 
 
+# ============================================
+# SCHEDULE MANAGEMENT REQUEST MODELS
+# ============================================
+
 class GetSchedulesRequest(BaseModel):
+    """Request model for getting schedules"""
     guild_id: str
 
 
 class GetSchedulesResponse(BaseModel):
+    """Response model for getting schedules"""
     success: bool
     schedules: List[Dict[str, Any]] = []
     error: Optional[str] = None
 
 
 class CancelScheduleRequest(BaseModel):
+    """Request model for cancelling a schedule"""
     schedule_id: int
     guild_id: str
 
 
 class CancelScheduleResponse(BaseModel):
+    """Response model for cancelling a schedule"""
     success: bool
     message: str
     error: Optional[str] = None
 
 
+class UpdateScheduleRequest(BaseModel):
+    """Request model for updating a schedule"""
+    schedule_id: int
+    guild_id: str
+    enabled: Optional[bool] = None
+    reset_types: Optional[List[str]] = None
+    recurring_pattern: Optional[RecurringPattern] = None
+    recurring_weekday: Optional[int] = Field(None, ge=0, le=6)
+    recurring_day_of_month: Optional[int] = Field(None, ge=1, le=31)
+    recurring_time: Optional[str] = None
+    time_period_days: Optional[int] = Field(None, ge=1, le=365)
+    reason: Optional[str] = None
+
+    @field_validator('recurring_time')
+    @classmethod
+    def validate_recurring_time(cls, v):
+        if v:
+            pattern = r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$'
+            if not re.match(pattern, v):
+                raise ValueError(
+                    'Time must be in HH:MM format (e.g., 18:00, 14:30)')
+        return v
+
+
+class ScheduleInfoResponse(BaseModel):
+    """Response model for schedule info"""
+    id: int
+    guild_id: str
+    requested_by_id: str
+    reset_types: List[str]
+    schedule_type: str
+    is_active: bool
+    next_execution_at: Optional[str]
+    last_executed_at: Optional[str]
+    created_at: str
+    description: str
+    human_readable: str
+    failure_count: int = 0
+    last_error: Optional[str] = None
+
+
 # ============================================
-# FIXED BLACKLIST RESPONSE MODELS
+# SCHEDULE STATISTICS MODELS
 # ============================================
 
+class ScheduleStatsRequest(BaseModel):
+    """Request model for getting schedule statistics"""
+    guild_id: str
+    limit: Optional[int] = Field(default=10, ge=1, le=100)
+
+
+class ScheduleStatsResponse(BaseModel):
+    """Response model for schedule statistics"""
+    success: bool
+    total_schedules: int
+    active_schedules: int
+    completed_schedules: int
+    failed_schedules: int
+    schedules: List[Dict[str, Any]] = []
+    error: Optional[str] = None
+
+
+# ============================================
+# BLACKLIST MODELS (UNCHANGED - KEPT FOR COMPLETENESS)
+# ============================================
 
 class BlacklistEntity(BaseModel):
     type: str = Field(..., pattern="^(user|channel|category|role)$")
@@ -527,32 +734,6 @@ class BlacklistResponse(BaseModel):
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
-
-
-# ============================================
-# FIXED RESET RESPONSE MODELS
-# ============================================
-class ResetServerRequest(BaseModel):
-    guild_id: str
-    stat_type: str = Field(
-        ..., pattern="^(all|messages|voice activity|invite tracking|emoji stats|activity|mentions)$")
-    channel_id: Optional[str] = None
-    category_id: Optional[str] = None
-
-
-class ResetUserRequest(BaseModel):
-    guild_id: str
-    user_id: str
-    stat_type: str = Field(
-        ..., pattern="^(all|messages|voice activity|invite tracking|emoji stats|activity|mentions)$")
-    channel_id: Optional[str] = None
-    category_id: Optional[str] = None
-
-
-class ResetResponse(BaseModel):
-    success: bool
-    message: str
-    deleted_counts: Optional[Dict[str, Any]] = None
 
 
 # ============================================
@@ -23315,66 +23496,35 @@ async def reset_user_category_mentions(
     ))
 
 
+# ============================================
+# ADVANCED SCHEDULE CREATION ENDPOINT (NEW SCHEMA)
+# ============================================
+
 @app.post("/api/reset/schedule/create", response_model=CreateScheduleResponse)
-async def create_reset_schedule(request: CreateScheduleRequest):
+async def create_advanced_reset_schedule(request: CreateAdvancedScheduleRequest):
     """
-    Create a scheduled recurring reset.
+    Create an advanced reset schedule with recurring patterns and specific times.
 
-    **Example:**
-    - Create a schedule that resets messages and voice activity every 7 days
-    - The first reset will occur after the interval days
-    - The schedule will automatically repeat every X days
+    **Schedule Types:**
+    - `immediate`: Executes immediately
+    - `one_time`: Executes once at a specific date/time
+    - `recurring`: Repeats based on a pattern (daily, weekly, monthly, etc.)
+    - `date_range`: Deletes stats between two dates (no recurring execution)
 
-    **Note:** The actual reset uses the same time period and scope as configured when creating the schedule.
+    **Recurring Patterns:**
+    - `daily`: Every day at specified time
+    - `weekly`: Every week on specified weekday (0=Mon to 6=Sun)
+    - `weekday`: Every Monday-Friday at specified time
+    - `monthly`: Every month on specified day (1-31)
+    - `custom_days`: Every X days at specified time
+
+    **Examples:**
+    - Daily at 18:00: `{"recurring_pattern": "daily", "recurring_time": "18:00"}`
+    - Every Monday at 09:00: `{"recurring_pattern": "weekly", "recurring_weekday": 0, "recurring_time": "09:00"}`
+    - Every 1st of month at 00:00: `{"recurring_pattern": "monthly", "recurring_day_of_month": 1, "recurring_time": "00:00"}`
+    - Every 7 days at 14:30: `{"recurring_pattern": "custom_days", "recurring_interval_days": 7, "recurring_time": "14:30"}`
     """
     try:
-        # Validate guild_id
-        try:
-            guild_id_int = int(request.guild_id)
-        except ValueError:
-            return CreateScheduleResponse(
-                success=False,
-                message=f"Invalid guild_id format: {request.guild_id}",
-                error="Invalid guild_id format"
-            )
-
-        # Validate requested_by_id
-        try:
-            requested_by_id_int = int(request.requested_by_id)
-        except ValueError:
-            return CreateScheduleResponse(
-                success=False,
-                message=f"Invalid requested_by_id format: {request.requested_by_id}",
-                error="Invalid requested_by_id format"
-            )
-
-        # Validate channel_id if scope is channel
-        if request.scope == "channel" and not request.channel_id:
-            return CreateScheduleResponse(
-                success=False,
-                message="channel_id required when scope is 'channel'",
-                error="Missing channel_id"
-            )
-
-        # Validate category_id if scope is category
-        if request.scope == "category" and not request.category_id:
-            return CreateScheduleResponse(
-                success=False,
-                message="category_id required when scope is 'category'",
-                error="Missing category_id"
-            )
-
-        # Validate reset_types
-        valid_stat_types = ["all", "messages", "voice activity", "invite tracking",
-                            "emoji stats", "activity", "mentions", "role growth", "member growth"]
-        for reset_type in request.reset_types:
-            if reset_type.lower() not in valid_stat_types:
-                return CreateScheduleResponse(
-                    success=False,
-                    message=f"Invalid reset_type: {reset_type}. Valid types: {', '.join(valid_stat_types)}",
-                    error="Invalid reset_type"
-                )
-
         if not db_stats.db_connected:
             return CreateScheduleResponse(
                 success=False,
@@ -23382,42 +23532,111 @@ async def create_reset_schedule(request: CreateScheduleRequest):
                 error="Database connection unavailable"
             )
 
-        # Calculate target time based on interval
-        target_time = datetime.now(timezone.utc) + \
-            timedelta(days=request.interval_days)
+        # Convert string IDs to integers
+        guild_id_int = int(request.guild_id)
+        requested_by_id_int = int(request.requested_by_id)
+        channel_id_int = int(
+            request.channel_id) if request.channel_id else None
+        category_id_int = int(
+            request.category_id) if request.category_id else None
+
+        # Build human-readable schedule description
+        time_str = request.recurring_time or "00:00"
+        human_readable = ""
+
+        if request.schedule_type == ScheduleType.ONE_TIME:
+            human_readable = f"One-time reset on {request.target_time.strftime('%Y-%m-%d %H:%M:%S')}"
+        elif request.schedule_type == ScheduleType.DATE_RANGE:
+            human_readable = f"Delete stats from {request.delete_from_date} to {request.delete_to_date}"
+        elif request.schedule_type == ScheduleType.RECURRING:
+            pattern = request.recurring_pattern
+            if pattern == RecurringPattern.DAILY:
+                human_readable = f"Every day at {time_str}"
+            elif pattern == RecurringPattern.WEEKLY:
+                weekdays = ['Monday', 'Tuesday', 'Wednesday',
+                            'Thursday', 'Friday', 'Saturday', 'Sunday']
+                human_readable = f"Every {weekdays[request.recurring_weekday]} at {time_str}"
+            elif pattern == RecurringPattern.WEEKDAY:
+                human_readable = f"Every weekday (Monday-Friday) at {time_str}"
+            elif pattern == RecurringPattern.MONTHLY:
+                suffix = 'st' if request.recurring_day_of_month == 1 else 'nd' if request.recurring_day_of_month == 2 else 'rd' if request.recurring_day_of_month == 3 else 'th'
+                human_readable = f"Every {request.recurring_day_of_month}{suffix} of the month at {time_str}"
+            elif pattern == RecurringPattern.CUSTOM_DAYS:
+                human_readable = f"Every {request.recurring_interval_days} days at {time_str}"
+        else:
+            human_readable = "Immediate execution"
 
         # Build reason string with all details
         time_period_text = f"Deleting stats from the last {request.time_period_days} days" if request.time_period_days else "Deleting ALL stats (no time limit)"
 
         scope_details_str = request.scope_details or ""
-        if request.scope == "channel" and request.channel_id:
+        if request.scope_type == "channel" and request.channel_id:
             scope_details_str = f"Channel ID: {request.channel_id}"
-        elif request.scope == "category" and request.category_id:
+        elif request.scope_type == "category" and request.category_id:
             scope_details_str = f"Category ID: {request.category_id}"
 
-        reason = f"Scheduled every {request.interval_days} days | Scope: {request.scope} | Details: {scope_details_str} | Time Period: {time_period_text}"
+        reason = f"{human_readable} | Scope: {request.scope_type} | Details: {scope_details_str} | Time Period: {time_period_text}"
         if request.reason:
             reason += f" | User Reason: {request.reason}"
 
-        # Insert into database
+        # Calculate next execution time
+        next_execution = None
+        if request.schedule_type == ScheduleType.RECURRING and request.recurring_pattern:
+            next_execution = _calculate_next_recurrence(
+                request.recurring_pattern.value,
+                request.recurring_weekday,
+                request.recurring_day_of_month,
+                request.recurring_time,
+                request.recurring_interval_days
+            )
+        elif request.schedule_type == ScheduleType.ONE_TIME:
+            next_execution = request.target_time
+        elif request.schedule_type == ScheduleType.IMMEDIATE:
+            next_execution = datetime.now(timezone.utc)
+
+        # Insert into database using new schema
         async with db_stats.pool.acquire() as conn:
             result = await conn.fetchrow("""
-                INSERT INTO reset_schedules (guild_id, requested_by_id, reset_types, target_time, reason)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO reset_schedules (
+                    guild_id, requested_by_id, reset_types, schedule_type,
+                    target_time, recurring_pattern, recurring_weekday, recurring_day_of_month,
+                    recurring_time, recurring_interval_days, delete_from_date, delete_to_date,
+                    time_period_days, scope_type, scope_details, channel_id, category_id,
+                    reason, next_execution_at, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
                 RETURNING id
-            """, guild_id_int, requested_by_id_int, request.reset_types, target_time, reason)
+            """,
+                                         guild_id_int, requested_by_id_int, request.reset_types,
+                                         request.schedule_type.value,
+                                         request.target_time,
+                                         request.recurring_pattern.value if request.recurring_pattern else None,
+                                         request.recurring_weekday, request.recurring_day_of_month,
+                                         request.recurring_time, request.recurring_interval_days,
+                                         request.delete_from_date, request.delete_to_date,
+                                         request.time_period_days, request.scope_type, scope_details_str,
+                                         channel_id_int, category_id_int,
+                                         reason, next_execution
+                                         )
 
             schedule_id = result['id'] if result else None
 
             return CreateScheduleResponse(
                 success=True,
-                message=f"Reset schedule created successfully. Will run every {request.interval_days} days.",
+                message=f"Schedule created successfully! {human_readable}",
                 schedule_id=schedule_id,
-                next_reset_time=target_time.isoformat()
+                next_reset_time=next_execution.isoformat() if next_execution else None,
+                human_readable=human_readable
             )
 
+    except ValueError as e:
+        logger.error(f"Value error creating schedule: {e}")
+        return CreateScheduleResponse(
+            success=False,
+            message=f"Invalid input: {str(e)}",
+            error=str(e)
+        )
     except Exception as e:
-        logger.error(f"Error creating reset schedule: {e}")
+        logger.error(f"Error creating schedule: {e}")
         return CreateScheduleResponse(
             success=False,
             message=f"Failed to create schedule: {str(e)}",
@@ -23425,10 +23644,97 @@ async def create_reset_schedule(request: CreateScheduleRequest):
         )
 
 
+def _calculate_next_recurrence(pattern: str, weekday: Optional[int] = None,
+                               day_of_month: Optional[int] = None, time_str: Optional[str] = None,
+                               interval_days: Optional[int] = None) -> datetime:
+    """Calculate the next execution time based on recurring pattern"""
+    now = datetime.now(timezone.utc)
+
+    # Parse time (default to 00:00:00 if not specified)
+    target_hour = 0
+    target_minute = 0
+    target_second = 0
+    if time_str:
+        parts = time_str.split(':')
+        target_hour = int(parts[0])
+        target_minute = int(parts[1]) if len(parts) > 1 else 0
+        target_second = int(parts[2]) if len(parts) > 2 else 0
+
+    if pattern == 'daily':
+        next_time = now.replace(hour=target_hour, minute=target_minute,
+                                second=target_second, microsecond=0)
+        if next_time <= now:
+            next_time += timedelta(days=1)
+        return next_time
+
+    elif pattern == 'weekly':
+        target_weekday = weekday if weekday is not None else 0
+        current_weekday = now.weekday()
+        days_ahead = target_weekday - current_weekday
+        if days_ahead <= 0:
+            days_ahead += 7
+        next_time = now + timedelta(days=days_ahead)
+        next_time = next_time.replace(hour=target_hour, minute=target_minute,
+                                      second=target_second, microsecond=0)
+        return next_time
+
+    elif pattern == 'weekday':
+        current_weekday = now.weekday()
+        if current_weekday < 5:
+            next_time = now.replace(hour=target_hour, minute=target_minute,
+                                    second=target_second, microsecond=0)
+            if next_time <= now:
+                next_time += timedelta(days=1)
+            if next_time.weekday() >= 5:
+                days_to_monday = 7 - next_time.weekday()
+                next_time += timedelta(days=days_to_monday)
+        else:
+            days_to_monday = 7 - current_weekday
+            next_time = now + timedelta(days=days_to_monday)
+            next_time = next_time.replace(hour=target_hour, minute=target_minute,
+                                          second=target_second, microsecond=0)
+        return next_time
+
+    elif pattern == 'monthly':
+        target_day = day_of_month if day_of_month is not None else 1
+        year = now.year
+        month = now.month
+
+        if month == 12:
+            last_day = 31
+        else:
+            last_day = (datetime(year, month + 1, 1) - timedelta(days=1)).day
+        day = min(target_day, last_day)
+
+        next_time = datetime(year, month, day, target_hour, target_minute,
+                             target_second, tzinfo=timezone.utc)
+        if next_time <= now:
+            if month == 12:
+                year += 1
+                month = 1
+            else:
+                month += 1
+            last_day = (datetime(year, month + 1, 1) -
+                        timedelta(days=1)).day if month < 12 else 31
+            day = min(target_day, last_day)
+            next_time = datetime(year, month, day, target_hour, target_minute,
+                                 target_second, tzinfo=timezone.utc)
+        return next_time
+
+    elif pattern == 'custom_days' and interval_days:
+        next_time = now.replace(hour=target_hour, minute=target_minute,
+                                second=target_second, microsecond=0)
+        if next_time <= now:
+            next_time += timedelta(days=interval_days)
+        return next_time
+
+    return now + timedelta(days=1)
+
+
 @app.post("/api/reset/schedules", response_model=GetSchedulesResponse)
 async def get_reset_schedules(request: GetSchedulesRequest):
     """
-    Get all pending reset schedules for a guild.
+    Get all pending reset schedules for a guild using the new schema.
     """
     try:
         # Validate guild_id
@@ -23448,23 +23754,23 @@ async def get_reset_schedules(request: GetSchedulesRequest):
 
         async with db_stats.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT id, guild_id, requested_by_id, target_time, reset_types, 
-                       completed, created_at, executed_at, reason
+                SELECT id, guild_id, requested_by_id, reset_types, schedule_type,
+                       target_time, recurring_pattern, recurring_weekday, recurring_day_of_month,
+                       recurring_time, recurring_interval_days, next_execution_at,
+                       time_period_days, scope_type, scope_details, channel_id, category_id,
+                       completed, created_at, executed_at, failure_count, last_error, reason
                 FROM reset_schedules
                 WHERE guild_id = $1 AND completed = FALSE
-                ORDER BY target_time ASC
+                ORDER BY next_execution_at ASC NULLS LAST
             """, guild_id_int)
 
             schedules = []
             for row in rows:
                 schedule = dict(row)
                 # Convert datetime objects to ISO format strings for JSON serialization
-                if schedule.get('target_time'):
-                    schedule['target_time'] = schedule['target_time'].isoformat()
-                if schedule.get('created_at'):
-                    schedule['created_at'] = schedule['created_at'].isoformat()
-                if schedule.get('executed_at'):
-                    schedule['executed_at'] = schedule['executed_at'].isoformat()
+                for key in ['target_time', 'next_execution_at', 'created_at', 'executed_at']:
+                    if schedule.get(key):
+                        schedule[key] = schedule[key].isoformat()
                 schedules.append(schedule)
 
             return GetSchedulesResponse(
@@ -23514,7 +23820,7 @@ async def cancel_reset_schedule(request: CancelScheduleRequest):
         async with db_stats.pool.acquire() as conn:
             # First check if the schedule exists and belongs to this guild
             schedule = await conn.fetchrow("""
-                SELECT id, completed, reset_types, target_time
+                SELECT id, completed, reset_types, next_execution_at, schedule_type
                 FROM reset_schedules
                 WHERE id = $1 AND guild_id = $2
             """, request.schedule_id, guild_id_int)
@@ -23539,13 +23845,16 @@ async def cancel_reset_schedule(request: CancelScheduleRequest):
 
             if result.split()[-1] == '1':
                 reset_types = "', '".join(schedule['reset_types'])
-                target_time = schedule['target_time']
+                next_time = schedule['next_execution_at']
+
+                message = f"✅ Schedule #{request.schedule_id} has been cancelled.\n\n"
+                message += f"**Reset Types:** {reset_types}\n"
+                if next_time:
+                    message += f"**Next Scheduled Time:** <t:{int(next_time.timestamp())}:F>"
 
                 return CancelScheduleResponse(
                     success=True,
-                    message=f"✅ Schedule #{request.schedule_id} has been cancelled.\n\n"
-                    f"**Reset Types:** {reset_types}\n"
-                    f"**Scheduled Time:** <t:{int(target_time.timestamp())}:F>"
+                    message=message
                 )
             else:
                 return CancelScheduleResponse(
@@ -23585,26 +23894,26 @@ async def get_upcoming_reset_schedules(request: GetSchedulesRequest):
 
         async with db_stats.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT id, guild_id, requested_by_id, target_time, reset_types, 
-                       completed, created_at, executed_at, reason
+                SELECT id, guild_id, requested_by_id, reset_types, schedule_type,
+                       target_time, recurring_pattern, recurring_weekday, recurring_day_of_month,
+                       recurring_time, recurring_interval_days, next_execution_at,
+                       time_period_days, scope_type, scope_details, channel_id, category_id,
+                       completed, created_at, executed_at, failure_count, last_error, reason
                 FROM reset_schedules
                 WHERE guild_id = $1 
                 AND completed = FALSE 
-                AND target_time <= NOW() + INTERVAL '30 days'
-                ORDER BY target_time ASC
+                AND schedule_type != 'date_range'
+                AND next_execution_at <= NOW() + INTERVAL '30 days'
+                ORDER BY next_execution_at ASC
                 LIMIT 20
             """, guild_id_int)
 
             schedules = []
             for row in rows:
                 schedule = dict(row)
-                # Convert datetime objects to ISO format strings for JSON serialization
-                if schedule.get('target_time'):
-                    schedule['target_time'] = schedule['target_time'].isoformat()
-                if schedule.get('created_at'):
-                    schedule['created_at'] = schedule['created_at'].isoformat()
-                if schedule.get('executed_at'):
-                    schedule['executed_at'] = schedule['executed_at'].isoformat()
+                for key in ['target_time', 'next_execution_at', 'created_at', 'executed_at']:
+                    if schedule.get(key):
+                        schedule[key] = schedule[key].isoformat()
                 schedules.append(schedule)
 
             return GetSchedulesResponse(
@@ -23643,8 +23952,11 @@ async def get_reset_schedule_history(request: GetSchedulesRequest):
 
         async with db_stats.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT id, guild_id, requested_by_id, target_time, reset_types, 
-                       completed, created_at, executed_at, reason
+                SELECT id, guild_id, requested_by_id, reset_types, schedule_type,
+                       target_time, recurring_pattern, recurring_weekday, recurring_day_of_month,
+                       recurring_time, recurring_interval_days, executed_at,
+                       time_period_days, scope_type, scope_details, channel_id, category_id,
+                       completed, created_at, executed_at, failure_count, last_error, reason
                 FROM reset_schedules
                 WHERE guild_id = $1 AND completed = TRUE
                 ORDER BY executed_at DESC
@@ -23654,13 +23966,9 @@ async def get_reset_schedule_history(request: GetSchedulesRequest):
             schedules = []
             for row in rows:
                 schedule = dict(row)
-                # Convert datetime objects to ISO format strings for JSON serialization
-                if schedule.get('target_time'):
-                    schedule['target_time'] = schedule['target_time'].isoformat()
-                if schedule.get('created_at'):
-                    schedule['created_at'] = schedule['created_at'].isoformat()
-                if schedule.get('executed_at'):
-                    schedule['executed_at'] = schedule['executed_at'].isoformat()
+                for key in ['target_time', 'executed_at', 'created_at']:
+                    if schedule.get(key):
+                        schedule[key] = schedule[key].isoformat()
                 schedules.append(schedule)
 
             return GetSchedulesResponse(
@@ -23675,6 +23983,10 @@ async def get_reset_schedule_history(request: GetSchedulesRequest):
             error=str(e)
         )
 
+
+# ============================================
+# UI ENDPOINTS (UNCHANGED - ALREADY HAVE TIME_PERIOD_DAYS)
+# ============================================
 
 class ScopeSelectionRequest(BaseModel):
     """Request model for scope selection"""
@@ -23935,8 +24247,15 @@ async def reset_ui_confirm(request: ConfirmResetRequest):
 
 
 # ============================================
-# FIXED CHANNEL STATS WITH MESSAGES PER USER IN AVERAGES
+# CHANNEL STATS ENDPOINT (UNCHANGED)
 # ============================================
+
+class ChannelStatsRequest(BaseModel):
+    guild_id: str
+    channel_id: str
+    role_filter_ids: Optional[List[int]] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
 
 
 @app.post("/api/channel/stats/messages")
