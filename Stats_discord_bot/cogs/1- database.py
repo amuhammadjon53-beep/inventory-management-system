@@ -2685,7 +2685,7 @@ class DatabaseStats(commands.Cog):
                         UNIQUE(guild_id, recorded_at)
                     )
                     ''',
-                    # UPDATED: reset_schedules table with advanced scheduling support
+                    # UPDATED: reset_schedules table with ALL advanced scheduling columns
                     '''
                     CREATE TABLE IF NOT EXISTS reset_schedules (
                         id SERIAL PRIMARY KEY,
@@ -2699,12 +2699,17 @@ class DatabaseStats(commands.Cog):
                         -- For immediate or one-time execution
                         target_time TIMESTAMPTZ,
                         
-                        -- For recurring schedules
+                        -- For recurring schedules (single value - legacy)
                         recurring_pattern TEXT,
                         recurring_weekday INTEGER,
                         recurring_day_of_month INTEGER,
                         recurring_time TIME,
                         recurring_interval_days INTEGER,
+                        
+                        -- For recurring schedules (multiple values - new)
+                        recurring_weekdays INTEGER[],
+                        recurring_days_of_month INTEGER[],
+                        recurring_times TIME[],
                         
                         -- For date range deletion
                         delete_from_date TIMESTAMPTZ,
@@ -2750,9 +2755,9 @@ class DatabaseStats(commands.Cog):
                             original=e
                         )
 
-                # ===== ALTER EXISTING RESET_SCHEDULES TABLE TO ADD NEW COLUMNS =====
+                # ===== ALTER EXISTING RESET_SCHEDULES TABLE TO ADD ANY MISSING COLUMNS =====
                 print("\n" + "="*60)
-                print("🔄 ALTERING RESET_SCHEDULES TABLE (ADDING NEW COLUMNS)")
+                print("🔄 ALTERING RESET_SCHEDULES TABLE (ADDING MISSING COLUMNS)")
                 print("="*60)
 
                 alter_reset_schedules_queries = [
@@ -2764,9 +2769,17 @@ class DatabaseStats(commands.Cog):
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_time TIME',
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_interval_days INTEGER',
 
+                    # Multi-value columns
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_weekdays INTEGER[]',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_days_of_month INTEGER[]',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_times TIME[]',
+
                     # Date range columns
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS delete_from_date TIMESTAMPTZ',
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS delete_to_date TIMESTAMPTZ',
+
+                    # Rolling window time period
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS time_period_days INTEGER',
 
                     # Execution tracking columns
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS last_executed_at TIMESTAMPTZ',

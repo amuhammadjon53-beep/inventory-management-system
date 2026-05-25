@@ -626,7 +626,7 @@ const styles = `
     background: linear-gradient(135deg, #1a1a1a 0%, #0f0f0f 100%);
     border-radius: 24px;
     width: 100%;
-    max-width: 500px;
+    max-width: 600px;
     box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
     border: 1px solid #2a2a2a;
     animation: slideUp 0.3s ease;
@@ -668,7 +668,7 @@ const styles = `
 
   .schedule-modal-content {
     padding: 24px;
-    min-height: 300px;
+    min-height: 400px;
   }
 
   /* Schedule type options */
@@ -726,6 +726,96 @@ const styles = `
     font-size: 20px;
   }
 
+  /* Multi-select chips */
+  .multi-select-container {
+    margin-bottom: 20px;
+  }
+
+  .multi-select-label {
+    display: block;
+    font-size: 14px;
+    font-weight: 500;
+    color: #aa00ff;
+    margin-bottom: 10px;
+  }
+
+  .chips-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .chip {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 20px;
+    padding: 8px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .chip:hover {
+    border-color: #aa00ff;
+  }
+
+  .chip.selected {
+    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
+    border-color: #aa00ff;
+    color: white;
+  }
+
+  .chip-remove {
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0.7;
+  }
+
+  .chip-remove:hover {
+    opacity: 1;
+  }
+
+  .add-input-group {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .add-input {
+    flex: 1;
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    padding: 10px 14px;
+    color: white;
+    font-size: 14px;
+  }
+
+  .add-input:focus {
+    outline: none;
+    border-color: #aa00ff;
+  }
+
+  .add-btn {
+    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
+    border: none;
+    border-radius: 10px;
+    padding: 10px 20px;
+    color: white;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s ease;
+  }
+
+  .add-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 2px 8px rgba(170, 0, 255, 0.3);
+  }
+
   /* Form inputs */
   .form-group {
     margin-bottom: 20px;
@@ -756,29 +846,57 @@ const styles = `
     box-shadow: 0 0 0 3px rgba(170, 0, 255, 0.1);
   }
 
-  .weekday-options {
+  /* Weekday selector */
+  .weekday-selector {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 8px;
+    margin-bottom: 16px;
   }
 
-  .weekday-option {
+  .weekday-chip {
     background-color: #1a1a1a;
     border: 1px solid #2a2a2a;
     border-radius: 12px;
-    padding: 12px;
+    padding: 12px 8px;
     text-align: center;
     cursor: pointer;
     transition: all 0.2s ease;
+    font-size: 13px;
+    font-weight: 500;
   }
 
-  .weekday-option:hover {
+  .weekday-chip:hover {
     border-color: #aa00ff;
   }
 
-  .weekday-option.selected {
+  .weekday-chip.selected {
+    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
     border-color: #aa00ff;
-    background-color: rgba(170, 0, 255, 0.2);
+    color: white;
+  }
+
+  /* Time inputs */
+  .time-input-group {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .time-input {
+    flex: 1;
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    padding: 10px 14px;
+    color: white;
+    font-size: 14px;
+  }
+
+  .time-input:focus {
+    outline: none;
+    border-color: #aa00ff;
   }
 
   /* Confirmation page */
@@ -1158,6 +1276,9 @@ const styles = `
     .section-header {
       flex-wrap: wrap;
     }
+    .weekday-selector {
+      grid-template-columns: repeat(4, 1fr);
+    }
   }
 `;
 
@@ -1213,22 +1334,26 @@ const getFilteredStatTypes = (commandType, scope) => {
     }));
 };
 
-// Schedule Modal Component
+// Advanced Schedule Modal Component with multi-input support
 const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
   const [step, setStep] = useState(1);
   const [scheduleType, setScheduleType] = useState(null);
-  const [selectedWeekday, setSelectedWeekday] = useState(null);
+  const [selectedWeekdays, setSelectedWeekdays] = useState([]);
+  const [selectedMonthDays, setSelectedMonthDays] = useState([]);
+  const [selectedTimes, setSelectedTimes] = useState(["18:00"]);
   const [intervalDays, setIntervalDays] = useState(7);
-  const [dayOfMonth, setDayOfMonth] = useState(1);
-  const [timeOfDay, setTimeOfDay] = useState("18:00");
+  const [newTime, setNewTime] = useState("");
+  const [newMonthDay, setNewMonthDay] = useState("");
 
   const resetState = () => {
     setStep(1);
     setScheduleType(null);
-    setSelectedWeekday(null);
+    setSelectedWeekdays([]);
+    setSelectedMonthDays([]);
+    setSelectedTimes(["18:00"]);
     setIntervalDays(7);
-    setDayOfMonth(1);
-    setTimeOfDay("18:00");
+    setNewTime("");
+    setNewMonthDay("");
   };
 
   const handleClose = () => {
@@ -1250,28 +1375,61 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
     }
   };
 
-  const handleConfirm = () => {
-    let scheduleDescription = "";
-    let scheduleData = {};
+  const toggleWeekday = (value) => {
+    setSelectedWeekdays(prev =>
+      prev.includes(value)
+        ? prev.filter(v => v !== value)
+        : [...prev, value].sort()
+    );
+  };
 
-    if (scheduleType === "weekly") {
-      const weekday = weekdays.find(w => w.value === selectedWeekday);
-      scheduleDescription = `Every ${weekday?.label} at ${timeOfDay}`;
-      scheduleData = { pattern: "weekly", weekday: selectedWeekday, time: timeOfDay };
-    } else if (scheduleType === "daily") {
-      scheduleDescription = `Every day at ${timeOfDay}`;
-      scheduleData = { pattern: "daily", time: timeOfDay };
-    } else if (scheduleType === "monthly") {
-      scheduleDescription = `Every ${dayOfMonth}${getOrdinal(dayOfMonth)} of the month at ${timeOfDay}`;
-      scheduleData = { pattern: "monthly", dayOfMonth: dayOfMonth, time: timeOfDay };
-    } else if (scheduleType === "custom") {
-      scheduleDescription = `Every ${intervalDays} days at ${timeOfDay}`;
-      scheduleData = { pattern: "custom", intervalDays: intervalDays, time: timeOfDay };
+  const addMonthDay = () => {
+    if (newMonthDay) {
+      const day = parseInt(newMonthDay);
+      if (day >= 1 && day <= 31 && !selectedMonthDays.includes(day)) {
+        setSelectedMonthDays([...selectedMonthDays, day].sort((a, b) => a - b));
+        setNewMonthDay("");
+      }
     }
+  };
 
-    onConfirm(scheduleDescription, scheduleData);
-    resetState();
-    onClose();
+  const removeMonthDay = (day) => {
+    setSelectedMonthDays(prev => prev.filter(d => d !== day));
+  };
+
+  const addTime = () => {
+    if (newTime && /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(newTime)) {
+      if (!selectedTimes.includes(newTime)) {
+        setSelectedTimes([...selectedTimes, newTime].sort());
+        setNewTime("");
+      }
+    }
+  };
+
+  const removeTime = (time) => {
+    setSelectedTimes(prev => prev.filter(t => t !== time));
+  };
+
+  const getSchedulePreview = () => {
+    if (!scheduleType) return null;
+    
+    const timesStr = selectedTimes.join(", ");
+    
+    if (scheduleType === "daily") {
+      return `Every day at ${timesStr}`;
+    }
+    if (scheduleType === "weekly") {
+      const weekdayNames = selectedWeekdays.map(w => weekdays.find(d => d.value === w)?.short);
+      return `Every ${weekdayNames.join(", ")} at ${timesStr}`;
+    }
+    if (scheduleType === "monthly") {
+      const daysStr = selectedMonthDays.map(d => `${d}${getOrdinal(d)}`).join(", ");
+      return `Every ${daysStr} of the month at ${timesStr}`;
+    }
+    if (scheduleType === "custom") {
+      return `Every ${intervalDays} days at ${timesStr}`;
+    }
+    return "";
   };
 
   const getOrdinal = (n) => {
@@ -1284,16 +1442,37 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
     }
   };
 
-  const getSchedulePreview = () => {
-    if (!scheduleType) return null;
+  const handleConfirm = () => {
+    let scheduleDescription = "";
+    let scheduleData = {};
+
     if (scheduleType === "weekly") {
-      const weekday = weekdays.find(w => w.value === selectedWeekday);
-      return `${weekday?.label || "Select a day"} at ${timeOfDay}`;
+      const weekdayNames = selectedWeekdays.map(w => weekdays.find(d => d.value === w)?.label);
+      scheduleDescription = `Every ${weekdayNames.join(", ")} at ${selectedTimes.join(", ")}`;
+      scheduleData = { pattern: "weekly", weekdays: selectedWeekdays, times: selectedTimes };
+    } else if (scheduleType === "daily") {
+      scheduleDescription = `Every day at ${selectedTimes.join(", ")}`;
+      scheduleData = { pattern: "daily", times: selectedTimes };
+    } else if (scheduleType === "monthly") {
+      const daysStr = selectedMonthDays.map(d => `${d}${getOrdinal(d)}`).join(", ");
+      scheduleDescription = `Every ${daysStr} of the month at ${selectedTimes.join(", ")}`;
+      scheduleData = { pattern: "monthly", monthDays: selectedMonthDays, times: selectedTimes };
+    } else if (scheduleType === "custom") {
+      scheduleDescription = `Every ${intervalDays} days at ${selectedTimes.join(", ")}`;
+      scheduleData = { pattern: "custom", intervalDays: intervalDays, times: selectedTimes };
     }
-    if (scheduleType === "daily") return `Every day at ${timeOfDay}`;
-    if (scheduleType === "monthly") return `Every ${dayOfMonth}${getOrdinal(dayOfMonth)} at ${timeOfDay}`;
-    if (scheduleType === "custom") return `Every ${intervalDays} days at ${timeOfDay}`;
-    return "";
+
+    onConfirm(scheduleDescription, scheduleData);
+    resetState();
+    onClose();
+  };
+
+  const isStep2Valid = () => {
+    if (scheduleType === "weekly") return selectedWeekdays.length > 0 && selectedTimes.length > 0;
+    if (scheduleType === "monthly") return selectedMonthDays.length > 0 && selectedTimes.length > 0;
+    if (scheduleType === "custom") return intervalDays >= 1 && selectedTimes.length > 0;
+    if (scheduleType === "daily") return selectedTimes.length > 0;
+    return false;
   };
 
   if (!isOpen) return null;
@@ -1336,7 +1515,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                   <div className="schedule-type-icon">📆</div>
                   <div className="schedule-type-info">
                     <div className="schedule-type-name">Weekly</div>
-                    <div className="schedule-type-desc">Runs on a specific day of the week</div>
+                    <div className="schedule-type-desc">Runs on specific days of the week</div>
                   </div>
                   {scheduleType === 'weekly' && <div className="schedule-type-check">✓</div>}
                 </div>
@@ -1348,7 +1527,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                   <div className="schedule-type-icon">📅</div>
                   <div className="schedule-type-info">
                     <div className="schedule-type-name">Monthly</div>
-                    <div className="schedule-type-desc">Runs on a specific day of the month</div>
+                    <div className="schedule-type-desc">Runs on specific days of the month</div>
                   </div>
                   {scheduleType === 'monthly' && <div className="schedule-type-check">✓</div>}
                 </div>
@@ -1374,32 +1553,55 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
               
               {scheduleType === 'weekly' && (
                 <div className="form-group">
-                  <label className="form-label">Select Day</label>
-                  <div className="weekday-options">
+                  <label className="form-label">Select Weekdays</label>
+                  <div className="weekday-selector">
                     {weekdays.map(day => (
                       <div
                         key={day.value}
-                        className={`weekday-option ${selectedWeekday === day.value ? 'selected' : ''}`}
-                        onClick={() => setSelectedWeekday(day.value)}
+                        className={`weekday-chip ${selectedWeekdays.includes(day.value) ? 'selected' : ''}`}
+                        onClick={() => toggleWeekday(day.value)}
                       >
                         {day.short}
                       </div>
                     ))}
                   </div>
+                  {selectedWeekdays.length === 0 && (
+                    <div style={{ color: '#ff4444', fontSize: '12px', marginTop: '8px' }}>
+                      Please select at least one weekday
+                    </div>
+                  )}
                 </div>
               )}
 
               {scheduleType === 'monthly' && (
-                <div className="form-group">
-                  <label className="form-label">Day of Month</label>
-                  <input
-                    type="number"
-                    className="form-input"
-                    min="1"
-                    max="31"
-                    value={dayOfMonth}
-                    onChange={(e) => setDayOfMonth(Math.min(31, Math.max(1, parseInt(e.target.value) || 1)))}
-                  />
+                <div className="multi-select-container">
+                  <label className="multi-select-label">Month Days</label>
+                  <div className="chips-container">
+                    {selectedMonthDays.map(day => (
+                      <div key={day} className="chip selected">
+                        {day}{getOrdinal(day)}
+                        <span className="chip-remove" onClick={() => removeMonthDay(day)}>✕</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="add-input-group">
+                    <input
+                      type="number"
+                      className="add-input"
+                      placeholder="Enter day (1-31)"
+                      min="1"
+                      max="31"
+                      value={newMonthDay}
+                      onChange={(e) => setNewMonthDay(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && addMonthDay()}
+                    />
+                    <button className="add-btn" onClick={addMonthDay}>Add</button>
+                  </div>
+                  {selectedMonthDays.length === 0 && (
+                    <div style={{ color: '#ff4444', fontSize: '12px', marginTop: '8px' }}>
+                      Please add at least one month day
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1417,15 +1619,31 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                 </div>
               )}
 
-              <div className="form-group">
-                <label className="form-label">Time of Day</label>
-                <input
-                  type="time"
-                  className="form-input"
-                  value={timeOfDay}
-                  onChange={(e) => setTimeOfDay(e.target.value)}
-                  step="60"
-                />
+              {/* Time Selection - Common for all types */}
+              <div className="multi-select-container">
+                <label className="multi-select-label">Times of Day</label>
+                <div className="chips-container">
+                  {selectedTimes.map(time => (
+                    <div key={time} className="chip selected">
+                      🕐 {time}
+                      <span className="chip-remove" onClick={() => removeTime(time)}>✕</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="add-input-group">
+                  <input
+                    type="time"
+                    className="add-input"
+                    value={newTime}
+                    onChange={(e) => setNewTime(e.target.value)}
+                  />
+                  <button className="add-btn" onClick={addTime}>Add Time</button>
+                </div>
+                {selectedTimes.length === 0 && (
+                  <div style={{ color: '#ff4444', fontSize: '12px', marginTop: '8px' }}>
+                    Please add at least one time
+                  </div>
+                )}
               </div>
 
               <div className="confirmation-details" style={{ marginTop: '20px' }}>
@@ -1455,6 +1673,32 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                   <span className="confirmation-value">{getSchedulePreview()}</span>
                 </div>
                 <div className="confirmation-row">
+                  <span className="confirmation-label">Times:</span>
+                  <span className="confirmation-value">{selectedTimes.join(", ")}</span>
+                </div>
+                {scheduleType === 'weekly' && (
+                  <div className="confirmation-row">
+                    <span className="confirmation-label">Weekdays:</span>
+                    <span className="confirmation-value">
+                      {selectedWeekdays.map(w => weekdays.find(d => d.value === w)?.label).join(", ")}
+                    </span>
+                  </div>
+                )}
+                {scheduleType === 'monthly' && (
+                  <div className="confirmation-row">
+                    <span className="confirmation-label">Month Days:</span>
+                    <span className="confirmation-value">
+                      {selectedMonthDays.map(d => `${d}${getOrdinal(d)}`).join(", ")}
+                    </span>
+                  </div>
+                )}
+                {scheduleType === 'custom' && (
+                  <div className="confirmation-row">
+                    <span className="confirmation-label">Interval:</span>
+                    <span className="confirmation-value">Every {intervalDays} days</span>
+                  </div>
+                )}
+                <div className="confirmation-row">
                   <span className="confirmation-label">Next Run:</span>
                   <span className="confirmation-value">Will be calculated automatically</span>
                 </div>
@@ -1472,7 +1716,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
             <button 
               className="modal-btn modal-btn-next" 
               onClick={handleNext}
-              disabled={step === 1 && !scheduleType}
+              disabled={step === 1 && !scheduleType || step === 2 && !isStep2Valid()}
             >
               Next
             </button>
@@ -1896,10 +2140,8 @@ const ResetDashboard = () => {
     
     try {
       if (schedule) {
-        // Create schedule
         await createSchedule();
       } else {
-        // Execute reset immediately
         await executeReset();
       }
     } catch (error) {
@@ -1928,24 +2170,28 @@ const ResetDashboard = () => {
     
     const resetTypes = selectedStatTypes;
     
-    // Map schedule data to API format
+    // Map schedule data to API format (supports multiple values)
     let recurringPattern = null;
-    let recurringWeekday = null;
-    let recurringDayOfMonth = null;
+    let recurringWeekdays = null;
+    let recurringMonthDays = null;
+    let recurringTimes = null;
     let recurringIntervalDays = null;
-    let recurringTime = schedule.data.time;
     
     if (schedule.data.pattern === 'daily') {
       recurringPattern = 'daily';
+      recurringTimes = schedule.data.times;
     } else if (schedule.data.pattern === 'weekly') {
       recurringPattern = 'weekly';
-      recurringWeekday = schedule.data.weekday;
+      recurringWeekdays = schedule.data.weekdays;
+      recurringTimes = schedule.data.times;
     } else if (schedule.data.pattern === 'monthly') {
       recurringPattern = 'monthly';
-      recurringDayOfMonth = schedule.data.dayOfMonth;
+      recurringMonthDays = schedule.data.monthDays;
+      recurringTimes = schedule.data.times;
     } else if (schedule.data.pattern === 'custom') {
       recurringPattern = 'custom_days';
       recurringIntervalDays = schedule.data.intervalDays;
+      recurringTimes = schedule.data.times;
     }
     
     const body = {
@@ -1954,16 +2200,15 @@ const ResetDashboard = () => {
       reset_types: resetTypes,
       schedule_type: "recurring",
       recurring_pattern: recurringPattern,
-      recurring_weekday: recurringWeekday,
-      recurring_day_of_month: recurringDayOfMonth,
-      recurring_time: recurringTime,
+      recurring_weekdays: recurringWeekdays,
+      recurring_days_of_month: recurringMonthDays,
+      recurring_times: recurringTimes,
       recurring_interval_days: recurringIntervalDays,
       time_period_days: useTimePeriod ? timePeriodDays : null,
       scope_type: scopeValue,
       scope_details: scopeDetails,
       channel_id: channelId,
-      category_id: categoryId,
-      reason: `Scheduled via dashboard. ${schedule.description}`
+      category_id: categoryId
     };
     
     try {
@@ -1982,7 +2227,7 @@ const ResetDashboard = () => {
           type: "schedule",
           label: `Schedule Created (${resetTypes.length} types)`,
           success: true,
-          message: `${schedule.description}`,
+          message: schedule.description,
           schedule_id: result.schedule_id
         }]);
       } else {
