@@ -64,10 +64,10 @@ const Login = () => {
   const handleLogin = (e) => {
     e.preventDefault();
     
-    // CORRECTED: Use the proper OAuth2 user authorization link
-    // This link ONLY has the scopes needed for user login (no bot scopes)
-    const clientId = '1481328229909270568';
-    const redirectUri = encodeURIComponent('https://statshq.xyz/api/auth/discord/callback');
+    const clientId = import.meta.env.VITE_CLIENT_ID || '1481328229909270568';
+    const redirectUri = encodeURIComponent(
+      import.meta.env.VITE_DISCORD_REDIRECT_URI || 'https://statshq.xyz/api/auth/discord/callback'
+    );
     const currentOrigin = encodeURIComponent(window.location.origin);
     
     const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=identify%20guilds%20guilds.members.read&state=${currentOrigin}`;

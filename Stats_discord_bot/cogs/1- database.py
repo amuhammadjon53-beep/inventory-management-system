@@ -2792,6 +2792,10 @@ class DatabaseStats(commands.Cog):
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS scope_details TEXT',
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS channel_id BIGINT',
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS category_id BIGINT',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS schedule_name VARCHAR(100);',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE;',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS reason TEXT;',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();'
                 ]
 
                 for query in alter_reset_schedules_queries:

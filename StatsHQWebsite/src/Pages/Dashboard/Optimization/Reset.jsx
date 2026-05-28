@@ -127,7 +127,216 @@ const LoadingSpinner = ({ size = "medium", text = "Loading..." }) => {
   );
 };
 
-// Styles
+// Enhanced Calendar Component with Year/Month selection
+const SimpleCalendar = ({ value, onChange, onClose }) => {
+  const [viewMode, setViewMode] = useState('day');
+  const [currentYear, setCurrentYear] = useState(value ? value.getFullYear() : new Date().getFullYear());
+  const [currentMonth, setCurrentMonth] = useState(value ? value.getMonth() : new Date().getMonth());
+  const [selectedDate, setSelectedDate] = useState(value ? new Date(value) : null);
+
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const dayNames = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+  const getDaysInMonth = (year, month) => {
+    return new Date(year, month + 1, 0).getDate();
+  };
+
+  const getFirstDayOfMonth = (year, month) => {
+    return new Date(year, month, 1).getDay();
+  };
+
+  const handleDateClick = (day) => {
+    const newDate = new Date(currentYear, currentMonth, day);
+    setSelectedDate(newDate);
+    onChange(newDate);
+    onClose();
+  };
+
+  const handleMonthSelect = (monthIndex) => {
+    setCurrentMonth(monthIndex);
+    setViewMode('day');
+  };
+
+  const handleYearSelect = (year) => {
+    setCurrentYear(year);
+    setViewMode('month');
+  };
+
+  const changeYear = (offset) => {
+    setCurrentYear(currentYear + offset);
+  };
+
+  const getYears = () => {
+    const currentYearNow = new Date().getFullYear();
+    const years = [];
+    for (let i = currentYearNow - 50; i <= currentYearNow + 10; i++) {
+      years.push(i);
+    }
+    return years;
+  };
+
+  if (viewMode === 'year') {
+    return (
+      <div className="calendar-popup">
+        <div className="calendar-header">
+          <button className="calendar-nav" onClick={() => changeYear(-10)}>◀◀</button>
+          <span className="calendar-title" onClick={() => setViewMode('year')}>{currentYear}</span>
+          <button className="calendar-nav" onClick={() => changeYear(10)}>▶▶</button>
+        </div>
+        <div className="calendar-years">
+          {getYears().map(year => (
+            <div
+              key={year}
+              className={`calendar-year ${year === currentYear ? 'selected' : ''}`}
+              onClick={() => handleYearSelect(year)}
+            >
+              {year}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (viewMode === 'month') {
+    return (
+      <div className="calendar-popup">
+        <div className="calendar-header">
+          <button className="calendar-nav" onClick={() => setViewMode('year')}>◀</button>
+          <span className="calendar-title" onClick={() => setViewMode('month')}>{currentYear}</span>
+          <button className="calendar-nav" onClick={() => setViewMode('year')}>▶</button>
+        </div>
+        <div className="calendar-months">
+          {monthNames.map((month, index) => (
+            <div
+              key={month}
+              className={`calendar-month ${index === currentMonth ? 'selected' : ''}`}
+              onClick={() => handleMonthSelect(index)}
+            >
+              {month.substring(0, 3)}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const daysInMonth = getDaysInMonth(currentYear, currentMonth);
+  const firstDay = getFirstDayOfMonth(currentYear, currentMonth);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const days = [];
+  for (let i = 0; i < firstDay; i++) {
+    days.push(null);
+  }
+  for (let i = 1; i <= daysInMonth; i++) {
+    days.push(i);
+  }
+
+  return (
+    <div className="calendar-popup">
+      <div className="calendar-header">
+        <button className="calendar-nav" onClick={() => setViewMode('year')}>◀</button>
+        <span className="calendar-title" onClick={() => setViewMode('month')}>
+          {monthNames[currentMonth]} {currentYear}
+        </span>
+        <button className="calendar-nav" onClick={() => setViewMode('year')}>▶</button>
+      </div>
+      <div className="calendar-weekdays">
+        {dayNames.map(day => <div key={day} className="calendar-weekday">{day}</div>)}
+      </div>
+      <div className="calendar-days">
+        {days.map((day, index) => {
+          if (day === null) {
+            return <div key={`empty-${index}`} className="calendar-day empty"></div>;
+          }
+          const date = new Date(currentYear, currentMonth, day);
+          const isToday = date.getTime() === today.getTime();
+          const isSelected = selectedDate && date.getTime() === selectedDate.getTime();
+          return (
+            <div
+              key={day}
+              className={`calendar-day ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
+              onClick={() => handleDateClick(day)}
+            >
+              {day}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// Compact Time Picker Component
+const CompactTimePicker = ({ value, onChange, onClose }) => {
+  const [timeFormat, setTimeFormat] = useState('24h');
+  const [selectedHour, setSelectedHour] = useState(value ? parseInt(value.split(':')[0]) : 18);
+  const [selectedMinute, setSelectedMinute] = useState(value ? parseInt(value.split(':')[1]) : 0);
+
+  const hours = timeFormat === '24h' 
+    ? Array.from({ length: 24 }, (_, i) => i)
+    : Array.from({ length: 12 }, (_, i) => i + 1);
+  
+  const minutes = [0, 15, 30, 45];
+
+  const handleConfirm = () => {
+    const hour24 = timeFormat === '12h' 
+      ? (selectedHour === 12 ? 0 : selectedHour)
+      : selectedHour;
+    const timeStr = `${String(hour24).padStart(2, '0')}:${String(selectedMinute).padStart(2, '0')}`;
+    onChange(timeStr);
+    onClose();
+  };
+
+  const formatDisplayHour = (hour) => {
+    if (timeFormat === '12h') {
+      if (hour === 0) return 12;
+      if (hour > 12) return hour - 12;
+      return hour;
+    }
+    return hour;
+  };
+
+  return (
+    <div className="compact-time-picker">
+      <div className="compact-time-header">
+        <button 
+          className={`compact-format-btn ${timeFormat === '12h' ? 'active' : ''}`}
+          onClick={() => setTimeFormat('12h')}
+        >
+          12h
+        </button>
+        <button 
+          className={`compact-format-btn ${timeFormat === '24h' ? 'active' : ''}`}
+          onClick={() => setTimeFormat('24h')}
+        >
+          24h
+        </button>
+      </div>
+      <div className="compact-time-body">
+        <div className="compact-time-column">
+          <button className="compact-time-arrow" onClick={() => setSelectedHour((selectedHour + 1) % (timeFormat === '24h' ? 24 : 12))}>▲</button>
+          <div className="compact-time-value">{String(formatDisplayHour(selectedHour)).padStart(2, '0')}</div>
+          <button className="compact-time-arrow" onClick={() => setSelectedHour((selectedHour - 1 + (timeFormat === '24h' ? 24 : 12)) % (timeFormat === '24h' ? 24 : 12))}>▼</button>
+        </div>
+        <div className="compact-time-separator">:</div>
+        <div className="compact-time-column">
+          <button className="compact-time-arrow" onClick={() => setSelectedMinute((selectedMinute + 15) % 60)}>▲</button>
+          <div className="compact-time-value">{String(selectedMinute).padStart(2, '0')}</div>
+          <button className="compact-time-arrow" onClick={() => setSelectedMinute((selectedMinute - 15 + 60) % 60)}>▼</button>
+        </div>
+      </div>
+      <button className="compact-time-confirm" onClick={handleConfirm}>Confirm</button>
+    </div>
+  );
+};
+
+// ============================================
+// STYLES
+// ============================================
+
 const styles = `
   @font-face {
     font-family: 'Horndon';
@@ -200,6 +409,111 @@ const styles = `
     overflow-x: hidden;
     width: 100%;
     box-sizing: border-box;
+  }
+
+  /* Schedule Management Page Styles */
+  .schedules-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .schedule-card {
+    background: linear-gradient(135deg, #0f0f0f 0%, #0a0a0a 100%);
+    border: 1px solid #1f1f1f;
+    border-radius: 16px;
+    padding: 20px;
+    transition: all 0.3s ease;
+  }
+
+  .schedule-card:hover {
+    border-color: #2a2a2a;
+  }
+
+  .schedule-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #1f1f1f;
+  }
+
+  .schedule-id {
+    font-size: 14px;
+    color: #aa00ff;
+    font-weight: 600;
+  }
+
+  .schedule-status {
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    background-color: rgba(0, 184, 148, 0.2);
+    color: #00b894;
+  }
+
+  .schedule-card-content {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .schedule-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .detail-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .detail-value {
+    font-size: 14px;
+    color: white;
+    font-weight: 500;
+  }
+
+  .schedule-card-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    padding-top: 12px;
+    border-top: 1px solid #1f1f1f;
+  }
+
+  .schedule-action-btn {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    color: #b0b0b0;
+  }
+
+  .schedule-action-btn:hover {
+    border-color: #aa00ff;
+    color: #aa00ff;
+  }
+
+  .schedule-action-btn.danger:hover {
+    border-color: #ff4444;
+    color: #ff4444;
+  }
+
+  .empty-schedules {
+    text-align: center;
+    padding: 60px;
+    background-color: #1a1a1a;
+    border-radius: 16px;
+    color: #888;
   }
 
   /* Section styles */
@@ -296,10 +610,6 @@ const styles = `
     flex-wrap: wrap;
   }
 
-  .stat-emoji {
-    font-size: 18px;
-  }
-
   .stat-label {
     font-size: 14px;
     font-weight: 600;
@@ -361,26 +671,43 @@ const styles = `
   }
 
   /* Time period controls */
-  .time-period-control {
+  .time-period-options {
     display: flex;
-    align-items: center;
-    gap: 20px;
+    gap: 16px;
     flex-wrap: wrap;
+    margin-bottom: 24px;
   }
 
-  .time-period-checkbox {
+  .time-option-btn {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 14px 24px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #b0b0b0;
+    cursor: pointer;
+    transition: all 0.2s ease;
     display: flex;
     align-items: center;
     gap: 10px;
-    cursor: pointer;
-    font-size: 15px;
   }
 
-  .time-period-checkbox input {
-    width: 18px;
-    height: 18px;
-    cursor: pointer;
-    accent-color: #aa00ff;
+  .time-option-btn:hover {
+    border-color: #aa00ff;
+    color: #aa00ff;
+  }
+
+  .time-option-btn.active {
+    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
+    border-color: #aa00ff;
+    color: white;
+  }
+
+  .time-option-description {
+    font-size: 13px;
+    color: #666;
+    margin-left: 8px;
   }
 
   .days-input-group {
@@ -388,9 +715,10 @@ const styles = `
     align-items: center;
     gap: 12px;
     background-color: #1a1a1a;
-    padding: 8px 16px;
+    padding: 12px 20px;
     border-radius: 12px;
     border: 1px solid #2a2a2a;
+    margin-top: 16px;
   }
 
   .days-input {
@@ -407,6 +735,227 @@ const styles = `
   .days-input:focus {
     outline: none;
     border-color: #aa00ff;
+  }
+
+  .apply-days-btn {
+    background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
+    border: none;
+    border-radius: 8px;
+    padding: 8px 20px;
+    color: white;
+    cursor: pointer;
+    font-weight: 500;
+  }
+
+  /* Date range inputs */
+  .date-range-group {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-top: 16px;
+    padding: 16px;
+    background-color: #1a1a1a;
+    border-radius: 12px;
+    border: 1px solid #2a2a2a;
+  }
+
+  .date-input-wrapper {
+    flex: 1;
+    min-width: 200px;
+    position: relative;
+  }
+
+  .date-label {
+    display: block;
+    font-size: 13px;
+    color: #aa00ff;
+    margin-bottom: 8px;
+  }
+
+  .date-input-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .date-input {
+    flex: 1;
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: white;
+    font-size: 14px;
+  }
+
+  .date-input:focus {
+    outline: none;
+    border-color: #aa00ff;
+  }
+
+  .calendar-btn {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.2s ease;
+  }
+
+  .calendar-btn:hover {
+    border-color: #aa00ff;
+    background-color: #2a2a2a;
+  }
+
+  /* Calendar */
+  .calendar-popup {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 8px;
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 16px;
+    z-index: 1000;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    min-width: 280px;
+  }
+
+  .calendar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+
+  .calendar-nav {
+    background: none;
+    border: none;
+    color: white;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+
+  .calendar-nav:hover {
+    background-color: #2a2a2a;
+  }
+
+  .calendar-title {
+    font-weight: 600;
+    color: #aa00ff;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+
+  .calendar-title:hover {
+    background-color: #2a2a2a;
+  }
+
+  .calendar-weekdays {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    margin-bottom: 8px;
+  }
+
+  .calendar-weekday {
+    text-align: center;
+    font-size: 11px;
+    color: #888;
+    padding: 4px;
+  }
+
+  .calendar-days {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+  }
+
+  .calendar-day {
+    text-align: center;
+    padding: 8px 4px;
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 13px;
+    transition: all 0.2s ease;
+  }
+
+  .calendar-day:hover {
+    background-color: #2a2a2a;
+  }
+
+  .calendar-day.selected {
+    background: linear-gradient(135deg, #aa00ff, #8800cc);
+    color: white;
+  }
+
+  .calendar-day.today {
+    border: 1px solid #aa00ff;
+  }
+
+  .calendar-day.empty {
+    cursor: default;
+  }
+
+  .calendar-day.empty:hover {
+    background: none;
+  }
+
+  .calendar-months {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .calendar-month {
+    text-align: center;
+    padding: 10px;
+    cursor: pointer;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+  }
+
+  .calendar-month:hover {
+    background-color: #2a2a2a;
+  }
+
+  .calendar-month.selected {
+    background: linear-gradient(135deg, #aa00ff, #8800cc);
+    color: white;
+  }
+
+  .calendar-years {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .calendar-year {
+    text-align: center;
+    padding: 10px;
+    cursor: pointer;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+  }
+
+  .calendar-year:hover {
+    background-color: #2a2a2a;
+  }
+
+  .calendar-year.selected {
+    background: linear-gradient(135deg, #aa00ff, #8800cc);
+    color: white;
+  }
+
+  .date-hint {
+    font-size: 11px;
+    color: #666;
+    margin-top: 6px;
   }
 
   /* Schedule section */
@@ -589,6 +1138,96 @@ const styles = `
     display: inline-block;
   }
 
+  /* Compact Time Picker */
+  .compact-time-picker {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 8px;
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 12px;
+    z-index: 1000;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    min-width: 180px;
+  }
+
+  .compact-time-header {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-bottom: 12px;
+  }
+
+  .compact-format-btn {
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 16px;
+    padding: 4px 12px;
+    cursor: pointer;
+    font-size: 11px;
+    transition: all 0.2s ease;
+    color: #888;
+  }
+
+  .compact-format-btn.active {
+    background: linear-gradient(135deg, #aa00ff, #8800cc);
+    border-color: #aa00ff;
+    color: white;
+  }
+
+  .compact-time-body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .compact-time-column {
+    text-align: center;
+  }
+
+  .compact-time-arrow {
+    background: none;
+    border: none;
+    color: #aa00ff;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+
+  .compact-time-arrow:hover {
+    background-color: #2a2a2a;
+  }
+
+  .compact-time-value {
+    font-size: 24px;
+    font-weight: 600;
+    color: white;
+    margin: 4px 0;
+  }
+
+  .compact-time-separator {
+    font-size: 24px;
+    font-weight: 600;
+    color: white;
+  }
+
+  .compact-time-confirm {
+    background: linear-gradient(135deg, #aa00ff, #8800cc);
+    border: none;
+    border-radius: 16px;
+    padding: 6px 16px;
+    color: white;
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 12px;
+    width: 100%;
+  }
+
   /* Modal overlay */
   .schedule-modal-overlay {
     position: fixed;
@@ -626,7 +1265,7 @@ const styles = `
     background: linear-gradient(135deg, #1a1a1a 0%, #0f0f0f 100%);
     border-radius: 24px;
     width: 100%;
-    max-width: 600px;
+    max-width: 650px;
     box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
     border: 1px solid #2a2a2a;
     animation: slideUp 0.3s ease;
@@ -669,6 +1308,8 @@ const styles = `
   .schedule-modal-content {
     padding: 24px;
     min-height: 400px;
+    max-height: 60vh;
+    overflow-y: auto;
   }
 
   /* Schedule type options */
@@ -846,6 +1487,49 @@ const styles = `
     box-shadow: 0 0 0 3px rgba(170, 0, 255, 0.1);
   }
 
+  textarea.form-input {
+    resize: vertical;
+    min-height: 80px;
+  }
+
+  /* Time input group */
+  .time-input-group {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    position: relative;
+  }
+
+  .time-input {
+    flex: 1;
+    background-color: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    padding: 10px 14px;
+    color: white;
+    font-size: 14px;
+  }
+
+  .time-input:focus {
+    outline: none;
+    border-color: #aa00ff;
+  }
+
+  .clock-btn {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.2s ease;
+  }
+
+  .clock-btn:hover {
+    border-color: #aa00ff;
+    background-color: #2a2a2a;
+  }
+
   /* Weekday selector */
   .weekday-selector {
     display: grid;
@@ -874,29 +1558,6 @@ const styles = `
     background: linear-gradient(135deg, #aa00ff 0%, #8800cc 100%);
     border-color: #aa00ff;
     color: white;
-  }
-
-  /* Time inputs */
-  .time-input-group {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-
-  .time-input {
-    flex: 1;
-    background-color: #0a0a0a;
-    border: 1px solid #2a2a2a;
-    border-radius: 10px;
-    padding: 10px 14px;
-    color: white;
-    font-size: 14px;
-  }
-
-  .time-input:focus {
-    outline: none;
-    border-color: #aa00ff;
   }
 
   /* Confirmation page */
@@ -964,9 +1625,14 @@ const styles = `
     color: white;
   }
 
-  .modal-btn-next:hover {
+  .modal-btn-next:hover:not(:disabled) {
     transform: translateY(-2px);
     box-shadow: 0 4px 12px rgba(170, 0, 255, 0.3);
+  }
+
+  .modal-btn-next:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .modal-btn-cancel {
@@ -986,7 +1652,7 @@ const styles = `
     align-items: center;
     justify-content: center;
     gap: 8px;
-    margin-bottom: 24px;
+    margin: 16px 0 24px 0;
   }
 
   .step-dot {
@@ -1007,7 +1673,7 @@ const styles = `
     background-color: #00b894;
   }
 
-  /* Other existing styles */
+  /* View selector */
   .view-selector {
     display: flex;
     gap: 12px;
@@ -1040,6 +1706,7 @@ const styles = `
     box-shadow: 0 4px 12px rgba(170, 0, 255, 0.3);
   }
 
+  /* Scope selector */
   .scope-selector-section {
     background-color: #0a0a0a;
     border: 1px solid #1a1a1a;
@@ -1279,31 +1946,43 @@ const styles = `
     .weekday-selector {
       grid-template-columns: repeat(4, 1fr);
     }
+    .time-period-options {
+      flex-direction: column;
+    }
+    .date-range-group {
+      flex-direction: column;
+    }
+    .schedule-card-content {
+      grid-template-columns: 1fr;
+    }
   }
 `;
 
-// Stat types configuration
+// ============================================
+// STAT TYPES CONFIGURATION
+// ============================================
+
 const STAT_TYPES = {
   server: {
-    all: { label: "All Statistics", description: "Reset ALL statistics (irreversible!)", emoji: "⚠️", serverWideOnly: false },
-    messages: { label: "Messages", description: "Reset message tracking", emoji: "💬", serverWideOnly: false },
-    "voice activity": { label: "Voice Activity", description: "Reset voice session history", emoji: "🔊", serverWideOnly: false },
-    "invite tracking": { label: "Invite Tracking", description: "Reset invite tracking", emoji: "📨", serverWideOnly: true },
-    "emoji stats": { label: "Emoji Stats", description: "Reset emoji usage", emoji: "😀", serverWideOnly: false },
-    activity: { label: "Activity", description: "Reset activity tracking (sessions, streaks, logs)", emoji: "🎮", serverWideOnly: true },
-    mentions: { label: "Mentions", description: "Reset user mentions", emoji: "📢", serverWideOnly: false },
-    "role growth": { label: "Role Growth", description: "Reset role growth tracking", emoji: "👥", serverWideOnly: true },
-    "member growth": { label: "Member Growth", description: "Reset member join/leave tracking", emoji: "📈", serverWideOnly: true }
+    all: { label: "All Statistics", description: "Reset ALL statistics (irreversible!)", serverWideOnly: false },
+    messages: { label: "Messages", description: "Reset message tracking", serverWideOnly: false },
+    "voice activity": { label: "Voice Activity", description: "Reset voice session history", serverWideOnly: false },
+    "invite tracking": { label: "Invite Tracking", description: "Reset invite tracking", serverWideOnly: true },
+    "emoji stats": { label: "Emoji Stats", description: "Reset emoji usage", serverWideOnly: false },
+    activity: { label: "Activity", description: "Reset activity tracking (sessions, streaks, logs)", serverWideOnly: true },
+    mentions: { label: "Mentions", description: "Reset user mentions", serverWideOnly: false },
+    "role growth": { label: "Role Growth", description: "Reset role growth tracking", serverWideOnly: true },
+    "member growth": { label: "Member Growth", description: "Reset member join/leave tracking", serverWideOnly: true }
   },
   user: {
-    all: { label: "All Statistics", description: "Reset ALL statistics", emoji: "⚠️", serverWideOnly: false },
-    messages: { label: "Messages", description: "Reset message tracking", emoji: "💬", serverWideOnly: false },
-    "voice activity": { label: "Voice Activity", description: "Reset voice activity", emoji: "🔊", serverWideOnly: false },
-    activity: { label: "Activity", description: "Reset activity tracking", emoji: "🎮", serverWideOnly: true },
-    "invite tracking": { label: "Invite Tracking", description: "Reset invite tracking", emoji: "📨", serverWideOnly: true },
-    "emoji stats": { label: "Emoji Stats", description: "Reset emoji usage", emoji: "😀", serverWideOnly: false },
-    mentions: { label: "Mentions", description: "Reset mentions", emoji: "📢", serverWideOnly: false },
-    "role growth": { label: "Role Growth", description: "Reset role growth tracking", emoji: "👥", serverWideOnly: true }
+    all: { label: "All Statistics", description: "Reset ALL statistics", serverWideOnly: false },
+    messages: { label: "Messages", description: "Reset message tracking", serverWideOnly: false },
+    "voice activity": { label: "Voice Activity", description: "Reset voice activity", serverWideOnly: false },
+    activity: { label: "Activity", description: "Reset activity tracking", serverWideOnly: true },
+    "invite tracking": { label: "Invite Tracking", description: "Reset invite tracking", serverWideOnly: true },
+    "emoji stats": { label: "Emoji Stats", description: "Reset emoji usage", serverWideOnly: false },
+    mentions: { label: "Mentions", description: "Reset mentions", serverWideOnly: false },
+    "role growth": { label: "Role Growth", description: "Reset role growth tracking", serverWideOnly: true }
   }
 };
 
@@ -1329,14 +2008,761 @@ const getFilteredStatTypes = (commandType, scope) => {
     .map(([key, config]) => ({
       value: key,
       label: config.label,
-      description: config.description,
-      emoji: config.emoji
+      description: config.description
     }));
 };
 
-// Advanced Schedule Modal Component with multi-input support
+// ============================================
+// CANCEL SCHEDULE MODAL
+// ============================================
+
+const CancelScheduleModal = ({ isOpen, onClose, onConfirm, scheduleId }) => {
+  const [confirmText, setConfirmText] = useState("");
+
+  const handleConfirm = () => {
+    if (confirmText === "CONFIRM") {
+      onConfirm(scheduleId);
+      setConfirmText("");
+      onClose();
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="schedule-modal-overlay" onClick={onClose}>
+      <div className="schedule-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="schedule-modal-header">
+          <h3 className="schedule-modal-title">Cancel Schedule</h3>
+          <button className="schedule-modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="schedule-modal-content">
+          <p style={{ marginBottom: '16px', color: '#fff' }}>
+            Are you sure you want to cancel schedule #{scheduleId}? This action cannot be undone.
+          </p>
+          <div className="form-group">
+            <label className="form-label">Type CONFIRM to proceed</label>
+            <input
+              type="text"
+              className="form-input"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder="CONFIRM"
+            />
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="modal-btn modal-btn-cancel" onClick={onClose}>Cancel</button>
+          <button className="modal-btn modal-btn-next" onClick={handleConfirm}>Confirm Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================
+// ENHANCED EDIT SCHEDULE MODAL
+// ============================================
+
+const EditScheduleModal = ({ isOpen, onClose, onConfirm, schedule, currentServer }) => {
+  const [step, setStep] = useState(1);
+  const [scheduleName, setScheduleName] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [reason, setReason] = useState("");
+  const [scheduleType, setScheduleType] = useState(null);
+  const [selectedWeekdays, setSelectedWeekdays] = useState([]);
+  const [selectedMonthDays, setSelectedMonthDays] = useState([]);
+  const [selectedTimes, setSelectedTimes] = useState(["18:00"]);
+  const [intervalDays, setIntervalDays] = useState(7);
+  const [selectedStatTypes, setSelectedStatTypes] = useState([]);
+  const [newTime, setNewTime] = useState("");
+  const [newMonthDay, setNewMonthDay] = useState("");
+  const [availableStatTypes, setAvailableStatTypes] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  React.useEffect(() => {
+    if (schedule && isOpen) {
+      setScheduleName(schedule.schedule_name || "");
+      setEnabled(schedule.enabled !== false && !schedule.completed);
+      setReason(schedule.reason || "");
+      setSelectedStatTypes(schedule.reset_types || []);
+      
+      if (schedule.recurring_pattern) {
+        // Ensure pattern is in the correct format for the frontend
+        let pattern = schedule.recurring_pattern;
+        // Map custom_days to custom for display (since the UI uses "custom")
+        if (pattern === "custom_days") {
+          pattern = "custom";
+        }
+        setScheduleType(pattern);
+        
+        if (schedule.recurring_pattern === 'weekly' && schedule.recurring_weekdays) {
+          setSelectedWeekdays(schedule.recurring_weekdays);
+        }
+        
+        if (schedule.recurring_pattern === 'monthly' && schedule.recurring_days_of_month) {
+          setSelectedMonthDays(schedule.recurring_days_of_month);
+        }
+        
+        if (schedule.recurring_pattern === 'custom_days' && schedule.recurring_interval_days) {
+          setIntervalDays(schedule.recurring_interval_days);
+        }
+        
+        if (schedule.recurring_times) {
+          const timeStrings = schedule.recurring_times.map(t => {
+            if (typeof t === 'string') return t;
+            return `${String(t.hour).padStart(2, '0')}:${String(t.minute).padStart(2, '0')}`;
+          });
+          setSelectedTimes(timeStrings);
+        }
+      }
+      
+      loadStatTypes();
+    }
+  }, [schedule, isOpen]);
+
+  const loadStatTypes = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reset/ui/stat-types`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          guild_id: currentServer?.id,
+          command_type: schedule?.scope_type === 'user' ? 'user' : 'server',
+          scope: schedule?.scope_type || 'server'
+        })
+      });
+      const data = await response.json();
+      setAvailableStatTypes(data.stat_types || []);
+    } catch (error) {
+      console.error('Error loading stat types:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStatTypeToggle = (statType) => {
+    setSelectedStatTypes(prev => {
+      if (prev.includes(statType)) {
+        return prev.filter(t => t !== statType);
+      } else {
+        return [...prev, statType];
+      }
+    });
+  };
+
+  const toggleWeekday = (value) => {
+    setSelectedWeekdays(prev =>
+      prev.includes(value)
+        ? prev.filter(v => v !== value)
+        : [...prev, value].sort()
+    );
+  };
+
+  const addMonthDay = () => {
+    if (newMonthDay) {
+      const day = parseInt(newMonthDay);
+      if (day >= 1 && day <= 31 && !selectedMonthDays.includes(day)) {
+        setSelectedMonthDays([...selectedMonthDays, day].sort((a, b) => a - b));
+        setNewMonthDay("");
+      }
+    }
+  };
+
+  const removeMonthDay = (day) => {
+    setSelectedMonthDays(prev => prev.filter(d => d !== day));
+  };
+
+  const addTime = () => {
+    if (newTime && /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(newTime)) {
+      if (!selectedTimes.includes(newTime)) {
+        setSelectedTimes([...selectedTimes, newTime].sort());
+        setNewTime("");
+      }
+    }
+  };
+
+  const removeTime = (time) => {
+    setSelectedTimes(prev => prev.filter(t => t !== time));
+  };
+
+  const getSchedulePreview = () => {
+    if (!scheduleType) return null;
+    
+    const timesStr = selectedTimes.join(", ");
+    
+    if (scheduleType === "daily") {
+      return `Every day at ${timesStr}`;
+    }
+    if (scheduleType === "weekly") {
+      const weekdayNames = selectedWeekdays.map(w => weekdays.find(d => d.value === w)?.short);
+      return `Every ${weekdayNames.join(", ")} at ${timesStr}`;
+    }
+    if (scheduleType === "monthly") {
+      const daysStr = selectedMonthDays.join(", ");
+      return `Every ${daysStr} of the month at ${timesStr}`;
+    }
+    if (scheduleType === "custom") {
+      return `Every ${intervalDays} days at ${timesStr}`;
+    }
+    return "";
+  };
+
+  const getOrdinal = (n) => {
+    if (n > 3 && n < 21) return 'th';
+    switch (n % 10) {
+      case 1: return 'st';
+      case 2: return 'nd';
+      case 3: return 'rd';
+      default: return 'th';
+    }
+  };
+
+  const handleConfirm = () => {
+    const updateData = {
+      schedule_id: schedule.id,
+      guild_id: currentServer?.id,
+      enabled: enabled,
+      schedule_name: scheduleName,
+      reason: reason,
+      reset_types: selectedStatTypes
+    };
+    
+    if (scheduleType) {
+      // Convert "custom" back to "custom_days" for the API
+      let patternForApi = scheduleType;
+      if (scheduleType === "custom") {
+        patternForApi = "custom_days";
+      }
+      updateData.recurring_pattern = patternForApi;
+      updateData.recurring_times = selectedTimes;
+      
+      if (scheduleType === "weekly") {
+        updateData.recurring_weekdays = selectedWeekdays;
+      }
+      if (scheduleType === "monthly") {
+        updateData.recurring_days_of_month = selectedMonthDays;
+      }
+      if (scheduleType === "custom") {
+        updateData.recurring_interval_days = intervalDays;
+      }
+    }
+    
+    onConfirm(schedule.id, updateData);
+  };
+
+  const isStepValid = () => {
+    if (step === 1) return true;
+    if (step === 2) return selectedStatTypes.length > 0;
+    if (step === 3) {
+      if (!scheduleType) return false;
+      if (scheduleType === "weekly") return selectedWeekdays.length > 0 && selectedTimes.length > 0;
+      if (scheduleType === "monthly") return selectedMonthDays.length > 0 && selectedTimes.length > 0;
+      if (scheduleType === "custom") return intervalDays >= 1 && selectedTimes.length > 0;
+      if (scheduleType === "daily") return selectedTimes.length > 0;
+      return false;
+    }
+    return false;
+  };
+
+  if (!isOpen || !schedule) return null;
+
+  return (
+    <div className="schedule-modal-overlay" onClick={onClose}>
+      <div className="schedule-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="schedule-modal-header">
+          <h3 className="schedule-modal-title">Edit Schedule #{schedule.id}</h3>
+          <button className="schedule-modal-close" onClick={onClose}>✕</button>
+        </div>
+        
+        <div className="step-indicator">
+          <div className={`step-dot ${step >= 1 ? 'active' : ''} ${step > 1 ? 'completed' : ''}`}></div>
+          <div className={`step-dot ${step >= 2 ? 'active' : ''} ${step > 2 ? 'completed' : ''}`}></div>
+          <div className={`step-dot ${step >= 3 ? 'active' : ''} ${step > 3 ? 'completed' : ''}`}></div>
+          <div className={`step-dot ${step >= 4 ? 'active' : ''}`}></div>
+        </div>
+        
+        <div className="schedule-modal-content">
+          {step === 1 && (
+            <div>
+              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Schedule Details</h4>
+              <div className="form-group">
+                <label className="form-label">Schedule Name (Optional)</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={scheduleName}
+                  onChange={(e) => setScheduleName(e.target.value)}
+                  placeholder="e.g., Weekly Cleanup, Monthly Reset, etc."
+                  maxLength="100"
+                />
+              </div>
+              
+              <div className="form-group">
+                <label className="form-label">Status</label>
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      checked={enabled}
+                      onChange={() => setEnabled(true)}
+                      style={{ accentColor: '#aa00ff' }}
+                    />
+                    <span style={{ color: '#00b894' }}>Enabled</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      checked={!enabled}
+                      onChange={() => setEnabled(false)}
+                      style={{ accentColor: '#aa00ff' }}
+                    />
+                    <span style={{ color: '#ff4444' }}>Disabled</span>
+                  </label>
+                </div>
+              </div>
+              
+              <div className="form-group">
+                <label className="form-label">Reason (Optional)</label>
+                <textarea
+                  className="form-input"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="Add a reason for this schedule..."
+                  rows="3"
+                />
+              </div>
+            </div>
+          )}
+          
+          {step === 2 && (
+            <div>
+              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Reset Types</h4>
+              {loading ? (
+                <LoadingSpinner size="small" text="Loading..." />
+              ) : (
+                <div className="stat-types-grid" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                  {availableStatTypes.map(stat => (
+                    <div 
+                      key={stat.value}
+                      className={`stat-card ${selectedStatTypes.includes(stat.value) ? "selected" : ""}`}
+                      onClick={() => handleStatTypeToggle(stat.value)}
+                    >
+                      <div className="stat-card-content">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedStatTypes.includes(stat.value)}
+                          onChange={() => {}}
+                          onClick={(e) => e.stopPropagation()}
+                          className="stat-checkbox"
+                        />
+                        <div className="stat-info">
+                          <div className="stat-header">
+                            <span className="stat-label">{stat.label}</span>
+                          </div>
+                          <div className="stat-description">{stat.description}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {selectedStatTypes.length === 0 && (
+                <div style={{ color: '#ff4444', fontSize: '12px', marginTop: '8px' }}>
+                  Please select at least one statistic type
+                </div>
+              )}
+            </div>
+          )}
+          
+          {step === 3 && (
+            <div>
+              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Schedule Configuration</h4>
+              
+              <div className="schedule-type-options">
+                <div 
+                  className={`schedule-type-option ${scheduleType === 'daily' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('daily')}
+                >
+                  <div className="schedule-type-icon">📅</div>
+                  <div className="schedule-type-info">
+                    <div className="schedule-type-name">Every Day</div>
+                    <div className="schedule-type-desc">Runs at the same time(s) every day</div>
+                  </div>
+                  {scheduleType === 'daily' && <div className="schedule-type-check">✓</div>}
+                </div>
+
+                <div 
+                  className={`schedule-type-option ${scheduleType === 'weekly' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('weekly')}
+                >
+                  <div className="schedule-type-icon">📆</div>
+                  <div className="schedule-type-info">
+                    <div className="schedule-type-name">Weekly</div>
+                    <div className="schedule-type-desc">Runs on selected day(s) of the week</div>
+                  </div>
+                  {scheduleType === 'weekly' && <div className="schedule-type-check">✓</div>}
+                </div>
+
+                <div 
+                  className={`schedule-type-option ${scheduleType === 'monthly' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('monthly')}
+                >
+                  <div className="schedule-type-icon">📅</div>
+                  <div className="schedule-type-info">
+                    <div className="schedule-type-name">Monthly</div>
+                    <div className="schedule-type-desc">Runs on selected day(s) of the month</div>
+                  </div>
+                  {scheduleType === 'monthly' && <div className="schedule-type-check">✓</div>}
+                </div>
+
+                <div 
+                  className={`schedule-type-option ${scheduleType === 'custom_days' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('custom_days')}
+                >
+                  <div className="schedule-type-icon">⚙️</div>
+                  <div className="schedule-type-info">
+                    <div className="schedule-type-name">Custom Interval</div>
+                    <div className="schedule-type-desc">Runs every X days at specified time(s)</div>
+                  </div>
+                  {scheduleType === 'custom_days' && <div className="schedule-type-check">✓</div>}
+                </div>
+              </div>
+              
+              {scheduleType === 'weekly' && (
+                <div className="form-group" style={{ marginTop: '20px' }}>
+                  <label className="form-label">Select Weekdays</label>
+                  <div className="weekday-selector">
+                    {weekdays.map(day => (
+                      <div
+                        key={day.value}
+                        className={`weekday-chip ${selectedWeekdays.includes(day.value) ? 'selected' : ''}`}
+                        onClick={() => toggleWeekday(day.value)}
+                      >
+                        {day.short}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {scheduleType === 'monthly' && (
+                <div className="multi-select-container" style={{ marginTop: '20px' }}>
+                  <label className="multi-select-label">Month Days</label>
+                  <div className="chips-container">
+                    {selectedMonthDays.map(day => (
+                      <div key={day} className="chip selected">
+                        {day}{getOrdinal(day)}
+                        <span className="chip-remove" onClick={() => removeMonthDay(day)}>✕</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="add-input-group">
+                    <input
+                      type="number"
+                      className="add-input"
+                      placeholder="Enter day (1-31)"
+                      min="1"
+                      max="31"
+                      value={newMonthDay}
+                      onChange={(e) => setNewMonthDay(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && addMonthDay()}
+                    />
+                    <button className="add-btn" onClick={addMonthDay}>Add</button>
+                  </div>
+                </div>
+              )}
+
+              {scheduleType === 'custom_days' && (
+                <div className="form-group" style={{ marginTop: '20px' }}>
+                  <label className="form-label">Interval (Days)</label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    min="1"
+                    max="365"
+                    value={intervalDays}
+                    onChange={(e) => setIntervalDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
+                  />
+                </div>
+              )}
+
+              {(scheduleType === 'daily' || scheduleType === 'weekly' || scheduleType === 'monthly' || scheduleType === 'custom_days') && (
+                <div className="multi-select-container" style={{ marginTop: '20px' }}>
+                  <label className="multi-select-label">Times of Day</label>
+                  <div className="chips-container">
+                    {selectedTimes.map(time => (
+                      <div key={time} className="chip selected">
+                        🕐 {time}
+                        <span className="chip-remove" onClick={() => removeTime(time)}>✕</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="add-input-group">
+                    <TimePickerInput
+                      value={newTime}
+                      onChange={setNewTime}
+                      placeholder="HH:MM"
+                    />
+                    <button className="add-btn" onClick={addTime}>Add Time</button>
+                  </div>
+                </div>
+              )}
+
+              <div className="confirmation-details" style={{ marginTop: '20px' }}>
+                <div className="confirmation-row">
+                  <span className="confirmation-label">Schedule Preview:</span>
+                  <span className="confirmation-value">{getSchedulePreview() || 'Select a schedule type'}</span>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {step === 4 && (
+            <div>
+              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Confirm Changes</h4>
+              <div className="confirmation-details">
+                <div className="confirmation-row">
+                  <span className="confirmation-label">Schedule Name:</span>
+                  <span className="confirmation-value">{scheduleName || '(No name)'}</span>
+                </div>
+                <div className="confirmation-row">
+                  <span className="confirmation-label">Status:</span>
+                  <span className="confirmation-value" style={{ color: enabled ? '#00b894' : '#ff4444' }}>
+                    {enabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                </div>
+                <div className="confirmation-row">
+                  <span className="confirmation-label">Reset Types:</span>
+                  <span className="confirmation-value">{selectedStatTypes.length} type(s)</span>
+                </div>
+                <div className="confirmation-row">
+                  <span className="confirmation-label">Schedule:</span>
+                  <span className="confirmation-value">{getSchedulePreview()}</span>
+                </div>
+                {reason && (
+                  <div className="confirmation-row">
+                    <span className="confirmation-label">Reason:</span>
+                    <span className="confirmation-value">{reason}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="modal-footer">
+          <button className="modal-btn modal-btn-cancel" onClick={onClose}>Cancel</button>
+          {step > 1 && (
+            <button className="modal-btn modal-btn-back" onClick={() => setStep(step - 1)}>Back</button>
+          )}
+          {step < 4 && (
+            <button 
+              className="modal-btn modal-btn-next" 
+              onClick={() => setStep(step + 1)}
+              disabled={!isStepValid()}
+            >
+              Next
+            </button>
+          )}
+          {step === 4 && (
+            <button className="modal-btn modal-btn-next" onClick={handleConfirm}>
+              Save Changes
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================
+// DATE RANGE MODAL
+// ============================================
+
+const DateRangeModal = ({ isOpen, onClose, onConfirm }) => {
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [showFromCalendar, setShowFromCalendar] = useState(false);
+  const [showToCalendar, setShowToCalendar] = useState(false);
+
+  const parseDate = (dateStr) => {
+    if (!dateStr) return null;
+    let cleaned = dateStr.trim().replace(/\s+/g, '-');
+    let parts;
+    if (cleaned.includes('-')) {
+      parts = cleaned.split('-');
+    } else if (cleaned.includes('/')) {
+      parts = cleaned.split('/');
+    } else if (cleaned.includes('.')) {
+      parts = cleaned.split('.');
+    } else {
+      return null;
+    }
+    if (parts.length !== 3) return null;
+    const day = parseInt(parts[0]);
+    const month = parseInt(parts[1]) - 1;
+    const year = parseInt(parts[2]);
+    if (isNaN(day) || isNaN(month) || isNaN(year)) return null;
+    const date = new Date(year, month, day);
+    if (date.getFullYear() !== year || date.getMonth() !== month || date.getDate() !== day) return null;
+    return date;
+  };
+
+  const formatDateForDisplay = (date) => {
+    if (!date) return "";
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}-${month}-${year}`;
+  };
+
+  const formatDateForAPI = (date) => {
+    if (!date) return null;
+    return date.toISOString();
+  };
+
+  const handleFromDateChange = (date) => {
+    setFromDate(formatDateForDisplay(date));
+    setShowFromCalendar(false);
+  };
+
+  const handleToDateChange = (date) => {
+    setToDate(formatDateForDisplay(date));
+    setShowToCalendar(false);
+  };
+
+  const handleConfirm = () => {
+    const fromDateObj = parseDate(fromDate);
+    const toDateObj = parseDate(toDate);
+    
+    if ((fromDate && !fromDateObj) || (toDate && !toDateObj)) {
+      alert("Invalid date format. Use DD-MM-YYYY (e.g., 25-12-2024)");
+      return;
+    }
+    
+    onConfirm(fromDateObj ? formatDateForAPI(fromDateObj) : null, toDateObj ? formatDateForAPI(toDateObj) : null);
+    setFromDate("");
+    setToDate("");
+    onClose();
+  };
+
+  const handleClose = () => {
+    setFromDate("");
+    setToDate("");
+    setShowFromCalendar(false);
+    setShowToCalendar(false);
+    onClose();
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="schedule-modal-overlay" onClick={handleClose}>
+      <div className="schedule-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="schedule-modal-header">
+          <h3 className="schedule-modal-title">Date Range Selection</h3>
+          <button className="schedule-modal-close" onClick={handleClose}>✕</button>
+        </div>
+        <div className="schedule-modal-content">
+          <div className="date-range-group" style={{ flexDirection: 'column', marginTop: 0 }}>
+            <div className="date-input-wrapper" style={{ width: '100%' }}>
+              <label className="date-label">From Date (Optional)</label>
+              <div className="date-input-container">
+                <input
+                  type="text"
+                  className="date-input"
+                  placeholder="DD-MM-YYYY (e.g., 01-01-2024)"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                />
+                <button className="calendar-btn" onClick={() => setShowFromCalendar(!showFromCalendar)}>📅</button>
+              </div>
+              {showFromCalendar && (
+                <SimpleCalendar value={parseDate(fromDate)} onChange={handleFromDateChange} onClose={() => setShowFromCalendar(false)} />
+              )}
+              <div className="date-hint">Leave empty to delete from the oldest data available</div>
+            </div>
+            <div className="date-input-wrapper" style={{ width: '100%' }}>
+              <label className="date-label">To Date (Optional)</label>
+              <div className="date-input-container">
+                <input
+                  type="text"
+                  className="date-input"
+                  placeholder="DD-MM-YYYY (e.g., 31-12-2024)"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                />
+                <button className="calendar-btn" onClick={() => setShowToCalendar(!showToCalendar)}>📅</button>
+              </div>
+              {showToCalendar && (
+                <SimpleCalendar value={parseDate(toDate)} onChange={handleToDateChange} onClose={() => setShowToCalendar(false)} />
+              )}
+              <div className="date-hint">Leave empty to delete until the most recent data</div>
+            </div>
+          </div>
+          <div className="confirmation-details" style={{ marginTop: '20px' }}>
+            <div className="confirmation-row">
+              <span className="confirmation-label">Range Preview:</span>
+              <span className="confirmation-value">
+                {fromDate || "Start"} → {toDate || "End"}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="modal-btn modal-btn-cancel" onClick={handleClose}>Cancel</button>
+          <button className="modal-btn modal-btn-next" onClick={handleConfirm}>Apply Range</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================
+// TIME PICKER INPUT
+// ============================================
+
+const TimePickerInput = ({ value, onChange, placeholder }) => {
+  const [showPicker, setShowPicker] = useState(false);
+  const [localValue, setLocalValue] = useState(value || "18:00");
+
+  const handleTimeChange = (newTime) => {
+    setLocalValue(newTime);
+    onChange(newTime);
+  };
+
+  return (
+    <div style={{ position: 'relative', flex: 1 }}>
+      <div className="time-input-group">
+        <input
+          type="text"
+          className="time-input"
+          placeholder={placeholder || "HH:MM"}
+          value={localValue}
+          onChange={(e) => {
+            setLocalValue(e.target.value);
+            onChange(e.target.value);
+          }}
+        />
+        <button className="clock-btn" onClick={() => setShowPicker(!showPicker)}>🕐</button>
+      </div>
+      {showPicker && (
+        <CompactTimePicker value={localValue} onChange={handleTimeChange} onClose={() => setShowPicker(false)} />
+      )}
+    </div>
+  );
+};
+
+// ============================================
+// ENHANCED SCHEDULE MODAL (CREATE)
+// ============================================
+
 const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
   const [step, setStep] = useState(1);
+  const [scheduleName, setScheduleName] = useState("");
   const [scheduleType, setScheduleType] = useState(null);
   const [selectedWeekdays, setSelectedWeekdays] = useState([]);
   const [selectedMonthDays, setSelectedMonthDays] = useState([]);
@@ -1347,6 +2773,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
 
   const resetState = () => {
     setStep(1);
+    setScheduleName("");
     setScheduleType(null);
     setSelectedWeekdays([]);
     setSelectedMonthDays([]);
@@ -1362,10 +2789,12 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
   };
 
   const handleNext = () => {
-    if (step === 1 && scheduleType) {
+    if (step === 1) {
       setStep(2);
-    } else if (step === 2) {
+    } else if (step === 2 && scheduleType) {
       setStep(3);
+    } else if (step === 3) {
+      setStep(4);
     }
   };
 
@@ -1423,7 +2852,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
       return `Every ${weekdayNames.join(", ")} at ${timesStr}`;
     }
     if (scheduleType === "monthly") {
-      const daysStr = selectedMonthDays.map(d => `${d}${getOrdinal(d)}`).join(", ");
+      const daysStr = selectedMonthDays.join(", ");
       return `Every ${daysStr} of the month at ${timesStr}`;
     }
     if (scheduleType === "custom") {
@@ -1444,22 +2873,22 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
 
   const handleConfirm = () => {
     let scheduleDescription = "";
-    let scheduleData = {};
+    let scheduleData = { name: scheduleName };
 
     if (scheduleType === "weekly") {
       const weekdayNames = selectedWeekdays.map(w => weekdays.find(d => d.value === w)?.label);
       scheduleDescription = `Every ${weekdayNames.join(", ")} at ${selectedTimes.join(", ")}`;
-      scheduleData = { pattern: "weekly", weekdays: selectedWeekdays, times: selectedTimes };
+      scheduleData = { name: scheduleName, pattern: "weekly", weekdays: selectedWeekdays, times: selectedTimes };
     } else if (scheduleType === "daily") {
       scheduleDescription = `Every day at ${selectedTimes.join(", ")}`;
-      scheduleData = { pattern: "daily", times: selectedTimes };
+      scheduleData = { name: scheduleName, pattern: "daily", times: selectedTimes };
     } else if (scheduleType === "monthly") {
-      const daysStr = selectedMonthDays.map(d => `${d}${getOrdinal(d)}`).join(", ");
-      scheduleDescription = `Every ${daysStr} of the month at ${selectedTimes.join(", ")}`;
-      scheduleData = { pattern: "monthly", monthDays: selectedMonthDays, times: selectedTimes };
+      scheduleDescription = `Every ${selectedMonthDays.join(", ")} of the month at ${selectedTimes.join(", ")}`;
+      scheduleData = { name: scheduleName, pattern: "monthly", monthDays: selectedMonthDays, times: selectedTimes };
     } else if (scheduleType === "custom") {
       scheduleDescription = `Every ${intervalDays} days at ${selectedTimes.join(", ")}`;
-      scheduleData = { pattern: "custom", intervalDays: intervalDays, times: selectedTimes };
+      // When creating, store as "custom" for UI but API expects "custom_days"
+      scheduleData = { name: scheduleName, pattern: "custom_days", intervalDays: intervalDays, times: selectedTimes };
     }
 
     onConfirm(scheduleDescription, scheduleData);
@@ -1467,12 +2896,17 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
     onClose();
   };
 
-  const isStep2Valid = () => {
-    if (scheduleType === "weekly") return selectedWeekdays.length > 0 && selectedTimes.length > 0;
-    if (scheduleType === "monthly") return selectedMonthDays.length > 0 && selectedTimes.length > 0;
-    if (scheduleType === "custom") return intervalDays >= 1 && selectedTimes.length > 0;
-    if (scheduleType === "daily") return selectedTimes.length > 0;
-    return false;
+  const isStepValid = () => {
+    if (step === 1) return true;
+    if (step === 2) return scheduleType !== null;
+    if (step === 3) {
+      if (scheduleType === "weekly") return selectedWeekdays.length > 0 && selectedTimes.length > 0;
+      if (scheduleType === "monthly") return selectedMonthDays.length > 0 && selectedTimes.length > 0;
+      if (scheduleType === "custom") return intervalDays >= 1 && selectedTimes.length > 0;
+      if (scheduleType === "daily") return selectedTimes.length > 0;
+      return false;
+    }
+    return true;
   };
 
   if (!isOpen) return null;
@@ -1488,13 +2922,34 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
         <div className="step-indicator">
           <div className={`step-dot ${step >= 1 ? 'active' : ''} ${step > 1 ? 'completed' : ''}`}></div>
           <div className={`step-dot ${step >= 2 ? 'active' : ''} ${step > 2 ? 'completed' : ''}`}></div>
-          <div className={`step-dot ${step >= 3 ? 'active' : ''}`}></div>
+          <div className={`step-dot ${step >= 3 ? 'active' : ''} ${step > 3 ? 'completed' : ''}`}></div>
+          <div className={`step-dot ${step >= 4 ? 'active' : ''}`}></div>
         </div>
 
         <div className="schedule-modal-content">
           {step === 1 && (
             <div>
-              <h4 style={{ marginBottom: '20px', fontSize: '16px', color: '#fff' }}>Choose schedule type</h4>
+              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Name Your Schedule</h4>
+              <div className="form-group">
+                <label className="form-label">Schedule Name (Optional)</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={scheduleName}
+                  onChange={(e) => setScheduleName(e.target.value)}
+                  placeholder="e.g., Weekly Cleanup, Monthly Reset, etc."
+                  maxLength="100"
+                />
+                <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
+                  Give your schedule a descriptive name to easily identify it later.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div>
+              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Choose schedule type</h4>
               <div className="schedule-type-options">
                 <div 
                   className={`schedule-type-option ${scheduleType === 'daily' ? 'selected' : ''}`}
@@ -1503,7 +2958,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                   <div className="schedule-type-icon">📅</div>
                   <div className="schedule-type-info">
                     <div className="schedule-type-name">Every Day</div>
-                    <div className="schedule-type-desc">Runs at the same time every day</div>
+                    <div className="schedule-type-desc">Runs at the same time(s) every day</div>
                   </div>
                   {scheduleType === 'daily' && <div className="schedule-type-check">✓</div>}
                 </div>
@@ -1515,7 +2970,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                   <div className="schedule-type-icon">📆</div>
                   <div className="schedule-type-info">
                     <div className="schedule-type-name">Weekly</div>
-                    <div className="schedule-type-desc">Runs on specific days of the week</div>
+                    <div className="schedule-type-desc">Runs on selected day(s) of the week</div>
                   </div>
                   {scheduleType === 'weekly' && <div className="schedule-type-check">✓</div>}
                 </div>
@@ -1527,29 +2982,29 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                   <div className="schedule-type-icon">📅</div>
                   <div className="schedule-type-info">
                     <div className="schedule-type-name">Monthly</div>
-                    <div className="schedule-type-desc">Runs on specific days of the month</div>
+                    <div className="schedule-type-desc">Runs on selected day(s) of the month</div>
                   </div>
                   {scheduleType === 'monthly' && <div className="schedule-type-check">✓</div>}
                 </div>
 
                 <div 
-                  className={`schedule-type-option ${scheduleType === 'custom' ? 'selected' : ''}`}
-                  onClick={() => setScheduleType('custom')}
+                  className={`schedule-type-option ${scheduleType === 'custom_days' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('custom_days')}
                 >
                   <div className="schedule-type-icon">⚙️</div>
                   <div className="schedule-type-info">
                     <div className="schedule-type-name">Custom Interval</div>
-                    <div className="schedule-type-desc">Runs every X days</div>
+                    <div className="schedule-type-desc">Runs every X days at specified time(s)</div>
                   </div>
-                  {scheduleType === 'custom' && <div className="schedule-type-check">✓</div>}
+                  {scheduleType === 'custom_days' && <div className="schedule-type-check">✓</div>}
                 </div>
               </div>
             </div>
           )}
 
-          {step === 2 && (
+          {step === 3 && scheduleType && (
             <div>
-              <h4 style={{ marginBottom: '20px', fontSize: '16px', color: '#fff' }}>Configure schedule</h4>
+              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Configure schedule</h4>
               
               {scheduleType === 'weekly' && (
                 <div className="form-group">
@@ -1605,7 +3060,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                 </div>
               )}
 
-              {scheduleType === 'custom' && (
+              {scheduleType === 'custom_days' && (
                 <div className="form-group">
                   <label className="form-label">Interval (Days)</label>
                   <input
@@ -1616,10 +3071,14 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                     value={intervalDays}
                     onChange={(e) => setIntervalDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
                   />
+                  {intervalDays < 1 && (
+                    <div style={{ color: '#ff4444', fontSize: '12px', marginTop: '8px' }}>
+                      Interval must be at least 1 day
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* Time Selection - Common for all types */}
               <div className="multi-select-container">
                 <label className="multi-select-label">Times of Day</label>
                 <div className="chips-container">
@@ -1631,11 +3090,10 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                   ))}
                 </div>
                 <div className="add-input-group">
-                  <input
-                    type="time"
-                    className="add-input"
+                  <TimePickerInput
                     value={newTime}
-                    onChange={(e) => setNewTime(e.target.value)}
+                    onChange={setNewTime}
+                    placeholder="HH:MM"
                   />
                   <button className="add-btn" onClick={addTime}>Add Time</button>
                 </div>
@@ -1655,10 +3113,16 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
             </div>
           )}
 
-          {step === 3 && (
+          {step === 4 && (
             <div>
-              <h4 style={{ marginBottom: '20px', fontSize: '16px', color: '#fff' }}>Confirm Schedule</h4>
+              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Confirm Schedule</h4>
               <div className="confirmation-details">
+                {scheduleName && (
+                  <div className="confirmation-row">
+                    <span className="confirmation-label">Name:</span>
+                    <span className="confirmation-value">{scheduleName}</span>
+                  </div>
+                )}
                 <div className="confirmation-row">
                   <span className="confirmation-label">Type:</span>
                   <span className="confirmation-value">
@@ -1692,7 +3156,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                     </span>
                   </div>
                 )}
-                {scheduleType === 'custom' && (
+                {scheduleType === 'custom_days' && (
                   <div className="confirmation-row">
                     <span className="confirmation-label">Interval:</span>
                     <span className="confirmation-value">Every {intervalDays} days</span>
@@ -1712,16 +3176,16 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
           {step > 1 && (
             <button className="modal-btn modal-btn-back" onClick={handleBack}>Back</button>
           )}
-          {step < 3 && (
+          {step < 4 && (
             <button 
               className="modal-btn modal-btn-next" 
               onClick={handleNext}
-              disabled={step === 1 && !scheduleType || step === 2 && !isStep2Valid()}
+              disabled={!isStepValid()}
             >
               Next
             </button>
           )}
-          {step === 3 && (
+          {step === 4 && (
             <button className="modal-btn modal-btn-next" onClick={handleConfirm}>
               Create Schedule
             </button>
@@ -1731,6 +3195,312 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
     </div>
   );
 };
+
+// ============================================
+// SCHEDULE MANAGEMENT COMPONENT
+// ============================================
+
+const ScheduleManagement = ({ currentServer }) => {
+  const [schedules, setSchedules] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [selectedSchedule, setSelectedSchedule] = useState(null);
+  const [showToast, setShowToast] = useState(null);
+
+  const showToastMessage = (message, type = 'info') => {
+    setShowToast({ message, type });
+    setTimeout(() => setShowToast(null), 3000);
+  };
+
+  const fetchSchedules = async () => {
+    if (!currentServer) return;
+    
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reset/schedules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ guild_id: currentServer.id })
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        setSchedules(data.schedules);
+      }
+    } catch (error) {
+      console.error('Error fetching schedules:', error);
+      showToastMessage('Failed to load schedules', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSchedules();
+  }, [currentServer]);
+
+  const handleCancelSchedule = async (scheduleId) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reset/schedule/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ schedule_id: scheduleId, guild_id: currentServer.id })
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        showToastMessage(`Schedule #${scheduleId} cancelled successfully`, 'success');
+        fetchSchedules();
+      } else {
+        showToastMessage(data.message || 'Failed to cancel schedule', 'error');
+      }
+    } catch (error) {
+      console.error('Error cancelling schedule:', error);
+      showToastMessage('Failed to cancel schedule', 'error');
+    }
+    setCancelModalOpen(false);
+    setSelectedSchedule(null);
+  };
+
+  const handleEditSchedule = async (scheduleId, updateData) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reset/schedule/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(updateData)
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        showToastMessage(`Schedule #${scheduleId} updated successfully`, 'success');
+        fetchSchedules();
+      } else {
+        showToastMessage(data.message || 'Failed to update schedule', 'error');
+      }
+    } catch (error) {
+      console.error('Error updating schedule:', error);
+      showToastMessage('Failed to update schedule', 'error');
+    }
+    setEditModalOpen(false);
+    setSelectedSchedule(null);
+  };
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return 'N/A';
+    const date = new Date(dateStr);
+    return date.toLocaleString();
+  };
+
+  const ToastMessageComponent = () => {
+    if (!showToast) return null;
+    const colors = {
+      success: { bg: '#00b894', icon: '✅' },
+      error: { bg: '#ff7675', icon: '❌' },
+      info: { bg: '#0984e3', icon: 'ℹ️' }
+    };
+    const color = colors[showToast.type] || colors.info;
+    
+    return (
+      <div className="toast-message" style={{ backgroundColor: color.bg }}>
+        <span>{color.icon}</span>
+        <span>{showToast.message}</span>
+        <button onClick={() => setShowToast(null)} style={{
+          background: 'none',
+          border: 'none',
+          color: 'white',
+          cursor: 'pointer',
+          marginLeft: '10px',
+          fontSize: '16px'
+        }}>✕</button>
+      </div>
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="reset-section">
+        <div className="section-header">
+          <div className="section-icon">📋</div>
+          <div className="section-title">Manage Schedules</div>
+        </div>
+        <div style={{ padding: '40px' }}>
+          <LoadingSpinner text="Loading schedules..." />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="reset-section">
+        <div className="section-header">
+          <div className="section-icon">📋</div>
+          <div className="section-title">Manage Schedules</div>
+          <div className="section-subtitle">{schedules.length} schedules</div>
+        </div>
+        
+        <div className="schedules-container">
+          {schedules.length === 0 ? (
+            <div className="empty-schedules">
+              <p>No schedules found.</p>
+              <p style={{ fontSize: '12px', marginTop: '8px' }}>Go to the Server or User tab to create a schedule.</p>
+            </div>
+          ) : (
+            schedules.map(schedule => (
+              <div key={schedule.id} className="schedule-card">
+                <div className="schedule-card-header">
+                  <div>
+                    <span className="schedule-id">Schedule #{schedule.id}</span>
+                    {schedule.schedule_name && (
+                      <span style={{ marginLeft: '12px', fontSize: '14px', color: '#aa00ff', fontWeight: '500' }}>
+                        📝 {schedule.schedule_name}
+                      </span>
+                    )}
+                  </div>
+                  <span className="schedule-status" style={{ 
+                    backgroundColor: schedule.completed ? 'rgba(136, 136, 136, 0.2)' : (schedule.enabled === false ? 'rgba(255, 68, 68, 0.2)' : 'rgba(0, 184, 148, 0.2)'),
+                    color: schedule.completed ? '#888' : (schedule.enabled === false ? '#ff4444' : '#00b894')
+                  }}>
+                    {schedule.completed ? 'Completed' : (schedule.enabled === false ? 'Disabled' : 'Active')}
+                  </span>
+                </div>
+                <div className="schedule-card-content">
+                  <div className="schedule-detail">
+                    <span className="detail-label">Reset Types</span>
+                    <span className="detail-value">{schedule.reset_types?.join(', ') || 'N/A'}</span>
+                  </div>
+                  <div className="schedule-detail">
+                    <span className="detail-label">Schedule Type</span>
+                    <span className="detail-value">
+                      {schedule.schedule_type === 'recurring' ? 'Recurring' : 
+                       schedule.schedule_type === 'one_time' ? 'One Time' : 
+                       schedule.schedule_type === 'date_range' ? 'Date Range' : schedule.schedule_type || 'N/A'}
+                    </span>
+                  </div>
+                  {schedule.recurring_pattern && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Pattern</span>
+                      <span className="detail-value">
+                        {schedule.recurring_pattern === 'custom_days' ? 'custom_days' : schedule.recurring_pattern}
+                      </span>
+                    </div>
+                  )}
+                  {schedule.recurring_times && schedule.recurring_times.length > 0 && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Times</span>
+                      <span className="detail-value">{schedule.recurring_times.join(', ')}</span>
+                    </div>
+                  )}
+                  {schedule.recurring_weekdays && schedule.recurring_weekdays.length > 0 && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Weekdays</span>
+                      <span className="detail-value">{schedule.recurring_weekdays.map(w => weekdays.find(d => d.value === w)?.short).join(', ')}</span>
+                    </div>
+                  )}
+                  {schedule.recurring_days_of_month && schedule.recurring_days_of_month.length > 0 && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Month Days</span>
+                      <span className="detail-value">{schedule.recurring_days_of_month.join(', ')}</span>
+                    </div>
+                  )}
+                  {schedule.recurring_interval_days && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Interval</span>
+                      <span className="detail-value">Every {schedule.recurring_interval_days} days</span>
+                    </div>
+                  )}
+                  {schedule.next_execution_at && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Next Execution</span>
+                      <span className="detail-value">{formatDate(schedule.next_execution_at)}</span>
+                    </div>
+                  )}
+                  {schedule.created_at && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Created</span>
+                      <span className="detail-value">{formatDate(schedule.created_at)}</span>
+                    </div>
+                  )}
+                  {schedule.scope_type && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Scope</span>
+                      <span className="detail-value">{schedule.scope_type}</span>
+                    </div>
+                  )}
+                  {schedule.time_period_days && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Time Period</span>
+                      <span className="detail-value">Last {schedule.time_period_days} days</span>
+                    </div>
+                  )}
+                  {schedule.reason && (
+                    <div className="schedule-detail">
+                      <span className="detail-label">Reason</span>
+                      <span className="detail-value">{schedule.reason}</span>
+                    </div>
+                  )}
+                </div>
+                {!schedule.completed && (
+                  <div className="schedule-card-actions">
+                    <button 
+                      className="schedule-action-btn"
+                      onClick={() => {
+                        setSelectedSchedule(schedule);
+                        setEditModalOpen(true);
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button 
+                      className="schedule-action-btn danger"
+                      onClick={() => {
+                        setSelectedSchedule(schedule);
+                        setCancelModalOpen(true);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <CancelScheduleModal 
+        isOpen={cancelModalOpen}
+        onClose={() => {
+          setCancelModalOpen(false);
+          setSelectedSchedule(null);
+        }}
+        onConfirm={handleCancelSchedule}
+        scheduleId={selectedSchedule?.id}
+      />
+
+      <EditScheduleModal 
+        isOpen={editModalOpen}
+        onClose={() => {
+          setEditModalOpen(false);
+          setSelectedSchedule(null);
+        }}
+        onConfirm={handleEditSchedule}
+        schedule={selectedSchedule}
+        currentServer={currentServer}
+      />
+
+      <ToastMessageComponent />
+    </>
+  );
+};
+
+// ============================================
+// MAIN RESET DASHBOARD COMPONENT
+// ============================================
 
 const ResetDashboard = () => {
   const [selectedView, setSelectedView] = useState("server");
@@ -1746,19 +3516,16 @@ const ResetDashboard = () => {
   const [toast, setToast] = useState(null);
   const [resetResults, setResetResults] = useState(null);
   
-  // Scope selection
   const [scope, setScope] = useState("server");
   const [selectedStatTypes, setSelectedStatTypes] = useState([]);
-  
-  // Time period
-  const [useTimePeriod, setUseTimePeriod] = useState(false);
+  const [timeOption, setTimeOption] = useState(null);
   const [timePeriodDays, setTimePeriodDays] = useState(7);
-  
-  // Schedule
+  const [dateRangeFrom, setDateRangeFrom] = useState(null);
+  const [dateRangeTo, setDateRangeTo] = useState(null);
+  const [showDateRangeModal, setShowDateRangeModal] = useState(false);
   const [schedule, setSchedule] = useState(null);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   
-  // Channel/Category selection
   const [channelSearch, setChannelSearch] = useState("");
   const [categorySearch, setCategorySearch] = useState("");
   const [channels, setChannels] = useState([]);
@@ -1770,14 +3537,12 @@ const ResetDashboard = () => {
   const [showChannelDropdown, setShowChannelDropdown] = useState(false);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   
-  // User selection for user view
   const [userSearch, setUserSearch] = useState("");
   const [users, setUsers] = useState([]);
   const [filteredUsers, setFilteredUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   
-  // Data loading flags
   const [usersLoaded, setUsersLoaded] = useState(false);
   const [channelsLoaded, setChannelsLoaded] = useState(false);
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
@@ -1788,7 +3553,7 @@ const ResetDashboard = () => {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const ToastMessage = () => {
+  const ToastMessageComponent = () => {
     if (!toast) return null;
     const colors = {
       success: { bg: '#00b894', icon: '✅' },
@@ -2120,8 +3885,15 @@ const ResetDashboard = () => {
     showToast('Cleared all selections', 'info');
   };
 
+  const handleDateRangeConfirm = (fromDate, toDate) => {
+    setDateRangeFrom(fromDate);
+    setDateRangeTo(toDate);
+    setTimeOption('range');
+    showToast(`Date range set: ${fromDate || 'Start'} to ${toDate || 'End'}`, 'success');
+  };
+
   const handleAddSchedule = (scheduleDescription, scheduleData) => {
-    setSchedule({ description: scheduleDescription, data: scheduleData });
+    setSchedule({ description: scheduleDescription, data: scheduleData, name: scheduleData.name });
     showToast(`Schedule added: ${scheduleDescription}`, 'success');
   };
 
@@ -2130,9 +3902,19 @@ const ResetDashboard = () => {
     showToast('Schedule removed', 'info');
   };
 
+  const handleApplyDays = () => {
+    setTimeOption('days');
+    showToast(`Days period set to ${timePeriodDays} days`, 'success');
+  };
+
   const handleReset = async () => {
     if (selectedStatTypes.length === 0) {
       showToast("Please select at least one statistic type to reset", "error");
+      return;
+    }
+
+    if (!timeOption) {
+      showToast("Please select a time period option", "error");
       return;
     }
 
@@ -2170,7 +3952,6 @@ const ResetDashboard = () => {
     
     const resetTypes = selectedStatTypes;
     
-    // Map schedule data to API format (supports multiple values)
     let recurringPattern = null;
     let recurringWeekdays = null;
     let recurringMonthDays = null;
@@ -2188,23 +3969,37 @@ const ResetDashboard = () => {
       recurringPattern = 'monthly';
       recurringMonthDays = schedule.data.monthDays;
       recurringTimes = schedule.data.times;
-    } else if (schedule.data.pattern === 'custom') {
+    } else if (schedule.data.pattern === 'custom_days') {
       recurringPattern = 'custom_days';
       recurringIntervalDays = schedule.data.intervalDays;
       recurringTimes = schedule.data.times;
+    }
+    
+    let timePeriodDaysParam = null;
+    let deleteFromDateParam = null;
+    let deleteToDateParam = null;
+    
+    if (timeOption === 'days') {
+      timePeriodDaysParam = timePeriodDays;
+    } else if (timeOption === 'range') {
+      deleteFromDateParam = dateRangeFrom;
+      deleteToDateParam = dateRangeTo;
     }
     
     const body = {
       guild_id: currentServer.id,
       requested_by_id: currentUserId,
       reset_types: resetTypes,
+      schedule_name: schedule.name || null,
       schedule_type: "recurring",
       recurring_pattern: recurringPattern,
       recurring_weekdays: recurringWeekdays,
       recurring_days_of_month: recurringMonthDays,
       recurring_times: recurringTimes,
       recurring_interval_days: recurringIntervalDays,
-      time_period_days: useTimePeriod ? timePeriodDays : null,
+      time_period_days: timePeriodDaysParam,
+      delete_from_date: deleteFromDateParam,
+      delete_to_date: deleteToDateParam,
       scope_type: scopeValue,
       scope_details: scopeDetails,
       channel_id: channelId,
@@ -2222,16 +4017,17 @@ const ResetDashboard = () => {
       const result = await response.json();
       
       if (result.success) {
-        showToast(`✅ Schedule created! Schedule #${result.schedule_id}`, "success");
+        const scheduleNameText = schedule.name ? ` "${schedule.name}"` : '';
+        showToast(`Schedule${scheduleNameText} created! Schedule #${result.schedule_id}`, "success");
         setResetResults([{
           type: "schedule",
-          label: `Schedule Created (${resetTypes.length} types)`,
+          label: `Schedule Created${scheduleNameText} (${resetTypes.length} types)`,
           success: true,
           message: schedule.description,
           schedule_id: result.schedule_id
         }]);
       } else {
-        showToast(`❌ Failed to create schedule: ${result.message}`, "error");
+        showToast(`Failed to create schedule: ${result.message}`, "error");
         setResetResults([{
           type: "schedule",
           label: "Schedule Creation",
@@ -2292,8 +4088,11 @@ const ResetDashboard = () => {
           }
         }
         
-        if (useTimePeriod) {
+        if (timeOption === 'days') {
           body.time_period_days = timePeriodDays;
+        } else if (timeOption === 'range') {
+          if (dateRangeFrom) body.delete_from_date = dateRangeFrom;
+          if (dateRangeTo) body.delete_to_date = dateRangeTo;
         }
         
         const response = await fetch(endpoint, {
@@ -2341,7 +4140,32 @@ const ResetDashboard = () => {
     return "the selected scope";
   };
 
-  // Loading state
+  const getTimePeriodDescription = () => {
+    if (timeOption === 'days') {
+      return `Deleting stats from the last ${timePeriodDays} days`;
+    } else if (timeOption === 'range') {
+      const fromStr = dateRangeFrom ? new Date(dateRangeFrom).toLocaleDateString() : 'Start';
+      const toStr = dateRangeTo ? new Date(dateRangeTo).toLocaleDateString() : 'End';
+      return `Deleting stats from ${fromStr} to ${toStr}`;
+    } else if (timeOption === 'skip') {
+      return `Deleting ALL stats (no time limit)`;
+    }
+    return "No time period selected";
+  };
+
+  const availableStatTypes = getFilteredStatTypes(selectedView, scope);
+  const selectedCount = selectedStatTypes.length;
+  const hasSelection = selectedCount > 0;
+
+  const handleTimeOptionSelect = (option) => {
+    if (timeOption === option) {
+      setTimeOption(null);
+    } else {
+      setTimeOption(option);
+    }
+  };
+
+  // Loading states
   if (loadingServers || (isAuthenticated && !currentServer && !apiError && !initialLoadComplete)) {
     return (
       <>
@@ -2471,9 +4295,62 @@ const ResetDashboard = () => {
     );
   }
 
-  const availableStatTypes = getFilteredStatTypes(selectedView, scope);
-  const selectedCount = selectedStatTypes.length;
-  const hasSelection = selectedCount > 0;
+  // Render Schedule Management page
+  if (selectedView === "schedules") {
+    return (
+      <>
+        <NavBar />
+        <div className="dashboard-page">
+          <DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} />
+          <main className="dashboard-main">
+            <div className="dashboard-content">
+              <div className="view-selector">
+                <button 
+                  className={`view-button ${selectedView === "server" ? "active" : ""}`}
+                  onClick={() => {
+                    setSelectedView("server");
+                    setSelectedStatTypes([]);
+                    setScope("server");
+                    setSelectedUser(null);
+                    setUserSearch("");
+                    setTimeOption(null);
+                    setSchedule(null);
+                  }}
+                >
+                  Server
+                </button>
+                <button 
+                  className={`view-button ${selectedView === "user" ? "active" : ""}`}
+                  onClick={() => {
+                    setSelectedView("user");
+                    setSelectedStatTypes([]);
+                    setScope("server");
+                    setSelectedUser(null);
+                    setUserSearch("");
+                    setTimeOption(null);
+                    setSchedule(null);
+                  }}
+                >
+                  User
+                </button>
+                <button 
+                  className={`view-button ${selectedView === "schedules" ? "active" : ""}`}
+                  onClick={() => setSelectedView("schedules")}
+                >
+                  Schedules
+                </button>
+              </div>
+
+              <ScheduleManagement currentServer={currentServer} />
+            </div>
+            <Footer />
+          </main>
+        </div>
+        <ToastMessageComponent />
+        <style>{styles}</style>
+      </>
+    );
+  }
 
   return (
     <>
@@ -2483,7 +4360,6 @@ const ResetDashboard = () => {
         
         <main className="dashboard-main">
           <div className="dashboard-content">
-            {/* View Selector */}
             <div className="view-selector">
               <button 
                 className={`view-button ${selectedView === "server" ? "active" : ""}`}
@@ -2493,7 +4369,7 @@ const ResetDashboard = () => {
                   setScope("server");
                   setSelectedUser(null);
                   setUserSearch("");
-                  setUseTimePeriod(false);
+                  setTimeOption(null);
                   setSchedule(null);
                 }}
               >
@@ -2507,15 +4383,20 @@ const ResetDashboard = () => {
                   setScope("server");
                   setSelectedUser(null);
                   setUserSearch("");
-                  setUseTimePeriod(false);
+                  setTimeOption(null);
                   setSchedule(null);
                 }}
               >
                 User
               </button>
+              <button 
+                className={`view-button ${selectedView === "schedules" ? "active" : ""}`}
+                onClick={() => setSelectedView("schedules")}
+              >
+                Schedules
+              </button>
             </div>
 
-            {/* Scope Selector Section */}
             <div className="scope-selector-section">
               <h2 className="section-title">Select Scope</h2>
               <div className="scope-controls">
@@ -2527,7 +4408,7 @@ const ResetDashboard = () => {
                       onChange={(e) => {
                         setScope(e.target.value);
                         setSelectedStatTypes([]);
-                        setUseTimePeriod(false);
+                        setTimeOption(null);
                         setSchedule(null);
                       }}
                     >
@@ -2623,7 +4504,6 @@ const ResetDashboard = () => {
                 )}
               </div>
               
-              {/* User selector for user view */}
               {selectedView === "user" && (
                 <div className="entity-selector-wrapper" style={{ marginTop: "20px", width: "100%" }}>
                   <div className="entity-selector-input-wrapper">
@@ -2671,7 +4551,6 @@ const ResetDashboard = () => {
               )}
             </div>
 
-            {/* SECTION 1: STAT TYPES */}
             <div className="reset-section">
               <div className="section-header">
                 <div className="section-icon">📊</div>
@@ -2707,9 +4586,8 @@ const ResetDashboard = () => {
                       />
                       <div className="stat-info">
                         <div className="stat-header">
-                          <span className="stat-emoji">{stat.emoji}</span>
                           <span className="stat-label">{stat.label}</span>
-                          {stat.value === "all" && <span className="stat-badge">⚠️ DANGER</span>}
+                          {stat.value === "all" && <span className="stat-badge">DANGER</span>}
                         </div>
                         <div className="stat-description">{stat.description}</div>
                       </div>
@@ -2719,44 +4597,59 @@ const ResetDashboard = () => {
               </div>
             </div>
 
-            {/* SECTION 2: TIME PERIOD */}
             <div className="reset-section">
               <div className="section-header">
                 <div className="section-icon">⏰</div>
                 <div className="section-title">Time Period</div>
-                <div className="section-subtitle">Choose how far back to delete</div>
+                <div className="section-subtitle">Choose which data to delete</div>
               </div>
               
-              <div className="time-period-control">
-                <label className="time-period-checkbox">
-                  <input 
-                    type="checkbox" 
-                    checked={useTimePeriod}
-                    onChange={(e) => setUseTimePeriod(e.target.checked)}
-                  />
-                  <span>🗓️ Only delete stats from the last</span>
-                </label>
-                {useTimePeriod && (
-                  <div className="days-input-group">
-                    <input 
-                      type="number"
-                      className="days-input"
-                      min="1"
-                      max="365"
-                      value={timePeriodDays}
-                      onChange={(e) => setTimePeriodDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
-                    />
-                    <span>days</span>
-                    <span style={{ color: "#888", fontSize: "12px" }}>(1-365 days)</span>
-                  </div>
-                )}
-                {!useTimePeriod && (
-                  <span style={{ color: "#888", fontSize: "14px" }}>Deleting ALL stats (no time limit)</span>
-                )}
+              <div className="time-period-options">
+                <button 
+                  className={`time-option-btn ${timeOption === 'skip' ? 'active' : ''}`}
+                  onClick={() => handleTimeOptionSelect('skip')}
+                >
+                  <span>Skip</span>
+                  <span className="time-option-description">Delete ALL stats with no time limit</span>
+                </button>
+                <button 
+                  className={`time-option-btn ${timeOption === 'days' ? 'active' : ''}`}
+                  onClick={() => handleTimeOptionSelect('days')}
+                >
+                  <span>Days Back</span>
+                  <span className="time-option-description">Delete stats from the last X days</span>
+                </button>
+                <button 
+                  className={`time-option-btn ${timeOption === 'range' ? 'active' : ''}`}
+                  onClick={() => setShowDateRangeModal(true)}
+                >
+                  <span>Date Range</span>
+                  <span className="time-option-description">Delete stats within a specific date range</span>
+                </button>
               </div>
+
+              {timeOption === 'days' && (
+                <div className="days-input-group">
+                  <input 
+                    type="number"
+                    className="days-input"
+                    min="1"
+                    max="365"
+                    value={timePeriodDays}
+                    onChange={(e) => setTimePeriodDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
+                  />
+                  <span>days</span>
+                  <button className="apply-days-btn" onClick={handleApplyDays}>Apply</button>
+                </div>
+              )}
+
+              {timeOption && (
+                <div style={{ marginTop: '16px', padding: '12px', backgroundColor: '#1a1a1a', borderRadius: '8px', fontSize: '13px', color: '#aa00ff' }}>
+                  {getTimePeriodDescription()}
+                </div>
+              )}
             </div>
 
-            {/* SECTION 3: SCHEDULE */}
             <div className="reset-section">
               <div className="section-header">
                 <div className="section-icon">⏱️</div>
@@ -2775,7 +4668,9 @@ const ResetDashboard = () => {
                 ) : (
                   <div className="schedule-preview">
                     <div className="schedule-preview-header">
-                      <span className="schedule-preview-title">📅 Active Schedule</span>
+                      <span className="schedule-preview-title">
+                        {schedule.name ? `📝 ${schedule.name}` : 'Active Schedule'}
+                      </span>
                       <button className="remove-schedule" onClick={handleRemoveSchedule}>✕</button>
                     </div>
                     <div className="schedule-preview-content">
@@ -2786,14 +4681,19 @@ const ResetDashboard = () => {
                   </div>
                 )}
               </div>
+              <div style={{ marginTop: '12px', fontSize: '12px', color: '#666' }}>
+                <p>• Daily: Runs every day at selected time(s)</p>
+                <p>• Weekly: Runs on selected day(s) at selected time(s)</p>
+                <p>• Monthly: Runs on selected day(s) of month at selected time(s)</p>
+                <p>• Custom: Runs every X days at selected time(s)</p>
+              </div>
             </div>
 
-            {/* Action Button */}
             <div className="reset-button-container">
               <button 
                 className="reset-button"
                 onClick={handleReset}
-                disabled={actionLoading || !hasSelection}
+                disabled={actionLoading || !hasSelection || !timeOption}
               >
                 {actionLoading ? (
                   <>
@@ -2802,14 +4702,12 @@ const ResetDashboard = () => {
                   </>
                 ) : (
                   <>
-                    {schedule ? "📅" : "⚠️"}
-                    {schedule ? " CREATE SCHEDULE" : " RESET NOW"}
+                    {schedule ? "CREATE SCHEDULE" : "RESET NOW"}
                   </>
                 )}
               </button>
             </div>
 
-            {/* Results Section */}
             {resetResults && resetResults.length > 0 && (
               <div className="results-section">
                 <div className="results-header">
@@ -2834,9 +4732,9 @@ const ResetDashboard = () => {
                         <td style={{ fontWeight: 500 }}>{result.label}</td>
                         <td>
                           {result.success ? (
-                            <span className="success-badge">✓ Success</span>
+                            <span className="success-badge">Success</span>
                           ) : (
-                            <span className="error-badge">✗ Failed</span>
+                            <span className="error-badge">Failed</span>
                           )}
                         </td>
                         <td style={{ fontSize: "12px", color: "#888" }}>{result.message}</td>
@@ -2851,7 +4749,12 @@ const ResetDashboard = () => {
         </main>
       </div>
 
-      {/* Schedule Modal */}
+      <DateRangeModal 
+        isOpen={showDateRangeModal}
+        onClose={() => setShowDateRangeModal(false)}
+        onConfirm={handleDateRangeConfirm}
+      />
+
       <ScheduleModal 
         isOpen={showScheduleModal}
         onClose={() => setShowScheduleModal(false)}
@@ -2859,7 +4762,7 @@ const ResetDashboard = () => {
         existingSchedule={schedule}
       />
 
-      <ToastMessage />
+      <ToastMessageComponent />
       <style>{styles}</style>
     </>
   );
