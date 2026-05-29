@@ -11,10 +11,38 @@ const NAVBAR_HEIGHT = "80px";
 // PRIVILEGED USERS - bypass all access levels
 const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
 
-// ============================================
-// ADVANCED CACHING SYSTEM
-// ============================================
+// Simple cache for user profiles with size limit (no avatars)
+class ProfileCache {
+  constructor(maxSize = 500) {
+    this.cache = new Map();
+    this.maxSize = maxSize;
+  }
 
+  get(key) {
+    const value = this.cache.get(key);
+    if (value && value.name && !value.name.startsWith('User ')) {
+      this.cache.delete(key);
+      this.cache.set(key, value);
+      return value;
+    }
+    if (value) {
+      this.cache.delete(key);
+    }
+    return null;
+  }
+
+  set(key, value) {
+    if (value.name && !value.name.startsWith('User ')) {
+      if (this.cache.size >= this.maxSize) {
+        const firstKey = this.cache.keys().next().value;
+        this.cache.delete(firstKey);
+      }
+      this.cache.set(key, value);
+    }
+  }
+}
+
+// Enhanced cache for server data with size limits and TTL
 class ServerDataCache {
   constructor(maxSize = 30, ttl = 5 * 60 * 1000) {
     this.cache = new Map();
@@ -57,6 +85,7 @@ class ServerDataCache {
   }
 }
 
+const profileCache = new ProfileCache(500);
 const serverDataCache = new ServerDataCache(30, 5 * 60 * 1000);
 
 const getCacheKey = (type, id, params) => {
@@ -74,6 +103,80 @@ const getCacheKey = (type, id, params) => {
   
   const sortedParams = sortObject(params || {});
   return `${type}:${id}:${JSON.stringify(sortedParams)}`;
+};
+
+// Batch fetch user basic info (usernames only, no avatars)
+const batchFetchUserBasicInfo = async (userIds, guildId, isPublicMode) => {
+  if (!userIds || userIds.length === 0) return {};
+  
+  const uniqueIds = [...new Set(userIds.map(id => String(id)))];
+  const results = {};
+  const uncachedIds = [];
+  
+  for (const id of uniqueIds) {
+    const cached = profileCache.get(id);
+    if (cached && cached.name && !cached.name.startsWith('User ')) {
+      results[id] = cached;
+    } else {
+      uncachedIds.push(id);
+    }
+  }
+  
+  if (uncachedIds.length === 0) return results;
+  
+  try {
+    const fetchPromises = uncachedIds.map(async (userId) => {
+      const endpoint = isPublicMode
+        ? `${API_BASE_URL}/api/public/username/any-table/${guildId}/${userId}`
+        : `${API_BASE_URL}/api/username/any-table/${guildId}/${userId}`;
+      
+      const response = await fetch(endpoint, {
+        credentials: isPublicMode ? 'omit' : 'include',
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.username && !data.username.startsWith('User ')) {
+          return { userId, username: data.username };
+        }
+      }
+      return { userId, username: null };
+    });
+    
+    const fetchedResults = await Promise.all(fetchPromises);
+    
+    for (const { userId, username } of fetchedResults) {
+      if (username) {
+        const userData = {
+          id: userId,
+          username: username,
+          global_name: username,
+          name: username,
+          avatar: null
+        };
+        results[userId] = userData;
+        profileCache.set(userId, userData);
+      }
+    }
+  } catch (error) {
+    console.error('Error batch fetching usernames:', error);
+  }
+  
+  for (const id of uncachedIds) {
+    if (!results[id]) {
+      const fallback = {
+        id: id,
+        username: `User ${id.slice(-4)}`,
+        global_name: `User ${id.slice(-4)}`,
+        name: `User ${id.slice(-4)}`,
+        avatar: null
+      };
+      results[id] = fallback;
+    }
+  }
+  
+  return results;
 };
 
 // Access Denied Component
@@ -124,6 +227,41 @@ const LoadingSpinner = ({ size = "medium", text = "Loading..." }) => {
       }} />
       {text && <span style={{ color: '#aa00ff', fontSize: '14px' }}>{text}</span>}
     </div>
+  );
+};
+
+// Info Icon Component - without question mark cursor (cursor: pointer)
+const InfoIcon = ({ descriptions }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
+  let timeout;
+
+  const handleMouseEnter = () => {
+    timeout = setTimeout(() => setShowTooltip(true), 300);
+  };
+
+  const handleMouseLeave = () => {
+    clearTimeout(timeout);
+    setShowTooltip(false);
+  };
+
+  return (
+    <span 
+      className="info-icon" 
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      style={{ position: 'relative', cursor: 'pointer', marginLeft: '8px' }}
+    >
+      ⓘ
+      {showTooltip && (
+        <div className="info-tooltip">
+          {descriptions.map((desc, idx) => (
+            <div key={idx} style={{ marginBottom: idx < descriptions.length - 1 ? '8px' : '0' }}>
+              <strong style={{ color: '#aa00ff' }}>{desc.level}:</strong> {desc.description}
+            </div>
+          ))}
+        </div>
+      )}
+    </span>
   );
 };
 
@@ -275,12 +413,6 @@ const CompactTimePicker = ({ value, onChange, onClose }) => {
   const [selectedHour, setSelectedHour] = useState(value ? parseInt(value.split(':')[0]) : 18);
   const [selectedMinute, setSelectedMinute] = useState(value ? parseInt(value.split(':')[1]) : 0);
 
-  const hours = timeFormat === '24h' 
-    ? Array.from({ length: 24 }, (_, i) => i)
-    : Array.from({ length: 12 }, (_, i) => i + 1);
-  
-  const minutes = [0, 15, 30, 45];
-
   const handleConfirm = () => {
     const hour24 = timeFormat === '12h' 
       ? (selectedHour === 12 ? 0 : selectedHour)
@@ -355,6 +487,12 @@ const styles = `
     font-family: 'Horndon', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
     font-weight: normal;
     letter-spacing: 0.5px;
+  }
+
+  .navbar {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 1000 !important;
   }
 
   html {
@@ -439,10 +577,10 @@ const styles = `
     border-bottom: 1px solid #1f1f1f;
   }
 
-  .schedule-id {
-    font-size: 14px;
-    color: #aa00ff;
+  .schedule-name {
+    font-size: 16px;
     font-weight: 600;
+    color: #ffffff;
   }
 
   .schedule-status {
@@ -547,12 +685,67 @@ const styles = `
     font-size: 22px;
     font-weight: 600;
     color: #ffffff;
+    display: flex;
+    align-items: center;
   }
 
   .section-subtitle {
     font-size: 14px;
     color: #888;
     margin-left: auto;
+  }
+
+  /* Info icon tooltip */
+  .info-icon {
+    color: #888;
+    font-size: 16px;
+    transition: all 0.2s ease;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background-color: #2a2a2a;
+    font-style: normal;
+    font-weight: bold;
+  }
+
+  .info-icon:hover {
+    color: #aa00ff;
+    background-color: #3a3a3a;
+  }
+
+  .info-tooltip {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: #1a1a1a;
+    border: 1px solid #aa00ff;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+    width: 320px;
+    z-index: 1000;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    pointer-events: none;
+    white-space: normal;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #b0b0b0;
+  }
+
+  .info-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border-width: 6px;
+    border-style: solid;
+    border-color: #aa00ff transparent transparent transparent;
   }
 
   /* Stat types grid */
@@ -1646,6 +1839,54 @@ const styles = `
     color: #ff4444;
   }
 
+  /* Delete confirmation modal */
+  .delete-confirm-modal {
+    background: linear-gradient(135deg, #1a1a1a 0%, #0f0f0f 100%);
+    border-radius: 24px;
+    width: 100%;
+    max-width: 450px;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+    border: 1px solid #ff4444;
+    animation: slideUp 0.3s ease;
+    overflow: hidden;
+  }
+
+  .delete-confirm-header {
+    padding: 24px 24px 16px 24px;
+    border-bottom: 1px solid #ff4444;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .delete-confirm-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #ff4444;
+  }
+
+  .delete-confirm-content {
+    padding: 24px;
+  }
+
+  .delete-confirm-footer {
+    padding: 16px 24px 24px 24px;
+    border-top: 1px solid #2a2a2a;
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+  }
+
+  .modal-btn-delete {
+    background: linear-gradient(135deg, #ff4444 0%, #cc0000 100%);
+    color: white;
+  }
+
+  .modal-btn-delete:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(255, 68, 68, 0.3);
+  }
+
   /* Step indicator */
   .step-indicator {
     display: flex;
@@ -1836,13 +2077,6 @@ const styles = `
     margin-right: 8px;
   }
 
-  .user-avatar-small {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    object-fit: cover;
-  }
-
   .loading-spinner {
     width: 18px;
     height: 18px;
@@ -2013,47 +2247,27 @@ const getFilteredStatTypes = (commandType, scope) => {
 };
 
 // ============================================
-// CANCEL SCHEDULE MODAL
+// DELETE SCHEDULE CONFIRM MODAL (No CONFIRM typing)
 // ============================================
 
-const CancelScheduleModal = ({ isOpen, onClose, onConfirm, scheduleId }) => {
-  const [confirmText, setConfirmText] = useState("");
-
-  const handleConfirm = () => {
-    if (confirmText === "CONFIRM") {
-      onConfirm(scheduleId);
-      setConfirmText("");
-      onClose();
-    }
-  };
-
+const DeleteScheduleConfirmModal = ({ isOpen, onClose, onConfirm, scheduleId }) => {
   if (!isOpen) return null;
 
   return (
     <div className="schedule-modal-overlay" onClick={onClose}>
-      <div className="schedule-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="schedule-modal-header">
-          <h3 className="schedule-modal-title">Cancel Schedule</h3>
+      <div className="delete-confirm-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="delete-confirm-header">
+          <h3 className="delete-confirm-title">Delete Schedule</h3>
           <button className="schedule-modal-close" onClick={onClose}>✕</button>
         </div>
-        <div className="schedule-modal-content">
+        <div className="delete-confirm-content">
           <p style={{ marginBottom: '16px', color: '#fff' }}>
-            Are you sure you want to cancel schedule #{scheduleId}? This action cannot be undone.
+            Are you sure you want to delete schedule #{scheduleId}? This action cannot be undone.
           </p>
-          <div className="form-group">
-            <label className="form-label">Type CONFIRM to proceed</label>
-            <input
-              type="text"
-              className="form-input"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              placeholder="CONFIRM"
-            />
-          </div>
         </div>
-        <div className="modal-footer">
+        <div className="delete-confirm-footer">
           <button className="modal-btn modal-btn-cancel" onClick={onClose}>Cancel</button>
-          <button className="modal-btn modal-btn-next" onClick={handleConfirm}>Confirm Cancel</button>
+          <button className="modal-btn modal-btn-delete" onClick={() => onConfirm(scheduleId)}>Delete</button>
         </div>
       </div>
     </div>
@@ -2067,8 +2281,8 @@ const CancelScheduleModal = ({ isOpen, onClose, onConfirm, scheduleId }) => {
 const EditScheduleModal = ({ isOpen, onClose, onConfirm, schedule, currentServer }) => {
   const [step, setStep] = useState(1);
   const [scheduleName, setScheduleName] = useState("");
-  const [enabled, setEnabled] = useState(true);
   const [reason, setReason] = useState("");
+  const [enabled, setEnabled] = useState(true);
   const [scheduleType, setScheduleType] = useState(null);
   const [selectedWeekdays, setSelectedWeekdays] = useState([]);
   const [selectedMonthDays, setSelectedMonthDays] = useState([]);
@@ -2088,9 +2302,7 @@ const EditScheduleModal = ({ isOpen, onClose, onConfirm, schedule, currentServer
       setSelectedStatTypes(schedule.reset_types || []);
       
       if (schedule.recurring_pattern) {
-        // Ensure pattern is in the correct format for the frontend
         let pattern = schedule.recurring_pattern;
-        // Map custom_days to custom for display (since the UI uses "custom")
         if (pattern === "custom_days") {
           pattern = "custom";
         }
@@ -2231,7 +2443,6 @@ const EditScheduleModal = ({ isOpen, onClose, onConfirm, schedule, currentServer
     };
     
     if (scheduleType) {
-      // Convert "custom" back to "custom_days" for the API
       let patternForApi = scheduleType;
       if (scheduleType === "custom") {
         patternForApi = "custom_days";
@@ -2301,6 +2512,17 @@ const EditScheduleModal = ({ isOpen, onClose, onConfirm, schedule, currentServer
               </div>
               
               <div className="form-group">
+                <label className="form-label">Reason (Optional)</label>
+                <textarea
+                  className="form-input"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="Add a reason for this schedule..."
+                  rows="3"
+                />
+              </div>
+              
+              <div className="form-group">
                 <label className="form-label">Status</label>
                 <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
@@ -2322,17 +2544,6 @@ const EditScheduleModal = ({ isOpen, onClose, onConfirm, schedule, currentServer
                     <span style={{ color: '#ff4444' }}>Disabled</span>
                   </label>
                 </div>
-              </div>
-              
-              <div className="form-group">
-                <label className="form-label">Reason (Optional)</label>
-                <textarea
-                  className="form-input"
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                  placeholder="Add a reason for this schedule..."
-                  rows="3"
-                />
               </div>
             </div>
           )}
@@ -2419,15 +2630,15 @@ const EditScheduleModal = ({ isOpen, onClose, onConfirm, schedule, currentServer
                 </div>
 
                 <div 
-                  className={`schedule-type-option ${scheduleType === 'custom_days' ? 'selected' : ''}`}
-                  onClick={() => setScheduleType('custom_days')}
+                  className={`schedule-type-option ${scheduleType === 'custom' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('custom')}
                 >
                   <div className="schedule-type-icon">⚙️</div>
                   <div className="schedule-type-info">
                     <div className="schedule-type-name">Custom Interval</div>
                     <div className="schedule-type-desc">Runs every X days at specified time(s)</div>
                   </div>
-                  {scheduleType === 'custom_days' && <div className="schedule-type-check">✓</div>}
+                  {scheduleType === 'custom' && <div className="schedule-type-check">✓</div>}
                 </div>
               </div>
               
@@ -2475,7 +2686,7 @@ const EditScheduleModal = ({ isOpen, onClose, onConfirm, schedule, currentServer
                 </div>
               )}
 
-              {scheduleType === 'custom_days' && (
+              {scheduleType === 'custom' && (
                 <div className="form-group" style={{ marginTop: '20px' }}>
                   <label className="form-label">Interval (Days)</label>
                   <input
@@ -2489,7 +2700,7 @@ const EditScheduleModal = ({ isOpen, onClose, onConfirm, schedule, currentServer
                 </div>
               )}
 
-              {(scheduleType === 'daily' || scheduleType === 'weekly' || scheduleType === 'monthly' || scheduleType === 'custom_days') && (
+              {(scheduleType === 'daily' || scheduleType === 'weekly' || scheduleType === 'monthly' || scheduleType === 'custom') && (
                 <div className="multi-select-container" style={{ marginTop: '20px' }}>
                   <label className="multi-select-label">Times of Day</label>
                   <div className="chips-container">
@@ -2757,12 +2968,13 @@ const TimePickerInput = ({ value, onChange, placeholder }) => {
 };
 
 // ============================================
-// ENHANCED SCHEDULE MODAL (CREATE)
+// ENHANCED SCHEDULE MODAL (CREATE) - No description, has reason
 // ============================================
 
 const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
   const [step, setStep] = useState(1);
   const [scheduleName, setScheduleName] = useState("");
+  const [reason, setReason] = useState("");
   const [scheduleType, setScheduleType] = useState(null);
   const [selectedWeekdays, setSelectedWeekdays] = useState([]);
   const [selectedMonthDays, setSelectedMonthDays] = useState([]);
@@ -2774,6 +2986,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
   const resetState = () => {
     setStep(1);
     setScheduleName("");
+    setReason("");
     setScheduleType(null);
     setSelectedWeekdays([]);
     setSelectedMonthDays([]);
@@ -2872,26 +3085,25 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
   };
 
   const handleConfirm = () => {
-    let scheduleDescription = "";
-    let scheduleData = { name: scheduleName };
+    let scheduleDescriptionStr = "";
+    let scheduleData = { name: scheduleName, reason: reason };
 
     if (scheduleType === "weekly") {
       const weekdayNames = selectedWeekdays.map(w => weekdays.find(d => d.value === w)?.label);
-      scheduleDescription = `Every ${weekdayNames.join(", ")} at ${selectedTimes.join(", ")}`;
-      scheduleData = { name: scheduleName, pattern: "weekly", weekdays: selectedWeekdays, times: selectedTimes };
+      scheduleDescriptionStr = `Every ${weekdayNames.join(", ")} at ${selectedTimes.join(", ")}`;
+      scheduleData = { name: scheduleName, reason: reason, pattern: "weekly", weekdays: selectedWeekdays, times: selectedTimes };
     } else if (scheduleType === "daily") {
-      scheduleDescription = `Every day at ${selectedTimes.join(", ")}`;
-      scheduleData = { name: scheduleName, pattern: "daily", times: selectedTimes };
+      scheduleDescriptionStr = `Every day at ${selectedTimes.join(", ")}`;
+      scheduleData = { name: scheduleName, reason: reason, pattern: "daily", times: selectedTimes };
     } else if (scheduleType === "monthly") {
-      scheduleDescription = `Every ${selectedMonthDays.join(", ")} of the month at ${selectedTimes.join(", ")}`;
-      scheduleData = { name: scheduleName, pattern: "monthly", monthDays: selectedMonthDays, times: selectedTimes };
+      scheduleDescriptionStr = `Every ${selectedMonthDays.join(", ")} of the month at ${selectedTimes.join(", ")}`;
+      scheduleData = { name: scheduleName, reason: reason, pattern: "monthly", monthDays: selectedMonthDays, times: selectedTimes };
     } else if (scheduleType === "custom") {
-      scheduleDescription = `Every ${intervalDays} days at ${selectedTimes.join(", ")}`;
-      // When creating, store as "custom" for UI but API expects "custom_days"
-      scheduleData = { name: scheduleName, pattern: "custom_days", intervalDays: intervalDays, times: selectedTimes };
+      scheduleDescriptionStr = `Every ${intervalDays} days at ${selectedTimes.join(", ")}`;
+      scheduleData = { name: scheduleName, reason: reason, pattern: "custom_days", intervalDays: intervalDays, times: selectedTimes };
     }
 
-    onConfirm(scheduleDescription, scheduleData);
+    onConfirm(scheduleDescriptionStr, scheduleData);
     resetState();
     onClose();
   };
@@ -2929,7 +3141,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
         <div className="schedule-modal-content">
           {step === 1 && (
             <div>
-              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Name Your Schedule</h4>
+              <h4 style={{ marginBottom: '16px', fontSize: '16px', color: '#fff' }}>Schedule Details</h4>
               <div className="form-group">
                 <label className="form-label">Schedule Name (Optional)</label>
                 <input
@@ -2942,6 +3154,19 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                 />
                 <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
                   Give your schedule a descriptive name to easily identify it later.
+                </div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Reason (Optional)</label>
+                <textarea
+                  className="form-input"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="Add a reason for this schedule..."
+                  rows="3"
+                />
+                <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
+                  Describe why this schedule was created or what it's for.
                 </div>
               </div>
             </div>
@@ -2988,15 +3213,15 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                 </div>
 
                 <div 
-                  className={`schedule-type-option ${scheduleType === 'custom_days' ? 'selected' : ''}`}
-                  onClick={() => setScheduleType('custom_days')}
+                  className={`schedule-type-option ${scheduleType === 'custom' ? 'selected' : ''}`}
+                  onClick={() => setScheduleType('custom')}
                 >
                   <div className="schedule-type-icon">⚙️</div>
                   <div className="schedule-type-info">
                     <div className="schedule-type-name">Custom Interval</div>
                     <div className="schedule-type-desc">Runs every X days at specified time(s)</div>
                   </div>
-                  {scheduleType === 'custom_days' && <div className="schedule-type-check">✓</div>}
+                  {scheduleType === 'custom' && <div className="schedule-type-check">✓</div>}
                 </div>
               </div>
             </div>
@@ -3060,7 +3285,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                 </div>
               )}
 
-              {scheduleType === 'custom_days' && (
+              {scheduleType === 'custom' && (
                 <div className="form-group">
                   <label className="form-label">Interval (Days)</label>
                   <input
@@ -3123,6 +3348,12 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                     <span className="confirmation-value">{scheduleName}</span>
                   </div>
                 )}
+                {reason && (
+                  <div className="confirmation-row">
+                    <span className="confirmation-label">Reason:</span>
+                    <span className="confirmation-value">{reason}</span>
+                  </div>
+                )}
                 <div className="confirmation-row">
                   <span className="confirmation-label">Type:</span>
                   <span className="confirmation-value">
@@ -3156,7 +3387,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
                     </span>
                   </div>
                 )}
-                {scheduleType === 'custom_days' && (
+                {scheduleType === 'custom' && (
                   <div className="confirmation-row">
                     <span className="confirmation-label">Interval:</span>
                     <span className="confirmation-value">Every {intervalDays} days</span>
@@ -3203,7 +3434,7 @@ const ScheduleModal = ({ isOpen, onClose, onConfirm, existingSchedule }) => {
 const ScheduleManagement = ({ currentServer }) => {
   const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [selectedSchedule, setSelectedSchedule] = useState(null);
   const [showToast, setShowToast] = useState(null);
@@ -3241,7 +3472,7 @@ const ScheduleManagement = ({ currentServer }) => {
     fetchSchedules();
   }, [currentServer]);
 
-  const handleCancelSchedule = async (scheduleId) => {
+  const handleDeleteSchedule = async (scheduleId) => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/reset/schedule/cancel`, {
         method: 'POST',
@@ -3252,16 +3483,16 @@ const ScheduleManagement = ({ currentServer }) => {
       
       const data = await response.json();
       if (data.success) {
-        showToastMessage(`Schedule #${scheduleId} cancelled successfully`, 'success');
+        showToastMessage(`Schedule #${scheduleId} deleted successfully`, 'success');
         fetchSchedules();
       } else {
-        showToastMessage(data.message || 'Failed to cancel schedule', 'error');
+        showToastMessage(data.message || 'Failed to delete schedule', 'error');
       }
     } catch (error) {
-      console.error('Error cancelling schedule:', error);
-      showToastMessage('Failed to cancel schedule', 'error');
+      console.error('Error deleting schedule:', error);
+      showToastMessage('Failed to delete schedule', 'error');
     }
-    setCancelModalOpen(false);
+    setDeleteModalOpen(false);
     setSelectedSchedule(null);
   };
 
@@ -3354,12 +3585,7 @@ const ScheduleManagement = ({ currentServer }) => {
               <div key={schedule.id} className="schedule-card">
                 <div className="schedule-card-header">
                   <div>
-                    <span className="schedule-id">Schedule #{schedule.id}</span>
-                    {schedule.schedule_name && (
-                      <span style={{ marginLeft: '12px', fontSize: '14px', color: '#aa00ff', fontWeight: '500' }}>
-                        📝 {schedule.schedule_name}
-                      </span>
-                    )}
+                    <span className="schedule-name">{schedule.schedule_name || `Schedule #${schedule.id}`}</span>
                   </div>
                   <span className="schedule-status" style={{ 
                     backgroundColor: schedule.completed ? 'rgba(136, 136, 136, 0.2)' : (schedule.enabled === false ? 'rgba(255, 68, 68, 0.2)' : 'rgba(0, 184, 148, 0.2)'),
@@ -3369,6 +3595,14 @@ const ScheduleManagement = ({ currentServer }) => {
                   </span>
                 </div>
                 <div className="schedule-card-content">
+                  <div className="schedule-detail">
+                    <span className="detail-label">Schedule ID</span>
+                    <span className="detail-value">#{schedule.id}</span>
+                  </div>
+                  <div className="schedule-detail">
+                    <span className="detail-label">Scope</span>
+                    <span className="detail-value">{schedule.scope_type || 'N/A'}</span>
+                  </div>
                   <div className="schedule-detail">
                     <span className="detail-label">Reset Types</span>
                     <span className="detail-value">{schedule.reset_types?.join(', ') || 'N/A'}</span>
@@ -3425,12 +3659,6 @@ const ScheduleManagement = ({ currentServer }) => {
                       <span className="detail-value">{formatDate(schedule.created_at)}</span>
                     </div>
                   )}
-                  {schedule.scope_type && (
-                    <div className="schedule-detail">
-                      <span className="detail-label">Scope</span>
-                      <span className="detail-value">{schedule.scope_type}</span>
-                    </div>
-                  )}
                   {schedule.time_period_days && (
                     <div className="schedule-detail">
                       <span className="detail-label">Time Period</span>
@@ -3459,10 +3687,10 @@ const ScheduleManagement = ({ currentServer }) => {
                       className="schedule-action-btn danger"
                       onClick={() => {
                         setSelectedSchedule(schedule);
-                        setCancelModalOpen(true);
+                        setDeleteModalOpen(true);
                       }}
                     >
-                      Cancel
+                      Delete
                     </button>
                   </div>
                 )}
@@ -3472,13 +3700,13 @@ const ScheduleManagement = ({ currentServer }) => {
         </div>
       </div>
 
-      <CancelScheduleModal 
-        isOpen={cancelModalOpen}
+      <DeleteScheduleConfirmModal 
+        isOpen={deleteModalOpen}
         onClose={() => {
-          setCancelModalOpen(false);
+          setDeleteModalOpen(false);
           setSelectedSchedule(null);
         }}
-        onConfirm={handleCancelSchedule}
+        onConfirm={handleDeleteSchedule}
         scheduleId={selectedSchedule?.id}
       />
 
@@ -3518,7 +3746,7 @@ const ResetDashboard = () => {
   
   const [scope, setScope] = useState("server");
   const [selectedStatTypes, setSelectedStatTypes] = useState([]);
-  const [timeOption, setTimeOption] = useState(null);
+  const [timeOption, setTimeOption] = useState("all");
   const [timePeriodDays, setTimePeriodDays] = useState(7);
   const [dateRangeFrom, setDateRangeFrom] = useState(null);
   const [dateRangeTo, setDateRangeTo] = useState(null);
@@ -3547,6 +3775,8 @@ const ResetDashboard = () => {
   const [channelsLoaded, setChannelsLoaded] = useState(false);
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+  
+  const [isPublicMode, setIsPublicMode] = useState(false);
 
   const showToast = (message, type = 'info') => {
     setToast({ message, type });
@@ -3660,16 +3890,40 @@ const ResetDashboard = () => {
     }
   }, [categorySearch, categories]);
 
+  // Load users with names (no avatars) using batch fetching
+  useEffect(() => {
+    if (showUserDropdown && filteredUsers.length > 0 && usersLoaded) {
+      const usersWithoutNames = filteredUsers.filter(u => !u.name);
+      if (usersWithoutNames.length > 0 && currentServer) {
+        const userIds = usersWithoutNames.map(u => u.id);
+        batchFetchUserBasicInfo(userIds, currentServer.id, isPublicMode).then(results => {
+          setUsers(prev => prev.map(u => {
+            if (results[u.id]) {
+              return { ...u, name: results[u.id].name, username: results[u.id].username };
+            }
+            return u;
+          }));
+          setFilteredUsers(prev => prev.map(u => {
+            if (results[u.id]) {
+              return { ...u, name: results[u.id].name, username: results[u.id].username };
+            }
+            return u;
+          }));
+        });
+      }
+    }
+  }, [showUserDropdown, filteredUsers, usersLoaded, currentServer, isPublicMode]);
+
   useEffect(() => {
     if (userSearch.trim() === "") {
       setFilteredUsers(users);
     } else {
       const searchLower = userSearch.toLowerCase();
       setFilteredUsers(users.filter(user => 
-        (user.display_name?.toLowerCase().includes(searchLower) ||
-         user.username?.toLowerCase().includes(searchLower) ||
-         user.global_name?.toLowerCase().includes(searchLower) ||
-         user.id?.includes(searchLower))
+        (user.name?.toLowerCase().includes(searchLower)) ||
+        (user.username?.toLowerCase().includes(searchLower)) ||
+        (user.global_name?.toLowerCase().includes(searchLower)) ||
+        user.id?.includes(searchLower)
       ));
     }
   }, [userSearch, users]);
@@ -3691,6 +3945,7 @@ const ResetDashboard = () => {
       if (authData.authenticated && authData.user) {
         setIsAuthenticated(true);
         setCurrentUserId(authData.user.id);
+        setIsPublicMode(false);
         
         if (isPrivilegedUser(authData.user.id)) {
           setHasAccess(true);
@@ -3755,7 +4010,12 @@ const ResetDashboard = () => {
           setInitialLoadComplete(true);
         }
       } else {
+        setIsAuthenticated(false);
+        setIsPublicMode(true);
+        setHasAccess(true);
+        setCurrentServer({ id: '1424021358680998022', name: 'StatsHQ' });
         setInitialLoadComplete(true);
+        setLoadingServers(false);
       }
     } catch (error) {
       console.error('Error loading initial data:', error);
@@ -3782,7 +4042,8 @@ const ResetDashboard = () => {
 
   const fetchAllUsers = async () => {
     try {
-      const cacheKey = getCacheKey('reset-users', currentServer.id, {});
+      const isPublic = isPublicMode;
+      const cacheKey = getCacheKey('reset-users', currentServer.id, { public: isPublic });
       const cached = serverDataCache.get(cacheKey);
       
       if (cached) {
@@ -3792,14 +4053,24 @@ const ResetDashboard = () => {
         return;
       }
       
-      const response = await fetch(`${API_BASE_URL}/api/server/real-users?guild_id=${currentServer.id}&limit=500`, {
-        credentials: 'include'
+      const endpoint = isPublic 
+        ? `${API_BASE_URL}/api/public/messages/users?guild_id=${currentServer.id}`
+        : `${API_BASE_URL}/api/messages/users?guild_id=${currentServer.id}`;
+      
+      const response = await fetch(endpoint, {
+        credentials: isPublic ? 'omit' : 'include'
       });
       if (response.ok) {
         const data = await response.json();
-        setUsers(data);
-        setFilteredUsers(data);
-        serverDataCache.set(cacheKey, data);
+        const userList = (data.user_ids || []).map(userId => ({
+          id: String(userId),
+          username: null,
+          global_name: null,
+          name: null
+        }));
+        setUsers(userList);
+        setFilteredUsers(userList);
+        serverDataCache.set(cacheKey, userList);
       }
     } catch (error) {
       console.error('Error fetching users:', error);
@@ -3810,7 +4081,8 @@ const ResetDashboard = () => {
 
   const fetchAllChannels = async () => {
     try {
-      const cacheKey = getCacheKey('reset-channels', currentServer.id, {});
+      const isPublic = isPublicMode;
+      const cacheKey = getCacheKey('reset-channels', currentServer.id, { public: isPublic });
       const cached = serverDataCache.get(cacheKey);
       
       if (cached) {
@@ -3820,14 +4092,20 @@ const ResetDashboard = () => {
         return;
       }
       
-      const response = await fetch(`${API_BASE_URL}/api/server/real-channels?guild_id=${currentServer.id}`, {
-        credentials: 'include'
+      const endpoint = `${API_BASE_URL}/api/server/real-channels?guild_id=${currentServer.id}`;
+      
+      const response = await fetch(endpoint, {
+        credentials: isPublic ? 'omit' : 'include'
       });
       if (response.ok) {
         const data = await response.json();
-        setChannels(data);
-        setFilteredChannels(data);
-        serverDataCache.set(cacheKey, data);
+        const channelList = (data || []).map(channel => ({
+          id: String(channel.id),
+          name: channel.name
+        }));
+        setChannels(channelList);
+        setFilteredChannels(channelList);
+        serverDataCache.set(cacheKey, channelList);
       }
     } catch (error) {
       console.error('Error fetching channels:', error);
@@ -3838,7 +4116,8 @@ const ResetDashboard = () => {
 
   const fetchAllCategories = async () => {
     try {
-      const cacheKey = getCacheKey('reset-categories', currentServer.id, {});
+      const isPublic = isPublicMode;
+      const cacheKey = getCacheKey('reset-categories', currentServer.id, { public: isPublic });
       const cached = serverDataCache.get(cacheKey);
       
       if (cached) {
@@ -3848,14 +4127,20 @@ const ResetDashboard = () => {
         return;
       }
       
-      const response = await fetch(`${API_BASE_URL}/api/server/real-categories?guild_id=${currentServer.id}`, {
-        credentials: 'include'
+      const endpoint = `${API_BASE_URL}/api/server/real-categories?guild_id=${currentServer.id}`;
+      
+      const response = await fetch(endpoint, {
+        credentials: isPublic ? 'omit' : 'include'
       });
       if (response.ok) {
         const data = await response.json();
-        setCategories(data);
-        setFilteredCategories(data);
-        serverDataCache.set(cacheKey, data);
+        const categoryList = (data || []).map(category => ({
+          id: String(category.id),
+          name: category.name
+        }));
+        setCategories(categoryList);
+        setFilteredCategories(categoryList);
+        serverDataCache.set(cacheKey, categoryList);
       }
     } catch (error) {
       console.error('Error fetching categories:', error);
@@ -3893,7 +4178,7 @@ const ResetDashboard = () => {
   };
 
   const handleAddSchedule = (scheduleDescription, scheduleData) => {
-    setSchedule({ description: scheduleDescription, data: scheduleData, name: scheduleData.name });
+    setSchedule({ description: scheduleDescription, data: scheduleData, name: scheduleData.name, reason: scheduleData.reason });
     showToast(`Schedule added: ${scheduleDescription}`, 'success');
   };
 
@@ -3990,7 +4275,8 @@ const ResetDashboard = () => {
       guild_id: currentServer.id,
       requested_by_id: currentUserId,
       reset_types: resetTypes,
-      schedule_name: schedule.name || null,
+      schedule_name: schedule.data.name || null,
+      reason: schedule.data.reason || null,
       schedule_type: "recurring",
       recurring_pattern: recurringPattern,
       recurring_weekdays: recurringWeekdays,
@@ -4017,7 +4303,7 @@ const ResetDashboard = () => {
       const result = await response.json();
       
       if (result.success) {
-        const scheduleNameText = schedule.name ? ` "${schedule.name}"` : '';
+        const scheduleNameText = schedule.data.name ? ` "${schedule.data.name}"` : '';
         showToast(`Schedule${scheduleNameText} created! Schedule #${result.schedule_id}`, "success");
         setResetResults([{
           type: "schedule",
@@ -4147,7 +4433,7 @@ const ResetDashboard = () => {
       const fromStr = dateRangeFrom ? new Date(dateRangeFrom).toLocaleDateString() : 'Start';
       const toStr = dateRangeTo ? new Date(dateRangeTo).toLocaleDateString() : 'End';
       return `Deleting stats from ${fromStr} to ${toStr}`;
-    } else if (timeOption === 'skip') {
+    } else if (timeOption === 'all') {
       return `Deleting ALL stats (no time limit)`;
     }
     return "No time period selected";
@@ -4164,6 +4450,14 @@ const ResetDashboard = () => {
       setTimeOption(option);
     }
   };
+
+  // Schedule type info for the info icon
+  const scheduleTypeInfo = [
+    { level: "Daily", description: "Runs every day at selected time(s)" },
+    { level: "Weekly", description: "Runs on selected day(s) at selected time(s)" },
+    { level: "Monthly", description: "Runs on selected day(s) of month at selected time(s)" },
+    { level: "Custom", description: "Runs every X days at selected time(s)" }
+  ];
 
   // Loading states
   if (loadingServers || (isAuthenticated && !currentServer && !apiError && !initialLoadComplete)) {
@@ -4206,52 +4500,429 @@ const ResetDashboard = () => {
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated && currentServer) {
+    // Public mode
     return (
       <>
         <NavBar />
         <div className="dashboard-page">
-          <DashboardSidebar topOffset={NAVBAR_HEIGHT} />
+          <DashboardSidebar topOffset={NAVBAR_HEIGHT} isPublicMode={true} />
           <main className="dashboard-main">
             <div className="dashboard-content">
-              <div className="no-server">
-                <h2>Please Log In</h2>
-                <p>You need to be logged in to reset statistics.</p>
-                <a href={`${API_BASE_URL}/api/auth/discord`} className="login-button">Login with Discord</a>
+              <div className="public-banner" style={{ marginBottom: '20px', padding: '12px', background: 'linear-gradient(135deg, #1a1a1a 0%, #0a0a0a 100%)', border: '1px solid #aa00ff', borderRadius: '12px', textAlign: 'center' }}>
+                <p>Viewing statistics from the <strong>StatsHQ</strong> support server - <a href={`${API_BASE_URL}/api/auth/discord`} style={{ color: '#aa00ff' }}>Login</a> to reset your own server stats</p>
               </div>
-            </div>
-            <Footer />
-          </main>
-        </div>
-        <style>{styles}</style>
-      </>
-    );
-  }
-
-  if (!currentServer) {
-    return (
-      <>
-        <NavBar />
-        <div className="dashboard-page">
-          <DashboardSidebar topOffset={NAVBAR_HEIGHT} />
-          <main className="dashboard-main">
-            <div className="dashboard-content">
-              <div className="no-server">
-                <h2>No Server Available</h2>
-                <p>Add the bot to a Discord server to reset statistics.</p>
-                <a 
-                  href="https://discord.com/oauth2/authorize?client_id=1424327933417492480&permissions=352807976696992&integration_type=0&scope=bot+applications.commands" 
-                  className="invite-button" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
+              
+              <div className="view-selector">
+                <button 
+                  className={`view-button ${selectedView === "server" ? "active" : ""}`}
+                  onClick={() => {
+                    setSelectedView("server");
+                    setSelectedStatTypes([]);
+                    setScope("server");
+                    setSelectedUser(null);
+                    setUserSearch("");
+                    setTimeOption("all");
+                    setSchedule(null);
+                  }}
                 >
-                  Invite Bot to Server
-                </a>
+                  Server
+                </button>
+                <button 
+                  className={`view-button ${selectedView === "user" ? "active" : ""}`}
+                  onClick={() => {
+                    setSelectedView("user");
+                    setSelectedStatTypes([]);
+                    setScope("server");
+                    setSelectedUser(null);
+                    setUserSearch("");
+                    setTimeOption("all");
+                    setSchedule(null);
+                  }}
+                >
+                  User
+                </button>
+                <button 
+                  className={`view-button ${selectedView === "schedules" ? "active" : ""}`}
+                  onClick={() => setSelectedView("schedules")}
+                >
+                  Schedules
+                </button>
               </div>
+
+              {selectedView === "schedules" ? (
+                <ScheduleManagement currentServer={currentServer} />
+              ) : (
+                <>
+                  <div className="scope-selector-section">
+                    <h2 className="section-title">Select Scope</h2>
+                    <div className="scope-controls">
+                      <div className="scope-selector">
+                        <div className="scope-dropdown-wrapper">
+                          <select 
+                            className="scope-dropdown"
+                            value={scope}
+                            onChange={(e) => {
+                              setScope(e.target.value);
+                              setSelectedStatTypes([]);
+                              setTimeOption("all");
+                              setSchedule(null);
+                            }}
+                          >
+                            <option value="server">Server</option>
+                            <option value="channel">Channel</option>
+                            <option value="category">Category</option>
+                          </select>
+                        </div>
+                      </div>
+                      
+                      {scope === "channel" && (
+                        <div className="entity-selector-wrapper">
+                          <div className="entity-selector-input-wrapper">
+                            <input
+                              type="text"
+                              placeholder="Search channels by name or ID..."
+                              value={channelSearch}
+                              onChange={(e) => setChannelSearch(e.target.value)}
+                              onFocus={() => setShowChannelDropdown(true)}
+                              onBlur={() => setTimeout(() => setShowChannelDropdown(false), 200)}
+                              className="entity-search-input"
+                            />
+                            {showChannelDropdown && filteredChannels.length > 0 && (
+                              <div className="entity-dropdown">
+                                {filteredChannels.slice(0, 20).map(channel => (
+                                  <div
+                                    key={channel.id}
+                                    className="entity-option"
+                                    onMouseDown={() => {
+                                      setSelectedChannel(channel);
+                                      setChannelSearch(channel.name);
+                                      setShowChannelDropdown(false);
+                                    }}
+                                  >
+                                    <div className="entity-option-info">
+                                      <span className="entity-name">#{channel.name}</span>
+                                    </div>
+                                    <span className="entity-subtext">ID: {channel.id}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          {selectedChannel && (
+                            <div className="selected-entity-info">
+                              <span className="selected-entity-label">Selected Channel:</span>
+                              #{selectedChannel.name} (ID: {selectedChannel.id})
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      
+                      {scope === "category" && (
+                        <div className="entity-selector-wrapper">
+                          <div className="entity-selector-input-wrapper">
+                            <input
+                              type="text"
+                              placeholder="Search categories by name or ID..."
+                              value={categorySearch}
+                              onChange={(e) => setCategorySearch(e.target.value)}
+                              onFocus={() => setShowCategoryDropdown(true)}
+                              onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
+                              className="entity-search-input"
+                            />
+                            {showCategoryDropdown && filteredCategories.length > 0 && (
+                              <div className="entity-dropdown">
+                                {filteredCategories.slice(0, 20).map(category => (
+                                  <div
+                                    key={category.id}
+                                    className="entity-option"
+                                    onMouseDown={() => {
+                                      setSelectedCategory(category);
+                                      setCategorySearch(category.name);
+                                      setShowCategoryDropdown(false);
+                                    }}
+                                  >
+                                    <div className="entity-option-info">
+                                      <span className="entity-name">📁 {category.name}</span>
+                                    </div>
+                                    <span className="entity-subtext">ID: {category.id}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          {selectedCategory && (
+                            <div className="selected-entity-info">
+                              <span className="selected-entity-label">Selected Category:</span>
+                              {selectedCategory.name} (ID: {selectedCategory.id})
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    
+                    {selectedView === "user" && (
+                      <div className="entity-selector-wrapper" style={{ marginTop: "20px", width: "100%" }}>
+                        <div className="entity-selector-input-wrapper">
+                          <input
+                            type="text"
+                            placeholder="Search users by name or ID..."
+                            value={userSearch}
+                            onChange={(e) => setUserSearch(e.target.value)}
+                            onFocus={() => setShowUserDropdown(true)}
+                            onBlur={() => setTimeout(() => setShowUserDropdown(false), 200)}
+                            className="entity-search-input"
+                          />
+                          {showUserDropdown && filteredUsers.length > 0 && (
+                            <div className="entity-dropdown">
+                              {filteredUsers.slice(0, 20).map(user => (
+                                <div
+                                  key={user.id}
+                                  className="entity-option"
+                                  onMouseDown={() => {
+                                    setSelectedUser(user);
+                                    setUserSearch(user.name || user.username || user.global_name || `User ${user.id}`);
+                                    setShowUserDropdown(false);
+                                  }}
+                                >
+                                  <div className="entity-option-info">
+                                    <span className="entity-name">
+                                      {user.name || user.username || user.global_name || `User ${user.id}`}
+                                    </span>
+                                  </div>
+                                  <span className="entity-subtext">ID: {user.id}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        {selectedUser && (
+                          <div className="selected-entity-info">
+                            <span className="selected-entity-label">Selected User:</span>
+                            {selectedUser.name || selectedUser.username || selectedUser.global_name || selectedUser.id}
+                            <span style={{ color: "#888", marginLeft: "8px" }}>(ID: {selectedUser.id})</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="reset-section">
+                    <div className="section-header">
+                      <div className="section-icon">📊</div>
+                      <div className="section-title">Select Stat Types to Reset</div>
+                      <div className="section-subtitle">
+                        {selectedCount > 0 && `${selectedCount} selected`}
+                      </div>
+                    </div>
+                    
+                    <div className="action-buttons-group">
+                      <button className="action-button" onClick={handleSelectAll}>
+                        <span>✅</span> Select All
+                      </button>
+                      <button className="action-button" onClick={handleClearAll}>
+                        <span>🗑️</span> Clear All
+                      </button>
+                    </div>
+                    
+                    <div className="stat-types-grid">
+                      {availableStatTypes.map(stat => (
+                        <div 
+                          key={stat.value}
+                          className={`stat-card ${selectedStatTypes.includes(stat.value) ? "selected" : ""}`}
+                          onClick={() => handleStatTypeToggle(stat.value)}
+                        >
+                          <div className="stat-card-content">
+                            <input 
+                              type="checkbox" 
+                              checked={selectedStatTypes.includes(stat.value)}
+                              onChange={() => {}}
+                              onClick={(e) => e.stopPropagation()}
+                              className="stat-checkbox"
+                            />
+                            <div className="stat-info">
+                              <div className="stat-header">
+                                <span className="stat-label">{stat.label}</span>
+                                {stat.value === "all" && <span className="stat-badge">DANGER</span>}
+                              </div>
+                              <div className="stat-description">{stat.description}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="reset-section">
+                    <div className="section-header">
+                      <div className="section-icon">⏰</div>
+                      <div className="section-title">Time Period</div>
+                      <div className="section-subtitle">Choose which data to delete</div>
+                    </div>
+                    
+                    <div className="time-period-options">
+                      <button 
+                        className={`time-option-btn ${timeOption === 'all' ? 'active' : ''}`}
+                        onClick={() => handleTimeOptionSelect('all')}
+                      >
+                        <span>All Time</span>
+                        <span className="time-option-description">Delete ALL stats with no time limit</span>
+                      </button>
+                      <button 
+                        className={`time-option-btn ${timeOption === 'days' ? 'active' : ''}`}
+                        onClick={() => handleTimeOptionSelect('days')}
+                      >
+                        <span>Days Back</span>
+                        <span className="time-option-description">Delete stats from the last X days</span>
+                      </button>
+                      <button 
+                        className={`time-option-btn ${timeOption === 'range' ? 'active' : ''}`}
+                        onClick={() => setShowDateRangeModal(true)}
+                      >
+                        <span>Date Range</span>
+                        <span className="time-option-description">Delete stats within a specific date range</span>
+                      </button>
+                    </div>
+
+                    {timeOption === 'days' && (
+                      <div className="days-input-group">
+                        <input 
+                          type="number"
+                          className="days-input"
+                          min="1"
+                          max="365"
+                          value={timePeriodDays}
+                          onChange={(e) => setTimePeriodDays(Math.min(365, Math.max(1, parseInt(e.target.value) || 1)))}
+                        />
+                        <span>days</span>
+                        <button className="apply-days-btn" onClick={handleApplyDays}>Apply</button>
+                      </div>
+                    )}
+
+                    {timeOption && (
+                      <div style={{ marginTop: '16px', padding: '12px', backgroundColor: '#1a1a1a', borderRadius: '8px', fontSize: '13px', color: '#aa00ff' }}>
+                        {getTimePeriodDescription()}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="reset-section">
+                    <div className="section-header">
+                      <div className="section-icon">⏱️</div>
+                      <div className="section-title">
+                        Schedule (Optional)
+                        <InfoIcon descriptions={scheduleTypeInfo} />
+                      </div>
+                      <div className="section-subtitle">Set up automatic recurring resets</div>
+                    </div>
+                    
+                    <div className="schedule-section">
+                      {!schedule ? (
+                        <button 
+                          className="add-schedule-button"
+                          onClick={() => setShowScheduleModal(true)}
+                        >
+                          <span>➕</span> Add Schedule
+                        </button>
+                      ) : (
+                        <div className="schedule-preview">
+                          <div className="schedule-preview-header">
+                            <span className="schedule-preview-title">
+                              {schedule.name || 'Active Schedule'}
+                            </span>
+                            <button className="remove-schedule" onClick={handleRemoveSchedule}>✕</button>
+                          </div>
+                          {schedule.reason && (
+                            <div style={{ marginBottom: '8px', fontSize: '13px', color: '#aaa' }}>
+                              📝 Reason: {schedule.reason}
+                            </div>
+                          )}
+                          <div className="schedule-preview-content">
+                            <div className="schedule-preview-item">
+                              <span>🕐</span> {schedule.description}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="reset-button-container">
+                    <button 
+                      className="reset-button"
+                      onClick={handleReset}
+                      disabled={actionLoading || !hasSelection || !timeOption}
+                    >
+                      {actionLoading ? (
+                        <>
+                          <div className="loading-spinner"></div>
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          {schedule ? "CREATE SCHEDULE" : "RESET NOW"}
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {resetResults && resetResults.length > 0 && (
+                    <div className="results-section">
+                      <div className="results-header">
+                        <div className="results-title">
+                          <span>📋</span> {resetResults[0].type === "schedule" ? "Schedule Results" : "Reset Results"}
+                        </div>
+                        <div className="results-stats">
+                          {resetResults.filter(r => r.success).length} of {resetResults.length} successful
+                        </div>
+                      </div>
+                      <table className="results-table">
+                        <thead>
+                          <tr>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Message</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {resetResults.map((result, idx) => (
+                            <tr key={idx}>
+                              <td style={{ fontWeight: 500 }}>{result.label}</td>
+                              <td>
+                                {result.success ? (
+                                  <span className="success-badge">Success</span>
+                                ) : (
+                                  <span className="error-badge">Failed</span>
+                                )}
+                              </td>
+                              <td style={{ fontSize: "12px", color: "#888" }}>{result.message}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
             <Footer />
           </main>
         </div>
+
+        <DateRangeModal 
+          isOpen={showDateRangeModal}
+          onClose={() => setShowDateRangeModal(false)}
+          onConfirm={handleDateRangeConfirm}
+        />
+
+        <ScheduleModal 
+          isOpen={showScheduleModal}
+          onClose={() => setShowScheduleModal(false)}
+          onConfirm={handleAddSchedule}
+          existingSchedule={schedule}
+        />
+
+        <ToastMessageComponent />
         <style>{styles}</style>
       </>
     );
@@ -4313,7 +4984,7 @@ const ResetDashboard = () => {
                     setScope("server");
                     setSelectedUser(null);
                     setUserSearch("");
-                    setTimeOption(null);
+                    setTimeOption("all");
                     setSchedule(null);
                   }}
                 >
@@ -4327,7 +4998,7 @@ const ResetDashboard = () => {
                     setScope("server");
                     setSelectedUser(null);
                     setUserSearch("");
-                    setTimeOption(null);
+                    setTimeOption("all");
                     setSchedule(null);
                   }}
                 >
@@ -4352,6 +5023,7 @@ const ResetDashboard = () => {
     );
   }
 
+  // Authenticated and has access - normal rendering
   return (
     <>
       <NavBar />
@@ -4369,7 +5041,7 @@ const ResetDashboard = () => {
                   setScope("server");
                   setSelectedUser(null);
                   setUserSearch("");
-                  setTimeOption(null);
+                  setTimeOption("all");
                   setSchedule(null);
                 }}
               >
@@ -4383,7 +5055,7 @@ const ResetDashboard = () => {
                   setScope("server");
                   setSelectedUser(null);
                   setUserSearch("");
-                  setTimeOption(null);
+                  setTimeOption("all");
                   setSchedule(null);
                 }}
               >
@@ -4408,7 +5080,7 @@ const ResetDashboard = () => {
                       onChange={(e) => {
                         setScope(e.target.value);
                         setSelectedStatTypes([]);
-                        setTimeOption(null);
+                        setTimeOption("all");
                         setSchedule(null);
                       }}
                     >
@@ -4524,14 +5196,13 @@ const ResetDashboard = () => {
                             className="entity-option"
                             onMouseDown={() => {
                               setSelectedUser(user);
-                              setUserSearch(user.display_name || user.username || user.global_name || user.name);
+                              setUserSearch(user.name || user.username || user.global_name || `User ${user.id}`);
                               setShowUserDropdown(false);
                             }}
                           >
                             <div className="entity-option-info">
-                              {user.avatar && <img src={user.avatar} alt="" className="user-avatar-small" />}
                               <span className="entity-name">
-                                {user.display_name || user.global_name || user.username || `User ${user.id}`}
+                                {user.name || user.username || user.global_name || `User ${user.id}`}
                               </span>
                             </div>
                             <span className="entity-subtext">ID: {user.id}</span>
@@ -4543,7 +5214,7 @@ const ResetDashboard = () => {
                   {selectedUser && (
                     <div className="selected-entity-info">
                       <span className="selected-entity-label">Selected User:</span>
-                      {selectedUser.display_name || selectedUser.global_name || selectedUser.username || selectedUser.name || selectedUser.id}
+                      {selectedUser.name || selectedUser.username || selectedUser.global_name || selectedUser.id}
                       <span style={{ color: "#888", marginLeft: "8px" }}>(ID: {selectedUser.id})</span>
                     </div>
                   )}
@@ -4606,10 +5277,10 @@ const ResetDashboard = () => {
               
               <div className="time-period-options">
                 <button 
-                  className={`time-option-btn ${timeOption === 'skip' ? 'active' : ''}`}
-                  onClick={() => handleTimeOptionSelect('skip')}
+                  className={`time-option-btn ${timeOption === 'all' ? 'active' : ''}`}
+                  onClick={() => handleTimeOptionSelect('all')}
                 >
-                  <span>Skip</span>
+                  <span>All Time</span>
                   <span className="time-option-description">Delete ALL stats with no time limit</span>
                 </button>
                 <button 
@@ -4653,7 +5324,10 @@ const ResetDashboard = () => {
             <div className="reset-section">
               <div className="section-header">
                 <div className="section-icon">⏱️</div>
-                <div className="section-title">Schedule (Optional)</div>
+                <div className="section-title">
+                  Schedule (Optional)
+                  <InfoIcon descriptions={scheduleTypeInfo} />
+                </div>
                 <div className="section-subtitle">Set up automatic recurring resets</div>
               </div>
               
@@ -4669,10 +5343,15 @@ const ResetDashboard = () => {
                   <div className="schedule-preview">
                     <div className="schedule-preview-header">
                       <span className="schedule-preview-title">
-                        {schedule.name ? `📝 ${schedule.name}` : 'Active Schedule'}
+                        {schedule.name || 'Active Schedule'}
                       </span>
                       <button className="remove-schedule" onClick={handleRemoveSchedule}>✕</button>
                     </div>
+                    {schedule.reason && (
+                      <div style={{ marginBottom: '8px', fontSize: '13px', color: '#aaa' }}>
+                        📝 Reason: {schedule.reason}
+                      </div>
+                    )}
                     <div className="schedule-preview-content">
                       <div className="schedule-preview-item">
                         <span>🕐</span> {schedule.description}
@@ -4680,12 +5359,6 @@ const ResetDashboard = () => {
                     </div>
                   </div>
                 )}
-              </div>
-              <div style={{ marginTop: '12px', fontSize: '12px', color: '#666' }}>
-                <p>• Daily: Runs every day at selected time(s)</p>
-                <p>• Weekly: Runs on selected day(s) at selected time(s)</p>
-                <p>• Monthly: Runs on selected day(s) of month at selected time(s)</p>
-                <p>• Custom: Runs every X days at selected time(s)</p>
               </div>
             </div>
 

@@ -108,9 +108,7 @@ class DatabaseManager:
         if not date_str:
             return None
 
-        # Replace common separators with dash
         cleaned = date_str.strip().replace('/', '-').replace('.', '-')
-        # Remove any spaces
         cleaned = re.sub(r'\s+', '', cleaned)
 
         parts = cleaned.split('-')
@@ -135,10 +133,9 @@ class DatabaseManager:
                                    times: Optional[Union[str,
                                                          List[str]]] = None,
                                    interval_days: Optional[int] = None) -> datetime:
-        """Calculate the next execution time for recurring schedules (handles both single and multiple values)"""
+        """Calculate the next execution time for recurring schedules"""
         now = datetime.now(timezone.utc)
 
-        # Convert single values to lists for uniform handling
         if weekdays is not None and not isinstance(weekdays, list):
             weekdays = [weekdays]
         if days_of_month is not None and not isinstance(days_of_month, list):
@@ -149,18 +146,15 @@ class DatabaseManager:
         if not times:
             times = ["00:00"]
 
-        # Get all possible next execution times and pick the earliest
         candidates = []
 
         for time_str in times:
-            # Parse time string to hour/minute/second
             parts = time_str.split(':')
             target_hour = int(parts[0])
             target_minute = int(parts[1]) if len(parts) > 1 else 0
             target_second = int(parts[2]) if len(parts) > 2 else 0
 
             if pattern == 'daily':
-                # Every day at each time
                 next_time = now.replace(hour=target_hour, minute=target_minute,
                                         second=target_second, microsecond=0)
                 if next_time <= now:
@@ -168,7 +162,6 @@ class DatabaseManager:
                 candidates.append(next_time)
 
             elif pattern == 'weekly' and weekdays:
-                # Check each weekday
                 current_weekday = now.weekday()
                 for weekday in weekdays:
                     days_ahead = weekday - current_weekday
@@ -179,27 +172,11 @@ class DatabaseManager:
                                                   second=target_second, microsecond=0)
                     candidates.append(next_time)
 
-            elif pattern == 'weekday' and weekdays:
-                # Filter to weekdays only (0-4)
-                valid_weekdays = [d for d in weekdays if d < 5]
-                if valid_weekdays:
-                    current_weekday = now.weekday()
-                    for weekday in valid_weekdays:
-                        days_ahead = weekday - current_weekday
-                        if days_ahead <= 0:
-                            days_ahead += 7
-                        next_time = now + timedelta(days=days_ahead)
-                        next_time = next_time.replace(hour=target_hour, minute=target_minute,
-                                                      second=target_second, microsecond=0)
-                        candidates.append(next_time)
-
             elif pattern == 'monthly' and days_of_month:
-                # Check each day of month
                 year = now.year
                 month = now.month
 
                 for day in days_of_month:
-                    # Get the last day of the month
                     if month == 12:
                         last_day = 31
                     else:
@@ -219,41 +196,17 @@ class DatabaseManager:
                     candidates.append(next_time)
 
             elif pattern == 'custom_days' and interval_days:
-                # Every X days at each time
                 next_time = now.replace(hour=target_hour, minute=target_minute,
                                         second=target_second, microsecond=0)
                 if next_time <= now:
                     next_time += timedelta(days=interval_days)
                 candidates.append(next_time)
 
-        # Return the earliest candidate
         return min(candidates) if candidates else now + timedelta(days=1)
 
     # ======================================================================
     # SCHEDULED RESET METHODS
     # ======================================================================
-
-    async def create_reset_schedule(self, guild_id: int, requested_by_id: int,
-                                    reset_types: List[str], target_time: datetime,
-                                    reason: Optional[str] = None) -> int:
-        """Create a new reset schedule in the database"""
-        try:
-            async with self.pool.acquire() as conn:
-                result = await conn.fetchrow("""
-                    INSERT INTO reset_schedules (guild_id, requested_by_id, reset_types, target_time, reason)
-                    VALUES ($1, $2, $3, $4, $5)
-                    RETURNING id
-                """, guild_id, requested_by_id, reset_types, target_time, reason)
-
-                schedule_id = result['id'] if result else None
-                logger.info(
-                    f"Created reset schedule {schedule_id} for guild {guild_id} at {target_time}")
-                return schedule_id
-
-        except Exception as e:
-            logger.error(f"Failed to create reset schedule: {e}")
-            logger.error(traceback.format_exc())
-            raise
 
     async def create_advanced_reset_schedule(self, guild_id: int, requested_by_id: int,
                                              reset_types: List[str],
@@ -271,11 +224,11 @@ class DatabaseManager:
                                              scope_details: Optional[str] = None,
                                              channel_id: Optional[int] = None,
                                              category_id: Optional[int] = None,
-                                             reason: Optional[str] = None) -> int:
-        """Create an advanced reset schedule with support for multiple weekdays/days/times"""
+                                             schedule_name: Optional[str] = None,
+                                             enabled: bool = True) -> int:
+        """Create an advanced reset schedule with name and enabled status"""
         try:
             async with self.pool.acquire() as conn:
-                # Convert string times to time objects for PostgreSQL TIME column
                 time_objects = None
                 if recurring_times:
                     time_objects = []
@@ -287,25 +240,14 @@ class DatabaseManager:
                         time_objects.append(
                             time(hour=hour, minute=minute, second=second))
 
-                # Ensure array columns exist and target_time is nullable
-                await conn.execute("""
-                    ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_weekdays INTEGER[];
-                    ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_days_of_month INTEGER[];
-                    ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_times TIME[];
-                    ALTER TABLE reset_schedules ALTER COLUMN target_time DROP NOT NULL;
-                """)
-
-                # Calculate next execution time
                 next_execution = None
-                if schedule_type == "recurring" and recurring_pattern:
+                if schedule_type == "recurring" and recurring_pattern and enabled:
                     next_execution = self._calculate_next_recurrence(
                         recurring_pattern, recurring_weekdays, recurring_days_of_month,
                         recurring_times, recurring_interval_days
                     )
-                elif schedule_type == "one_time" and target_time:
+                elif schedule_type == "one_time" and target_time and enabled:
                     next_execution = target_time
-                elif schedule_type == "immediate":
-                    next_execution = datetime.now(timezone.utc)
 
                 result = await conn.fetchrow("""
                     INSERT INTO reset_schedules (
@@ -313,8 +255,8 @@ class DatabaseManager:
                         target_time, recurring_pattern, recurring_weekdays, recurring_days_of_month,
                         recurring_times, recurring_interval_days, delete_from_date, delete_to_date,
                         time_period_days, scope_type, scope_details, channel_id, category_id,
-                        next_execution_at, created_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
+                        next_execution_at, created_at, schedule_name, enabled
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), $19, $20)
                     RETURNING id
                 """,
                                              guild_id, requested_by_id, reset_types, schedule_type,
@@ -323,7 +265,7 @@ class DatabaseManager:
                                              time_objects,
                                              recurring_interval_days, delete_from_date, delete_to_date,
                                              time_period_days, scope_type, scope_details, channel_id, category_id,
-                                             next_execution
+                                             next_execution, schedule_name, enabled
                                              )
 
                 return result['id'] if result else None
@@ -333,8 +275,8 @@ class DatabaseManager:
             logger.error(traceback.format_exc())
             raise
 
-    async def get_pending_reset_schedules(self, lookahead_hours: int = 12) -> List[dict]:
-        """Get all pending reset schedules within the next X hours"""
+    async def get_all_schedules_for_guild(self, guild_id: int) -> List[dict]:
+        """Get ALL schedules for a guild (both enabled and disabled) for display"""
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch("""
@@ -342,9 +284,33 @@ class DatabaseManager:
                            schedule_type, recurring_pattern, recurring_weekdays, recurring_days_of_month,
                            recurring_times, recurring_interval_days, next_execution_at, time_period_days,
                            scope_type, scope_details, channel_id, category_id,
-                           delete_from_date, delete_to_date
+                           delete_from_date, delete_to_date, schedule_name, enabled,
+                           completed, created_at
+                    FROM reset_schedules
+                    WHERE guild_id = $1 AND completed = FALSE
+                    ORDER BY created_at DESC
+                """, guild_id)
+
+                return [dict(row) for row in rows]
+
+        except Exception as e:
+            logger.error(f"Failed to get schedules for guild {guild_id}: {e}")
+            logger.error(traceback.format_exc())
+            return []
+
+    async def get_pending_reset_schedules(self, lookahead_hours: int = 12) -> List[dict]:
+        """Get all pending reset schedules within the next X hours (only enabled ones)"""
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT id, guild_id, requested_by_id, target_time, reset_types,
+                           schedule_type, recurring_pattern, recurring_weekdays, recurring_days_of_month,
+                           recurring_times, recurring_interval_days, next_execution_at, time_period_days,
+                           scope_type, scope_details, channel_id, category_id,
+                           delete_from_date, delete_to_date, schedule_name, enabled
                     FROM reset_schedules
                     WHERE completed = FALSE 
+                    AND enabled = TRUE
                     AND (next_execution_at <= NOW() + make_interval(hours => $1) OR schedule_type = 'date_range')
                     ORDER BY next_execution_at ASC NULLS LAST
                 """, lookahead_hours)
@@ -357,7 +323,7 @@ class DatabaseManager:
             return []
 
     async def get_due_reset_schedules(self) -> List[dict]:
-        """Get all reset schedules that are due for execution"""
+        """Get all reset schedules that are due for execution (only enabled ones)"""
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch("""
@@ -365,9 +331,10 @@ class DatabaseManager:
                            schedule_type, recurring_pattern, recurring_weekdays, recurring_days_of_month,
                            recurring_times, recurring_interval_days, time_period_days,
                            scope_type, scope_details, channel_id, category_id,
-                           delete_from_date, delete_to_date
+                           delete_from_date, delete_to_date, schedule_name, enabled
                     FROM reset_schedules
                     WHERE completed = FALSE 
+                    AND enabled = TRUE
                     AND schedule_type != 'date_range'
                     AND next_execution_at <= NOW()
                     ORDER BY next_execution_at ASC
@@ -387,16 +354,14 @@ class DatabaseManager:
                 executed_at = datetime.now(timezone.utc)
 
             async with self.pool.acquire() as conn:
-                # Get schedule details to check if recurring
                 schedule = await conn.fetchrow("""
                     SELECT schedule_type, recurring_pattern, recurring_weekdays, recurring_days_of_month,
-                           recurring_times, recurring_interval_days, failure_count
+                           recurring_times, recurring_interval_days, failure_count, enabled
                     FROM reset_schedules
                     WHERE id = $1
                 """, schedule_id)
 
-                if schedule and schedule['schedule_type'] == 'recurring':
-                    # Calculate next execution time
+                if schedule and schedule['schedule_type'] == 'recurring' and schedule['enabled']:
                     next_execution = self._calculate_next_recurrence(
                         schedule['recurring_pattern'],
                         schedule['recurring_weekdays'],
@@ -432,7 +397,6 @@ class DatabaseManager:
 
             results = {}
 
-            # Determine scope parameters
             channel_id = schedule.get('channel_id')
             category_id = schedule.get('category_id')
             time_period_days = schedule.get('time_period_days')
@@ -463,18 +427,18 @@ class DatabaseManager:
             logger.error(traceback.format_exc())
             raise
 
-    async def cancel_schedule(self, schedule_id: int, guild_id: int) -> bool:
-        """Cancel a pending reset schedule"""
+    async def delete_schedule(self, schedule_id: int, guild_id: int) -> bool:
+        """Delete a schedule instantly"""
         try:
             async with self.pool.acquire() as conn:
                 result = await conn.execute("""
                     DELETE FROM reset_schedules 
-                    WHERE id = $1 AND guild_id = $2 AND completed = FALSE
+                    WHERE id = $1 AND guild_id = $2
                 """, schedule_id, guild_id)
 
                 return result.split()[-1] == '1'
         except Exception as e:
-            logger.error(f"Failed to cancel schedule {schedule_id}: {e}")
+            logger.error(f"Failed to delete schedule {schedule_id}: {e}")
             return False
 
     # ======================================================================
@@ -935,13 +899,423 @@ class DatabaseManager:
             raise
 
     # ======================================================================
-    # USER DELETION LOGIC (keep existing - similar changes would be needed)
+    # USER DELETION LOGIC
     # ======================================================================
 
-    # ... (user deletion methods would need similar date range parameters, omitted for brevity)
+    async def delete_user_all(self, guild_id: int, user_id: int,
+                              channel_id: Optional[int] = None,
+                              category_id: Optional[int] = None,
+                              time_period_days: Optional[int] = None,
+                              delete_from_date: Optional[datetime] = None,
+                              delete_to_date: Optional[datetime] = None):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    conditions = ["guild_id = $1", "user_id = $2"]
+                    params = [guild_id, user_id]
+                    param_counter = 3
+
+                    if channel_id:
+                        conditions.append(f"channel_id = ${param_counter}")
+                        params.append(channel_id)
+                        param_counter += 1
+
+                    if category_id:
+                        conditions.append(f"category_id = ${param_counter}")
+                        params.append(category_id)
+                        param_counter += 1
+
+                    if time_period_days:
+                        conditions.append(
+                            f"hour >= NOW() - INTERVAL '{time_period_days} days'")
+                        conditions.append(
+                            f"day >= NOW() - INTERVAL '{time_period_days} days'")
+
+                    if delete_from_date:
+                        conditions.append(f"hour >= ${param_counter}")
+                        params.append(delete_from_date)
+                        param_counter += 1
+                        conditions.append(f"day >= ${param_counter}")
+                        params.append(delete_from_date)
+                        param_counter += 1
+
+                    if delete_to_date:
+                        conditions.append(f"hour <= ${param_counter}")
+                        params.append(delete_to_date)
+                        param_counter += 1
+                        conditions.append(f"day <= ${param_counter}")
+                        params.append(delete_to_date)
+                        param_counter += 1
+
+                    where_clause = " AND ".join(conditions)
+
+                    user_tables = [
+                        'message_tracking_hourly',
+                        'voice_session_history_hourly',
+                        'emoji_usage_hourly',
+                        'user_mentions_hourly'
+                    ]
+
+                    deleted_counts = {}
+
+                    for table in user_tables:
+                        try:
+                            result = await conn.execute(f"DELETE FROM {table} WHERE {where_clause}", *params)
+                            deleted_counts[table] = result.split()[-1]
+                        except Exception as e:
+                            logger.warning(f"Error deleting from {table}: {e}")
+                            deleted_counts[table] = "0 (error)"
+
+                    if not channel_id and not category_id:
+                        user_only_tables = [
+                            'invite_tracking',
+                            'activity_sessions_hourly',
+                            'daily_activity_log',
+                            'activity_streaks',
+                            'role_growth_hourly'
+                        ]
+
+                        for table in user_only_tables:
+                            try:
+                                if time_period_days:
+                                    if table == 'daily_activity_log':
+                                        await conn.execute(f"DELETE FROM {table} WHERE guild_id = $1 AND user_id = $2 AND day >= NOW() - INTERVAL '{time_period_days} days'", guild_id, user_id)
+                                    else:
+                                        result = await conn.execute(f"DELETE FROM {table} WHERE guild_id = $1 AND user_id = $2", guild_id, user_id)
+                                else:
+                                    result = await conn.execute(f"DELETE FROM {table} WHERE guild_id = $1 AND user_id = $2", guild_id, user_id)
+                                deleted_counts[table] = result.split(
+                                )[-1] if not time_period_days else "deleted"
+                            except Exception as e:
+                                logger.warning(
+                                    f"Error deleting from {table}: {e}")
+                                deleted_counts[table] = "0 (error)"
+
+                    return deleted_counts
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_all: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def delete_user_messages(self, guild_id: int, user_id: int,
+                                   channel_id: Optional[int] = None,
+                                   category_id: Optional[int] = None,
+                                   time_period_days: Optional[int] = None,
+                                   delete_from_date: Optional[datetime] = None,
+                                   delete_to_date: Optional[datetime] = None):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    conditions = ["guild_id = $1", "user_id = $2"]
+                    params = [guild_id, user_id]
+                    param_counter = 3
+
+                    if channel_id:
+                        conditions.append(f"channel_id = ${param_counter}")
+                        params.append(channel_id)
+                        param_counter += 1
+
+                    if category_id:
+                        conditions.append(f"category_id = ${param_counter}")
+                        params.append(category_id)
+                        param_counter += 1
+
+                    if time_period_days:
+                        conditions.append(
+                            f"hour >= NOW() - INTERVAL '{time_period_days} days'")
+
+                    if delete_from_date:
+                        conditions.append(f"hour >= ${param_counter}")
+                        params.append(delete_from_date)
+                        param_counter += 1
+
+                    if delete_to_date:
+                        conditions.append(f"hour <= ${param_counter}")
+                        params.append(delete_to_date)
+                        param_counter += 1
+
+                    where_clause = " AND ".join(conditions)
+                    result = await conn.execute(f"DELETE FROM message_tracking_hourly WHERE {where_clause}", *params)
+                    deleted_count = result.split()[-1]
+                    return int(deleted_count) if deleted_count.isdigit() else 0
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_messages: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def delete_user_voice(self, guild_id: int, user_id: int,
+                                channel_id: Optional[int] = None,
+                                category_id: Optional[int] = None,
+                                time_period_days: Optional[int] = None,
+                                delete_from_date: Optional[datetime] = None,
+                                delete_to_date: Optional[datetime] = None):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    conditions = ["guild_id = $1", "user_id = $2"]
+                    params = [guild_id, user_id]
+                    param_counter = 3
+
+                    if channel_id:
+                        conditions.append(f"channel_id = ${param_counter}")
+                        params.append(channel_id)
+                        param_counter += 1
+
+                    if category_id:
+                        conditions.append(f"category_id = ${param_counter}")
+                        params.append(category_id)
+                        param_counter += 1
+
+                    if time_period_days:
+                        conditions.append(
+                            f"hour >= NOW() - INTERVAL '{time_period_days} days'")
+
+                    if delete_from_date:
+                        conditions.append(f"hour >= ${param_counter}")
+                        params.append(delete_from_date)
+                        param_counter += 1
+
+                    if delete_to_date:
+                        conditions.append(f"hour <= ${param_counter}")
+                        params.append(delete_to_date)
+                        param_counter += 1
+
+                    where_clause = " AND ".join(conditions)
+                    result = await conn.execute(f"DELETE FROM voice_session_history_hourly WHERE {where_clause}", *params)
+                    deleted_count = result.split()[-1]
+                    return int(deleted_count) if deleted_count.isdigit() else 0
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_voice: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def delete_user_invites(self, guild_id: int, user_id: int,
+                                  time_period_days: Optional[int] = None,
+                                  delete_from_date: Optional[datetime] = None,
+                                  delete_to_date: Optional[datetime] = None):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    if time_period_days:
+                        result = await conn.execute(f"DELETE FROM invite_tracking WHERE guild_id = $1 AND (inviter_id = $2 OR invitee_id = $2) AND created_at >= NOW() - INTERVAL '{time_period_days} days'", guild_id, user_id)
+                    elif delete_from_date or delete_to_date:
+                        conditions = ["guild_id = $1",
+                                      "(inviter_id = $2 OR invitee_id = $2)"]
+                        params = [guild_id, user_id]
+                        param_counter = 3
+                        if delete_from_date:
+                            conditions.append(
+                                f"created_at >= ${param_counter}")
+                            params.append(delete_from_date)
+                            param_counter += 1
+                        if delete_to_date:
+                            conditions.append(
+                                f"created_at <= ${param_counter}")
+                            params.append(delete_to_date)
+                            param_counter += 1
+                        where_clause = " AND ".join(conditions)
+                        result = await conn.execute(f"DELETE FROM invite_tracking WHERE {where_clause}", *params)
+                    else:
+                        result = await conn.execute(f"DELETE FROM invite_tracking WHERE guild_id = $1 AND (inviter_id = $2 OR invitee_id = $2)", guild_id, user_id)
+                    deleted_count = result.split()[-1]
+                    return int(deleted_count) if deleted_count.isdigit() else 0
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_invites: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def delete_user_emoji(self, guild_id: int, user_id: int,
+                                channel_id: Optional[int] = None,
+                                category_id: Optional[int] = None,
+                                time_period_days: Optional[int] = None,
+                                delete_from_date: Optional[datetime] = None,
+                                delete_to_date: Optional[datetime] = None):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    conditions = ["guild_id = $1", "user_id = $2"]
+                    params = [guild_id, user_id]
+                    param_counter = 3
+
+                    if channel_id:
+                        conditions.append(f"channel_id = ${param_counter}")
+                        params.append(channel_id)
+                        param_counter += 1
+
+                    if category_id:
+                        conditions.append(f"category_id = ${param_counter}")
+                        params.append(category_id)
+                        param_counter += 1
+
+                    if time_period_days:
+                        conditions.append(
+                            f"hour >= NOW() - INTERVAL '{time_period_days} days'")
+
+                    if delete_from_date:
+                        conditions.append(f"hour >= ${param_counter}")
+                        params.append(delete_from_date)
+                        param_counter += 1
+
+                    if delete_to_date:
+                        conditions.append(f"hour <= ${param_counter}")
+                        params.append(delete_to_date)
+                        param_counter += 1
+
+                    where_clause = " AND ".join(conditions)
+                    result = await conn.execute(f"DELETE FROM emoji_usage_hourly WHERE {where_clause}", *params)
+                    deleted_count = result.split()[-1]
+                    return int(deleted_count) if deleted_count.isdigit() else 0
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_emoji: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def delete_user_activity(self, guild_id: int, user_id: int,
+                                   time_period_days: Optional[int] = None,
+                                   delete_from_date: Optional[datetime] = None,
+                                   delete_to_date: Optional[datetime] = None):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    deleted_counts = {}
+
+                    if time_period_days:
+                        result1 = await conn.execute(f"DELETE FROM activity_sessions_hourly WHERE guild_id = $1 AND user_id = $2 AND hour >= NOW() - INTERVAL '{time_period_days} days'", guild_id, user_id)
+                        result2 = await conn.execute(f"DELETE FROM daily_activity_log WHERE guild_id = $1 AND user_id = $2 AND day >= NOW() - INTERVAL '{time_period_days} days'", guild_id, user_id)
+                        result3 = await conn.execute(f"DELETE FROM activity_streaks WHERE guild_id = $1 AND user_id = $2", guild_id, user_id)
+                    elif delete_from_date or delete_to_date:
+                        conditions = ["guild_id = $1", "user_id = $2"]
+                        params = [guild_id, user_id]
+                        param_counter = 3
+                        if delete_from_date:
+                            conditions.append(f"hour >= ${param_counter}")
+                            params.append(delete_from_date)
+                            param_counter += 1
+                            conditions.append(f"day >= ${param_counter}")
+                            params.append(delete_from_date)
+                            param_counter += 1
+                        if delete_to_date:
+                            conditions.append(f"hour <= ${param_counter}")
+                            params.append(delete_to_date)
+                            param_counter += 1
+                            conditions.append(f"day <= ${param_counter}")
+                            params.append(delete_to_date)
+                            param_counter += 1
+                        where_clause = " AND ".join(conditions)
+                        result1 = await conn.execute(f"DELETE FROM activity_sessions_hourly WHERE {where_clause}", *params)
+                        result2 = await conn.execute(f"DELETE FROM daily_activity_log WHERE {where_clause}", *params)
+                        result3 = await conn.execute(f"DELETE FROM activity_streaks WHERE guild_id = $1 AND user_id = $2", guild_id, user_id)
+                    else:
+                        result1 = await conn.execute(f"DELETE FROM activity_sessions_hourly WHERE guild_id = $1 AND user_id = $2", guild_id, user_id)
+                        result2 = await conn.execute(f"DELETE FROM daily_activity_log WHERE guild_id = $1 AND user_id = $2", guild_id, user_id)
+                        result3 = await conn.execute(f"DELETE FROM activity_streaks WHERE guild_id = $1 AND user_id = $2", guild_id, user_id)
+
+                    deleted_counts['activity_sessions_hourly'] = result1.split(
+                    )[-1]
+                    deleted_counts['daily_activity_log'] = result2.split()[-1]
+                    deleted_counts['activity_streaks'] = result3.split()[-1]
+                    return deleted_counts
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_activity: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def delete_user_mentions(self, guild_id: int, user_id: int,
+                                   channel_id: Optional[int] = None,
+                                   category_id: Optional[int] = None,
+                                   time_period_days: Optional[int] = None,
+                                   delete_from_date: Optional[datetime] = None,
+                                   delete_to_date: Optional[datetime] = None):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    conditions = ["guild_id = $1", "mentioned_user_id = $2"]
+                    params = [guild_id, user_id]
+                    param_counter = 3
+
+                    if channel_id:
+                        conditions.append(f"channel_id = ${param_counter}")
+                        params.append(channel_id)
+                        param_counter += 1
+
+                    if category_id:
+                        conditions.append(f"category_id = ${param_counter}")
+                        params.append(category_id)
+                        param_counter += 1
+
+                    if time_period_days:
+                        conditions.append(
+                            f"hour >= NOW() - INTERVAL '{time_period_days} days'")
+
+                    if delete_from_date:
+                        conditions.append(f"hour >= ${param_counter}")
+                        params.append(delete_from_date)
+                        param_counter += 1
+
+                    if delete_to_date:
+                        conditions.append(f"hour <= ${param_counter}")
+                        params.append(delete_to_date)
+                        param_counter += 1
+
+                    where_clause = " AND ".join(conditions)
+                    result = await conn.execute(f"DELETE FROM user_mentions_hourly WHERE {where_clause}", *params)
+                    deleted_count = result.split()[-1]
+                    return int(deleted_count) if deleted_count.isdigit() else 0
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_mentions: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    async def delete_user_role_growth(self, guild_id: int, user_id: int,
+                                      time_period_days: Optional[int] = None,
+                                      delete_from_date: Optional[datetime] = None,
+                                      delete_to_date: Optional[datetime] = None):
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    if time_period_days:
+                        result = await conn.execute(f"DELETE FROM role_growth_hourly WHERE guild_id = $1 AND user_id = $2 AND hour >= NOW() - INTERVAL '{time_period_days} days'", guild_id, user_id)
+                    elif delete_from_date or delete_to_date:
+                        conditions = ["guild_id = $1", "user_id = $2"]
+                        params = [guild_id, user_id]
+                        param_counter = 3
+                        if delete_from_date:
+                            conditions.append(f"hour >= ${param_counter}")
+                            params.append(delete_from_date)
+                            param_counter += 1
+                        if delete_to_date:
+                            conditions.append(f"hour <= ${param_counter}")
+                            params.append(delete_to_date)
+                            param_counter += 1
+                        where_clause = " AND ".join(conditions)
+                        result = await conn.execute(f"DELETE FROM role_growth_hourly WHERE {where_clause}", *params)
+                    else:
+                        result = await conn.execute(f"DELETE FROM role_growth_hourly WHERE guild_id = $1 AND user_id = $2", guild_id, user_id)
+                    deleted_count = result.split()[-1]
+                    return int(deleted_count) if deleted_count.isdigit() else 0
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_role_growth: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
     # ======================================================================
-    # RESET METHODS (UPDATED with date range support)
+    # RESET METHODS
     # ======================================================================
 
     async def reset_server_stats(self, guild_id: int, stat_type: str,
@@ -1008,8 +1382,6 @@ class DatabaseManager:
                 result = await self.delete_user_mentions(guild_id, user_id, channel_id, category_id, time_period_days, delete_from_date, delete_to_date)
             elif stat_type_lower == "role growth":
                 result = await self.delete_user_role_growth(guild_id, user_id, time_period_days, delete_from_date, delete_to_date)
-            elif stat_type_lower == "member growth":
-                result = await self.delete_user_member_growth(guild_id, user_id, time_period_days, delete_from_date, delete_to_date)
 
             return result
 
@@ -1020,180 +1392,72 @@ class DatabaseManager:
 
 
 # =========================================================
-# DATE RANGE MODAL (Page 4 - New)
+# DELETE SCHEDULE MODAL
 # =========================================================
 
-class DateRangeModal(Modal, title="Date Range Selection"):
-    def __init__(self, view):
-        super().__init__(timeout=300)
-        self.view = view
-
-        self.from_date = TextInput(
-            label="From Date (Optional)",
-            placeholder="DD-MM-YYYY (e.g., 01-01-2024)",
-            max_length=10,
-            required=False
-        )
-        self.add_item(self.from_date)
-
-        self.to_date = TextInput(
-            label="To Date (Optional)",
-            placeholder="DD-MM-YYYY (e.g., 31-12-2024)",
-            max_length=10,
-            required=False
-        )
-        self.add_item(self.to_date)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            from_date_str = self.from_date.value.strip()
-            to_date_str = self.to_date.value.strip()
-
-            from_date_obj = self.view.db_manager.parse_date_input(
-                from_date_str) if from_date_str else None
-            to_date_obj = self.view.db_manager.parse_date_input(
-                to_date_str) if to_date_str else None
-
-            if from_date_str and not from_date_obj:
-                await interaction.response.send_message(
-                    "❌ Invalid From Date format! Use DD-MM-YYYY (e.g., 25-12-2024)",
-                    ephemeral=True
-                )
-                return
-
-            if to_date_str and not to_date_obj:
-                await interaction.response.send_message(
-                    "❌ Invalid To Date format! Use DD-MM-YYYY (e.g., 25-12-2024)",
-                    ephemeral=True
-                )
-                return
-
-            if from_date_obj and to_date_obj and from_date_obj > to_date_obj:
-                await interaction.response.send_message(
-                    "❌ From Date must be before To Date!",
-                    ephemeral=True
-                )
-                return
-
-            self.view.date_range_from = from_date_obj
-            self.view.date_range_to = to_date_obj
-            self.view.time_option = 'range'
-
-            # Build description text
-            from_text = from_date_obj.strftime(
-                '%d-%m-%Y') if from_date_obj else "Start"
-            to_text = to_date_obj.strftime(
-                '%d-%m-%Y') if to_date_obj else "End"
-            self.view.time_period_text = f"Deleting stats from {from_text} to {to_text}"
-
-            await interaction.response.defer()
-            await self.view.show_advanced_schedule()
-
-        except Exception as e:
-            logger.error(f"Error in date range modal: {e}")
-            await interaction.response.send_message(
-                f"❌ An error occurred: {str(e)[:200]}",
-                ephemeral=True
-            )
-
-
-# =========================================================
-# CANCEL SCHEDULE MODAL
-# =========================================================
-
-class CancelScheduleModal(Modal, title="Cancel Reset Schedule"):
-    def __init__(self, db_manager, guild_id: int, current_view):
+class DeleteScheduleModal(Modal, title="Delete Reset Schedule"):
+    def __init__(self, db_manager, guild_id: int, schedule_id: int, schedule_name: Optional[str], current_view):
         super().__init__(timeout=300)
         self.db_manager = db_manager
         self.guild_id = guild_id
+        self.schedule_id = schedule_id
+        self.schedule_name = schedule_name
         self.current_view = current_view
 
-        self.schedule_id_input = TextInput(
-            label="Schedule ID",
-            placeholder="Enter the ID of the schedule to cancel",
-            min_length=1,
-            max_length=10,
-            required=True
+        self.confirm_input = TextInput(
+            label="Enter Schedule ID to Delete",
+            placeholder=f"Enter {schedule_id}",
+            required=True,
+            max_length=10
         )
-        self.add_item(self.schedule_id_input)
+        self.add_item(self.confirm_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            schedule_id = int(self.schedule_id_input.value.strip())
-
-            async with self.db_manager.pool.acquire() as conn:
-                schedule = await conn.fetchrow("""
-                    SELECT id, completed, reset_types, next_execution_at
-                    FROM reset_schedules
-                    WHERE id = $1 AND guild_id = $2
-                """, schedule_id, self.guild_id)
-
-                if not schedule:
-                    embed = discord.Embed(
-                        title="Cancellation Failed",
-                        description=f"Schedule #{schedule_id} not found in this server.",
-                        color=discord.Color.red()
-                    )
-                    await interaction.response.edit_message(embed=embed, view=None)
-                    return
-
-                if schedule['completed']:
-                    embed = discord.Embed(
-                        title="Cancellation Failed",
-                        description=f"Schedule #{schedule_id} has already been completed and cannot be cancelled.",
-                        color=discord.Color.red()
-                    )
-                    await interaction.response.edit_message(embed=embed, view=None)
-                    return
-
-                await conn.execute("""
-                    DELETE FROM reset_schedules 
-                    WHERE id = $1 AND guild_id = $2
-                """, schedule_id, self.guild_id)
-
-                reset_types = "', '".join(schedule['reset_types'])
-                next_time = schedule['next_execution_at']
-
+            if self.confirm_input.value.strip() != str(self.schedule_id):
                 embed = discord.Embed(
-                    title="Schedule Cancelled",
-                    description=f"Schedule #{schedule_id} has been successfully cancelled.",
+                    title="Deletion Failed",
+                    description=f"You must enter the correct schedule ID ({self.schedule_id}) to delete this schedule.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.edit_message(embed=embed, view=self.current_view)
+                return
+
+            success = await self.db_manager.delete_schedule(self.schedule_id, self.guild_id)
+
+            if success:
+                embed = discord.Embed(
+                    title="Schedule Deleted",
+                    description=f"Schedule #{self.schedule_id}{f' ({self.schedule_name})' if self.schedule_name else ''} has been successfully deleted.",
                     color=discord.Color.green(),
                     timestamp=datetime.now(timezone.utc)
                 )
-                embed.add_field(name="Reset Types",
-                                value=f"`{reset_types}`", inline=False)
-                if next_time:
-                    embed.add_field(
-                        name="Next Scheduled Time", value=f"<t:{int(next_time.timestamp())}:F>", inline=True)
+            else:
+                embed = discord.Embed(
+                    title="Deletion Failed",
+                    description=f"Schedule #{self.schedule_id} could not be found or already completed.",
+                    color=discord.Color.red()
+                )
 
-                # Refresh the schedules list
-                new_schedules = await self.db_manager.get_pending_reset_schedules(lookahead_hours=720)
-                new_schedules = [
-                    s for s in new_schedules if s['guild_id'] == self.guild_id]
+            all_schedules = await self.db_manager.get_all_schedules_for_guild(self.guild_id)
 
-                if new_schedules:
-                    new_view = ScheduleView(
-                        new_schedules, self.db_manager, self.guild_id, interaction.user.id)
-                    await interaction.response.edit_message(embed=new_view.create_embed(), view=new_view)
-                else:
-                    embed = discord.Embed(
-                        title="Pending Reset Schedules",
-                        description="No pending reset schedules found.",
-                        color=discord.Color.blue(),
-                        timestamp=datetime.now(timezone.utc)
-                    )
-                    await interaction.response.edit_message(embed=embed, view=None)
+            if all_schedules:
+                new_view = ScheduleView(
+                    all_schedules, self.db_manager, self.guild_id, interaction.user.id, interaction.guild)
+                await interaction.response.edit_message(embed=new_view.create_embed(), view=new_view)
+            else:
+                embed = discord.Embed(
+                    title="Reset Schedules",
+                    description="No reset schedules found for this server.\n\nYou can create schedules using the `/reset` command.",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                await interaction.response.edit_message(embed=embed, view=None)
 
-        except ValueError:
-            embed = discord.Embed(
-                title="Cancellation Failed",
-                description="Invalid Schedule ID. Please enter a valid number.",
-                color=discord.Color.red()
-            )
-            await interaction.response.edit_message(embed=embed, view=self.current_view)
         except Exception as e:
+            logger.error(f"Error deleting schedule: {e}")
             embed = discord.Embed(
-                title="Cancellation Failed",
+                title="Deletion Failed",
                 description=f"An error occurred: {str(e)[:200]}",
                 color=discord.Color.red()
             )
@@ -1205,12 +1469,13 @@ class CancelScheduleModal(Modal, title="Cancel Reset Schedule"):
 # =========================================================
 
 class ScheduleView(View):
-    def __init__(self, schedules: List[dict], db_manager, guild_id: int, user_id: int):
+    def __init__(self, schedules: List[dict], db_manager, guild_id: int, user_id: int, guild: discord.Guild = None):
         super().__init__(timeout=180)
         self.schedules = schedules
         self.db_manager = db_manager
         self.guild_id = guild_id
         self.user_id = user_id
+        self.guild = guild
         self.current_index = 0
         self._update_buttons()
 
@@ -1270,30 +1535,38 @@ class ScheduleView(View):
         self.add_item(page_indicator)
         self.add_item(next_button)
 
-        cancel_button = Button(
-            label="Cancel Schedule",
+        delete_button = Button(
+            label="Delete Schedule",
             style=discord.ButtonStyle.danger,
             emoji="🗑️",
             row=1
         )
 
-        async def cancel_callback(interaction: discord.Interaction):
+        async def delete_callback(interaction: discord.Interaction):
             if interaction.user.id != self.user_id:
                 embed = discord.Embed(
                     title="Permission Denied", description="You cannot use this button!", color=discord.Color.red())
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
-            modal = CancelScheduleModal(self.db_manager, self.guild_id, self)
+
+            current_schedule = self.schedules[self.current_index]
+            modal = DeleteScheduleModal(
+                self.db_manager,
+                self.guild_id,
+                current_schedule['id'],
+                current_schedule.get('schedule_name'),
+                self
+            )
             await interaction.response.send_modal(modal)
 
-        cancel_button.callback = cancel_callback
-        self.add_item(cancel_button)
+        delete_button.callback = delete_callback
+        self.add_item(delete_button)
 
     def create_embed(self) -> discord.Embed:
         if not self.schedules:
             embed = discord.Embed(
-                title="Pending Reset Schedules",
-                description="No pending reset schedules found.",
+                title="Reset Schedules",
+                description="No reset schedules found for this server.\n\nYou can create schedules using the `/reset` command.",
                 color=discord.Color.blue(),
                 timestamp=datetime.now(timezone.utc)
             )
@@ -1304,14 +1577,54 @@ class ScheduleView(View):
         schedule_type = schedule.get('schedule_type', 'one_time')
         reset_types = ", ".join(schedule['reset_types'])
 
+        # Title with just the name if exists, otherwise just "Schedule"
+        if schedule.get('schedule_name'):
+            title = schedule['schedule_name']
+        else:
+            title = "Schedule"
+
+        enabled = schedule.get('enabled', True)
+        status_emoji = "🟢" if enabled else "🔴"
+        status_text = "Enabled" if enabled else "Disabled"
+
         embed = discord.Embed(
-            title=f"Schedule #{schedule['id']}",
+            title=title,
+            description=f"**Status:** {status_emoji} {status_text}",
             color=discord.Color.blue(),
             timestamp=datetime.now(timezone.utc)
         )
 
+        # Schedule ID as a detail field
+        embed.add_field(name="Schedule ID",
+                        value=f"`{schedule['id']}`", inline=True)
         embed.add_field(name="Reset Types",
                         value=f"```{reset_types}```", inline=False)
+
+        # Get scope display text
+        scope_display = schedule.get('scope_type', 'Unknown')
+        if schedule.get('scope_type') == 'channel' and schedule.get('channel_id') and self.guild:
+            channel = self.guild.get_channel(schedule['channel_id'])
+            if channel:
+                scope_display = f"#{channel.name}"
+        elif schedule.get('scope_type') == 'category' and schedule.get('category_id') and self.guild:
+            category = discord.utils.get(
+                self.guild.categories, id=schedule['category_id'])
+            if category:
+                scope_display = category.name
+        elif schedule.get('scope_type') == 'user' and schedule.get('scope_details'):
+            if 'User:' in schedule.get('scope_details', ''):
+                parts = schedule['scope_details'].split('User:')
+                if len(parts) > 1:
+                    scope_display = parts[1].strip().split(' -')[0]
+        elif schedule.get('scope_type') == 'server':
+            scope_display = "Server"
+
+        embed.add_field(
+            name="Scope", value=f"```{scope_display}```", inline=True)
+
+        if schedule.get('scope_details'):
+            embed.add_field(
+                name="Target", value=f"```{schedule['scope_details'][:100]}```", inline=False)
 
         if schedule_type == 'recurring':
             pattern = schedule.get('recurring_pattern', 'unknown')
@@ -1320,8 +1633,8 @@ class ScheduleView(View):
                 'recurring_time', '00:00')
             embed.add_field(name="Schedule Type",
                             value=f"```Recurring ({pattern})```", inline=True)
-            embed.add_field(name="Time(s)",
-                            value=f"```{time_str}```", inline=True)
+            embed.add_field(
+                name="Time(s)", value=f"```{time_str}```", inline=True)
 
             if schedule.get('recurring_weekdays'):
                 weekdays = schedule['recurring_weekdays']
@@ -1340,10 +1653,13 @@ class ScheduleView(View):
                 embed.add_field(
                     name="Interval", value=f"```Every {schedule['recurring_interval_days']} days```", inline=False)
 
-            if schedule.get('next_execution_at'):
+            if schedule.get('next_execution_at') and enabled:
                 next_time = schedule['next_execution_at']
                 embed.add_field(
                     name="Next Execution", value=f"<t:{int(next_time.timestamp())}:F>", inline=False)
+            elif not enabled:
+                embed.add_field(
+                    name="Next Execution", value="```Disabled - Will not run```", inline=False)
 
         elif schedule_type == 'date_range':
             embed.add_field(name="Schedule Type",
@@ -1357,30 +1673,351 @@ class ScheduleView(View):
         else:
             embed.add_field(name="Schedule Type",
                             value=f"```One-time```", inline=True)
-            if schedule.get('target_time'):
+            if schedule.get('target_time') and enabled:
                 embed.add_field(
                     name="Scheduled Time", value=f"<t:{int(schedule['target_time'].timestamp())}:F>", inline=True)
-
-        if schedule.get('scope_type'):
-            embed.add_field(
-                name="Scope", value=f"```{schedule.get('scope_type', 'Unknown')}```", inline=True)
-        if schedule.get('scope_details'):
-            embed.add_field(
-                name="Target", value=f"```{schedule['scope_details'][:100]}```", inline=False)
 
         if schedule.get('time_period_days'):
             embed.add_field(
                 name="Time Period", value=f"```Last {schedule['time_period_days']} days```", inline=False)
 
+        embed.add_field(
+            name="ℹ️ Edit Schedules",
+            value="You can edit everything related to the schedule (name, reset types, schedule pattern, scope, time period, enabled/disabled) through the [web dashboard](https://statshq.xyz/Dashboard/Reset/).",
+            inline=False
+        )
+
         total_schedules = len(self.schedules)
         embed.set_footer(
-            text=f"Schedule {self.current_index + 1} of {total_schedules} | Use the button below to cancel")
+            text=f"Schedule {self.current_index + 1} of {total_schedules} | Use Delete to remove")
 
         return embed
 
 
 # =========================================================
-# INPUT ID BUTTON
+# DATE RANGE MODAL
+# =========================================================
+
+class DateRangeModal(Modal, title="Date Range Selection"):
+    def __init__(self, view):
+        super().__init__(timeout=300)
+        self.view = view
+
+        self.from_date = TextInput(
+            label="From Date (Optional)",
+            placeholder="DD-MM-YYYY (e.g., 01-01-2024)",
+            max_length=10,
+            required=False
+        )
+        self.add_item(self.from_date)
+
+        self.to_date = TextInput(
+            label="To Date (Optional)",
+            placeholder="DD-MM-YYYY (e.g., 31-12-2024)",
+            max_length=10,
+            required=False
+        )
+        self.add_item(self.to_date)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            from_date_str = self.from_date.value.strip()
+            to_date_str = self.to_date.value.strip()
+
+            from_date_obj = self.view.db_manager.parse_date_input(
+                from_date_str) if from_date_str else None
+            to_date_obj = self.view.db_manager.parse_date_input(
+                to_date_str) if to_date_str else None
+
+            if from_date_str and not from_date_obj:
+                await interaction.response.send_message(
+                    "❌ Invalid From Date format! Use DD-MM-YYYY (e.g., 25-12-2024)",
+                    ephemeral=True
+                )
+                return
+
+            if to_date_str and not to_date_obj:
+                await interaction.response.send_message(
+                    "❌ Invalid To Date format! Use DD-MM-YYYY (e.g., 25-12-2024)",
+                    ephemeral=True
+                )
+                return
+
+            if from_date_obj and to_date_obj and from_date_obj > to_date_obj:
+                await interaction.response.send_message(
+                    "❌ From Date must be before To Date!",
+                    ephemeral=True
+                )
+                return
+
+            self.view.date_range_from = from_date_obj
+            self.view.date_range_to = to_date_obj
+            self.view.time_option = 'range'
+
+            from_text = from_date_obj.strftime(
+                '%d-%m-%Y') if from_date_obj else "Start"
+            to_text = to_date_obj.strftime(
+                '%d-%m-%Y') if to_date_obj else "End"
+            self.view.time_period_text = f"Deleting stats from {from_text} to {to_text}"
+
+            await interaction.response.defer()
+            await self.view.show_advanced_schedule()
+
+        except Exception as e:
+            logger.error(f"Error in date range modal: {e}")
+            await interaction.response.send_message(
+                f"❌ An error occurred: {str(e)[:200]}",
+                ephemeral=True
+            )
+
+
+# =========================================================
+# TIME PERIOD MODAL
+# =========================================================
+
+class TimePeriodModal(Modal, title="Days Back Selection"):
+    def __init__(self, view):
+        super().__init__(timeout=300)
+        self.view = view
+
+        self.days_input = TextInput(
+            label="Number of Days",
+            placeholder="Enter number of days (1-365)",
+            min_length=1,
+            max_length=3,
+            required=True
+        )
+        self.add_item(self.days_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            days_str = self.days_input.value.strip()
+            days = int(days_str)
+            if days < 1 or days > 365:
+                await interaction.response.send_message(
+                    "Please enter a number between 1 and 365 days.",
+                    ephemeral=True
+                )
+                return
+
+            self.view.time_option = 'days'
+            self.view.time_period_days = days
+            self.view.time_period_text = f"Deleting stats from the last {days} days"
+
+            await interaction.response.defer()
+            await self.view.show_advanced_schedule()
+
+        except ValueError:
+            await interaction.response.send_message(
+                "Please enter a valid number.",
+                ephemeral=True
+            )
+
+
+# =========================================================
+# ADVANCED SCHEDULE MODAL (5 inputs max)
+# =========================================================
+
+class AdvancedScheduleModal(Modal, title="Schedule Reset"):
+    def __init__(self, view, scope_text: str, scope_details: str, time_period_text: str):
+        super().__init__(timeout=300)
+        self.view = view
+        self.scope_text = scope_text
+        self.scope_details = scope_details
+        self.time_period_text = time_period_text
+
+        # Input 1: Schedule Name (Optional)
+        self.schedule_name = TextInput(
+            label="Schedule Name (Optional)",
+            placeholder="Give your schedule a name (e.g., Weekly Cleanup)",
+            max_length=100,
+            required=False
+        )
+        self.add_item(self.schedule_name)
+
+        # Input 2: Time of Day (Required)
+        self.time_of_day = TextInput(
+            label="Time of Day (Required)",
+            placeholder="HH:MM (24-hour format, e.g., 18:00, 14:30)",
+            max_length=5,
+            required=True
+        )
+        self.add_item(self.time_of_day)
+
+        # Input 3: Every X Days (Optional)
+        self.every_x_days = TextInput(
+            label="Every X Days (Optional)",
+            placeholder="Enter number of days (e.g., 3, 7, 14)",
+            max_length=3,
+            required=False
+        )
+        self.add_item(self.every_x_days)
+
+        # Input 4: Weekdays (Optional - comma separated)
+        self.weekdays = TextInput(
+            label="Weekdays (Optional)",
+            placeholder="Enter weekdays (e.g., monday,wednesday,friday or mon,wed,fri)",
+            max_length=50,
+            required=False
+        )
+        self.add_item(self.weekdays)
+
+        # Input 5: Month Days (Optional - comma separated)
+        self.month_days = TextInput(
+            label="Month Days (Optional)",
+            placeholder="Enter days of month (e.g., 1,15,28)",
+            max_length=30,
+            required=False
+        )
+        self.add_item(self.month_days)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            # Parse time of day (required)
+            time_str = self.time_of_day.value.strip()
+            if not time_str:
+                await interaction.response.send_message(
+                    "❌ Time of day is required for scheduling!",
+                    ephemeral=True
+                )
+                return
+
+            # Validate time format
+            try:
+                parts = time_str.split(':')
+                if len(parts) < 2:
+                    raise ValueError
+                hour = int(parts[0])
+                minute = int(parts[1])
+                if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                    raise ValueError
+            except ValueError:
+                await interaction.response.send_message(
+                    "❌ Invalid time format! Please use HH:MM (e.g., 18:00, 14:30)",
+                    ephemeral=True
+                )
+                return
+
+            # Parse weekdays
+            weekdays_list = None
+            weekdays_has_value = bool(self.weekdays.value.strip())
+            if weekdays_has_value:
+                weekdays_list = self.view.db_manager.parse_weekdays_input(
+                    self.weekdays.value)
+                if not weekdays_list:
+                    await interaction.response.send_message(
+                        "❌ Invalid weekday format! Use full names (monday, tuesday) or short (mon, tue)",
+                        ephemeral=True
+                    )
+                    return
+
+            # Parse month days
+            month_days_list = None
+            month_days_has_value = bool(self.month_days.value.strip())
+            if month_days_has_value:
+                try:
+                    month_days_list = [int(d.strip())
+                                       for d in self.month_days.value.split(',')]
+                    for d in month_days_list:
+                        if d < 1 or d > 31:
+                            raise ValueError
+                except ValueError:
+                    await interaction.response.send_message(
+                        "❌ Invalid month days! Please enter numbers between 1 and 31, comma-separated",
+                        ephemeral=True
+                    )
+                    return
+
+            # Parse interval days
+            interval_days = None
+            interval_has_value = bool(self.every_x_days.value.strip())
+            if interval_has_value:
+                try:
+                    interval_days = int(self.every_x_days.value.strip())
+                    if interval_days < 1 or interval_days > 365:
+                        raise ValueError
+                except ValueError:
+                    await interaction.response.send_message(
+                        "❌ Invalid interval! Please enter a number between 1 and 365",
+                        ephemeral=True
+                    )
+                    return
+
+            # VALIDATION: Only ONE of weekdays, month days, or interval days can be provided
+            provided_count = sum(
+                [weekdays_has_value, month_days_has_value, interval_has_value])
+            if provided_count > 1:
+                await interaction.response.send_message(
+                    "❌ You can only specify ONE schedule type!\n\n"
+                    "Choose either:\n"
+                    "• Weekdays (e.g., monday, wednesday, friday)\n"
+                    "• Month Days (e.g., 1, 15, 28)\n"
+                    "• Every X Days (e.g., 3, 7, 14)\n\n"
+                    "If you leave all empty, it will run daily.",
+                    ephemeral=True
+                )
+                return
+
+            # Determine pattern based on what the user provided
+            pattern = None
+            if weekdays_has_value:
+                pattern = 'weekly'
+            elif month_days_has_value:
+                pattern = 'monthly'
+            elif interval_has_value:
+                pattern = 'custom_days'
+            else:
+                pattern = 'daily'
+
+            # Build times list
+            times_list = [time_str]
+
+            self.view.schedule_data = {
+                'pattern': pattern,
+                'times': times_list,
+                'weekdays': weekdays_list,
+                'month_days': month_days_list,
+                'interval_days': interval_days,
+                'schedule_name': self.schedule_name.value.strip() or None
+            }
+
+            # Build description for display
+            desc_parts = []
+            if pattern == 'daily':
+                desc_parts.append(f"Every day at {time_str}")
+            elif pattern == 'weekly' and weekdays_list:
+                weekday_names = ['Monday', 'Tuesday', 'Wednesday',
+                                 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                weekday_str = ', '.join([weekday_names[w]
+                                        for w in weekdays_list])
+                desc_parts.append(f"Every {weekday_str} at {time_str}")
+            elif pattern == 'monthly' and month_days_list:
+                def get_ordinal(n):
+                    if 11 <= n <= 13:
+                        return 'th'
+                    return {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+                month_day_str = ', '.join(
+                    [f"{d}{get_ordinal(d)}" for d in month_days_list])
+                desc_parts.append(
+                    f"Every {month_day_str} of the month at {time_str}")
+            elif pattern == 'custom_days' and interval_days:
+                desc_parts.append(f"Every {interval_days} days at {time_str}")
+
+            self.view.schedule_description = ' | '.join(desc_parts)
+
+            await interaction.response.defer()
+            await self.view.show_confirmation()
+
+        except Exception as e:
+            logger.error(f"Error in advanced schedule modal: {e}")
+            await interaction.response.send_message(
+                f"❌ An error occurred: {str(e)[:200]}",
+                ephemeral=True
+            )
+
+
+# =========================================================
+# ID INPUT MODAL
 # =========================================================
 
 class IDInputModal(Modal, title="Enter Channel/Category ID"):
@@ -1399,7 +2036,6 @@ class IDInputModal(Modal, title="Enter Channel/Category ID"):
         self.add_item(self.id_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-
         try:
             id_str = self.id_input.value.strip()
             if not id_str.isdigit():
@@ -1453,241 +2089,6 @@ class IDInputModal(Modal, title="Enter Channel/Category ID"):
 
 
 # =========================================================
-# TIME PERIOD MODAL (Page 4 - Days Back)
-# =========================================================
-
-class TimePeriodModal(Modal, title="Days Back Selection"):
-    def __init__(self, view):
-        super().__init__(timeout=300)
-        self.view = view
-
-        self.days_input = TextInput(
-            label="Number of Days",
-            placeholder="Enter number of days (1-365)",
-            min_length=1,
-            max_length=3,
-            required=True
-        )
-        self.add_item(self.days_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            days_str = self.days_input.value.strip()
-            days = int(days_str)
-            if days < 1 or days > 365:
-                await interaction.response.send_message(
-                    "Please enter a number between 1 and 365 days.",
-                    ephemeral=True
-                )
-                return
-
-            self.view.time_option = 'days'
-            self.view.time_period_days = days
-            self.view.time_period_text = f"Deleting stats from the last {days} days"
-
-            await interaction.response.defer()
-            await self.view.show_advanced_schedule()
-
-        except ValueError:
-            await interaction.response.send_message(
-                "Please enter a valid number.",
-                ephemeral=True
-            )
-
-
-# =========================================================
-# ADVANCED SCHEDULE MODAL (Page 5)
-# =========================================================
-
-class AdvancedScheduleModal(Modal, title="Schedule Reset"):
-    def __init__(self, view, scope_text: str, scope_details: str, time_period_text: str):
-        super().__init__(timeout=300)
-        self.view = view
-        self.scope_text = scope_text
-        self.scope_details = scope_details
-        self.time_period_text = time_period_text
-
-        # Field 1: Time of Day (Required)
-        self.time_of_day = TextInput(
-            label="Time of Day (Required)",
-            placeholder="Enter time in 24-hour format (e.g., 18:00, 14:30, 09:00)",
-            max_length=5,
-            required=True
-        )
-        self.add_item(self.time_of_day)
-
-        # Field 2: Every X Days (Optional)
-        self.every_x_days = TextInput(
-            label="Every X Days (Optional)",
-            placeholder="Enter number of days (e.g., 3, 7, 14)",
-            max_length=3,
-            required=False
-        )
-        self.add_item(self.every_x_days)
-
-        # Field 3: Weekdays (Optional - comma separated)
-        self.weekdays = TextInput(
-            label="Weekdays (Optional)",
-            placeholder="Enter weekdays (e.g., monday,wednesday,friday or mon,wed,fri)",
-            max_length=50,
-            required=False
-        )
-        self.add_item(self.weekdays)
-
-        # Field 4: Month Days (Optional - comma separated)
-        self.month_days = TextInput(
-            label="Month Days (Optional)",
-            placeholder="Enter days of month (e.g., 1,15,28)",
-            max_length=30,
-            required=False
-        )
-        self.add_item(self.month_days)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            # Parse time of day (required)
-            time_str = self.time_of_day.value.strip()
-            if not time_str:
-                await interaction.response.send_message(
-                    "Time of day is required for scheduling!",
-                    ephemeral=True
-                )
-                return
-
-            # Validate time format
-            try:
-                parts = time_str.split(':')
-                if len(parts) < 2:
-                    raise ValueError
-                hour = int(parts[0])
-                minute = int(parts[1])
-                if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-                    raise ValueError
-            except ValueError:
-                await interaction.response.send_message(
-                    "Invalid time format! Please use HH:MM (e.g., 18:00, 14:30)",
-                    ephemeral=True
-                )
-                return
-
-            # Parse weekdays
-            weekdays_list = None
-            weekdays_has_value = bool(self.weekdays.value.strip())
-            if weekdays_has_value:
-                weekdays_list = self.view.db_manager.parse_weekdays_input(
-                    self.weekdays.value)
-                if not weekdays_list:
-                    await interaction.response.send_message(
-                        "Invalid weekday format! Use full names (monday, tuesday) or short (mon, tue)",
-                        ephemeral=True
-                    )
-                    return
-
-            # Parse month days
-            month_days_list = None
-            month_days_has_value = bool(self.month_days.value.strip())
-            if month_days_has_value:
-                try:
-                    month_days_list = [int(d.strip())
-                                       for d in self.month_days.value.split(',')]
-                    for d in month_days_list:
-                        if d < 1 or d > 31:
-                            raise ValueError
-                except ValueError:
-                    await interaction.response.send_message(
-                        "Invalid month days! Please enter numbers between 1 and 31, comma-separated",
-                        ephemeral=True
-                    )
-                    return
-
-            # Parse interval days
-            interval_days = None
-            interval_has_value = bool(self.every_x_days.value.strip())
-            if interval_has_value:
-                try:
-                    interval_days = int(self.every_x_days.value.strip())
-                    if interval_days < 1 or interval_days > 365:
-                        raise ValueError
-                except ValueError:
-                    await interaction.response.send_message(
-                        "Invalid interval! Please enter a number between 1 and 365",
-                        ephemeral=True
-                    )
-                    return
-
-            # VALIDATION: Only ONE of weekdays, month days, or interval days can be provided
-            provided_count = sum(
-                [weekdays_has_value, month_days_has_value, interval_has_value])
-            if provided_count > 1:
-                await interaction.response.send_message(
-                    "You can only specify ONE schedule type!\n\n"
-                    "Choose either:\n"
-                    "• Weekdays (e.g., monday, wednesday, friday)\n"
-                    "• Month Days (e.g., 1, 15, 28)\n"
-                    "• Every X Days (e.g., 3, 7, 14)\n\n"
-                    "If you leave all empty, it will run daily.",
-                    ephemeral=True
-                )
-                return
-
-            # Determine pattern based on what the user provided
-            pattern = None
-            if weekdays_has_value:
-                pattern = 'weekly'
-            elif month_days_has_value:
-                pattern = 'monthly'
-            elif interval_has_value:
-                pattern = 'custom_days'
-            else:
-                pattern = 'daily'
-
-            # Build times list
-            times_list = [time_str]
-
-            self.view.schedule_data = {
-                'pattern': pattern,
-                'times': times_list,
-                'weekdays': weekdays_list,
-                'month_days': month_days_list,
-                'interval_days': interval_days
-            }
-
-            # Build description for display
-            desc_parts = []
-            if pattern == 'daily':
-                desc_parts.append(f"Every day at {time_str}")
-            elif pattern == 'weekly' and weekdays_list:
-                weekday_names = ['Monday', 'Tuesday', 'Wednesday',
-                                 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                weekday_str = ', '.join([weekday_names[w]
-                                        for w in weekdays_list])
-                desc_parts.append(f"Every {weekday_str} at {time_str}")
-            elif pattern == 'monthly' and month_days_list:
-                def get_ordinal(n):
-                    if 11 <= n <= 13:
-                        return 'th'
-                    return {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
-                month_day_str = ', '.join(
-                    [f"{d}{get_ordinal(d)}" for d in month_days_list])
-                desc_parts.append(
-                    f"Every {month_day_str} of the month at {time_str}")
-            elif pattern == 'custom_days' and interval_days:
-                desc_parts.append(f"Every {interval_days} days at {time_str}")
-
-            self.view.schedule_description = ' | '.join(desc_parts)
-
-            await interaction.response.defer()
-            await self.view.show_confirmation()
-
-        except Exception as e:
-            logger.error(f"Error in advanced schedule modal: {e}")
-            await interaction.response.send_message(
-                f"An error occurred: {str(e)[:200]}",
-                ephemeral=True
-            )
-
-
-# =========================================================
 # RESET VIEW (6 Pages)
 # =========================================================
 
@@ -1706,7 +2107,7 @@ class ResetView(View):
         self.current_page = 1
         self.selected_channel = None
         self.selected_category = None
-        self.time_option = None  # 'skip', 'days', 'range'
+        self.time_option = None
         self.time_period_days = None
         self.time_period_text = None
         self.date_range_from = None
@@ -1864,11 +2265,11 @@ class ResetView(View):
 
         scope_text = ""
         if self.scope == "server":
-            scope_text = "the entire server"
+            scope_text = "Server"
         elif self.scope == "channel" and self.selected_channel:
-            scope_text = f"channel #{self.selected_channel.name}"
+            scope_text = f"#{self.selected_channel.name}"
         elif self.scope == "category" and self.selected_category:
-            scope_text = f"category {self.selected_category.name}"
+            scope_text = f"{self.selected_category.name}"
 
         if self.command_type == "server":
             title = "Select Stat Type"
@@ -2003,7 +2404,7 @@ class ResetView(View):
         self.add_item(back_button)
         await self.interaction.edit_original_response(embed=embed, view=self)
 
-    # PAGE 4: TIME PERIOD SELECTION (Updated with 4 buttons)
+    # PAGE 4: TIME PERIOD SELECTION
     async def show_time_period(self):
         self.clear_items()
         self.current_page = 4
@@ -2017,9 +2418,7 @@ class ResetView(View):
 
         embed = self.create_embed(title, description)
 
-        # Skip button
-        skip_button = Button(
-            label="Skip", style=discord.ButtonStyle.secondary)
+        skip_button = Button(label="Skip", style=discord.ButtonStyle.secondary)
 
         async def skip_callback(interaction: discord.Interaction):
             if interaction.user.id != self.interaction.user.id:
@@ -2033,7 +2432,6 @@ class ResetView(View):
         skip_button.callback = skip_callback
         self.add_item(skip_button)
 
-        # Days Back button
         days_button = Button(
             label="Days Back", style=discord.ButtonStyle.primary)
 
@@ -2047,9 +2445,8 @@ class ResetView(View):
         days_button.callback = days_callback
         self.add_item(days_button)
 
-        # Date Range button
-        range_button = Button(
-            label="Date Range", style=discord.ButtonStyle.primary)
+        range_button = Button(label="Date Range",
+                              style=discord.ButtonStyle.primary)
 
         async def range_callback(interaction: discord.Interaction):
             if interaction.user.id != self.interaction.user.id:
@@ -2061,7 +2458,6 @@ class ResetView(View):
         range_button.callback = range_callback
         self.add_item(range_button)
 
-        # Back button
         back_button = Button(
             label="Back", style=discord.ButtonStyle.gray, emoji="⬅️")
 
@@ -2077,7 +2473,7 @@ class ResetView(View):
 
         await self.interaction.edit_original_response(embed=embed, view=self)
 
-    # PAGE 5: ADVANCED SCHEDULING (with explanations)
+    # PAGE 5: ADVANCED SCHEDULING
     async def show_advanced_schedule(self):
         self.clear_items()
         self.current_page = 5
@@ -2088,20 +2484,20 @@ class ResetView(View):
         if self.command_type == "server":
             scope_text = "Server Reset"
             if self.scope == "server":
-                scope_details = "Entire Server"
+                scope_details = "Server"
             elif self.scope == "channel" and self.selected_channel:
-                scope_details = f"Channel: #{self.selected_channel.name} (ID: {self.selected_channel.id})"
+                scope_details = f"#{self.selected_channel.name}"
             elif self.scope == "category" and self.selected_category:
-                scope_details = f"Category: {self.selected_category.name} (ID: {self.selected_category.id})"
+                scope_details = f"{self.selected_category.name}"
         else:
             user_text = f"<@{self.target_user_id}>" if self.target_user_id else "Yourself"
             scope_text = "User Reset"
             if self.scope == "server":
-                scope_details = f"User: {user_text} - Server-wide"
+                scope_details = f"{user_text}"
             elif self.scope == "channel" and self.selected_channel:
-                scope_details = f"User: {user_text} - Channel: #{self.selected_channel.name}"
+                scope_details = f"{user_text} - #{self.selected_channel.name}"
             elif self.scope == "category" and self.selected_category:
-                scope_details = f"User: {user_text} - Category: {self.selected_category.name}"
+                scope_details = f"{user_text} - {self.selected_category.name}"
 
         title = "Schedule Reset (Optional)"
         description = "**Page 5/6**\n**Do you want to schedule this reset to run automatically?**\n\n"
@@ -2120,8 +2516,7 @@ class ResetView(View):
 
         embed = self.create_embed(title, description)
 
-        skip_button = Button(
-            label="Skip", style=discord.ButtonStyle.secondary)
+        skip_button = Button(label="Skip", style=discord.ButtonStyle.secondary)
 
         async def skip_callback(interaction: discord.Interaction):
             if interaction.user.id != self.interaction.user.id:
@@ -2162,18 +2557,18 @@ class ResetView(View):
         self.add_item(back_button)
         await self.interaction.edit_original_response(embed=embed, view=self)
 
-    # PAGE 6: CONFIRMATION (cleaned up, fewer emojis)
+    # PAGE 6: CONFIRMATION
     async def show_confirmation(self):
         self.clear_items()
         self.current_page = 6
 
         scope_text = ""
         if self.scope == "server":
-            scope_text = "the entire server"
+            scope_text = "Server"
         elif self.scope == "channel" and self.selected_channel:
-            scope_text = f"channel #{self.selected_channel.name}"
+            scope_text = f"#{self.selected_channel.name}"
         elif self.scope == "category" and self.selected_category:
-            scope_text = f"category {self.selected_category.name}"
+            scope_text = f"{self.selected_category.name}"
 
         time_period_text = self.time_period_text if self.time_period_text else "Deleting ALL stats (no time limit)"
 
@@ -2187,8 +2582,12 @@ class ResetView(View):
         if self.schedule_data:
             description += f"\n**Schedule Configuration:**\n"
             description += f"• **Schedule:** {self.schedule_description}\n"
+            if self.schedule_data.get('schedule_name'):
+                description += f"• **Schedule Name:** {self.schedule_data['schedule_name']}\n"
+            description += f"\n**Note:** You can manage (edit/delete) this schedule later using `/reset schedules`\n"
+            description += f"Edit everything related to the schedule (name, reset types, schedule pattern, scope, time period, enabled/disabled) through the [web dashboard](https://statshq.xyz/Dashboard/Reset/)."
 
-        description += f"\n**This action is PERMANENT and CANNOT be undone!**"
+        description += f"\n\n**This action is PERMANENT and CANNOT be undone!**"
 
         embed = self.create_embed("Confirm Reset", description)
 
@@ -2210,7 +2609,6 @@ class ResetView(View):
 
             try:
                 if self.schedule_data:
-                    # Create schedule
                     schedule_id = await self.db_manager.create_advanced_reset_schedule(
                         guild_id=interaction.guild.id,
                         requested_by_id=interaction.user.id,
@@ -2229,7 +2627,9 @@ class ResetView(View):
                         scope_type=self.scope,
                         scope_details=f"{scope_text}",
                         channel_id=self.channel_id,
-                        category_id=self.category_id
+                        category_id=self.category_id,
+                        schedule_name=self.schedule_data.get('schedule_name'),
+                        enabled=True
                     )
 
                     embed = discord.Embed(
@@ -2247,10 +2647,17 @@ class ResetView(View):
                         name="Schedule", value=self.schedule_description, inline=False)
                     embed.add_field(name="Schedule ID",
                                     value=f"`{schedule_id}`", inline=True)
+
+                    if self.schedule_data.get('schedule_name'):
+                        embed.add_field(
+                            name="Schedule Name", value=self.schedule_data['schedule_name'], inline=True)
+
                     embed.add_field(
-                        name="Manage Schedules", value="Use `/reset schedules` to view or cancel this schedule.", inline=False)
+                        name="Manage Schedules",
+                        value="Use `/reset schedules` to view and delete schedules.\nEdit everything related to the schedule through the [web dashboard](https://statshq.xyz/Dashboard/Reset/).",
+                        inline=False
+                    )
                 else:
-                    # Execute immediately
                     if self.command_type == "server":
                         result = await self.db_manager.reset_server_stats(
                             guild_id=interaction.guild.id,
@@ -2321,10 +2728,7 @@ class ResetView(View):
                 await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
                 return
             await interaction.response.defer()
-            if self.schedule_data:
-                await self.show_advanced_schedule()
-            else:
-                await self.show_advanced_schedule()
+            await self.show_advanced_schedule()
 
         back_button.callback = back_callback
         self.add_item(back_button)
@@ -2504,7 +2908,6 @@ class ResetStats(commands.Cog):
         success = await self.create_db_pool()
         if not success:
             logger.error("Failed to establish database connection!")
-        # DO NOT start schedule checker here - it's handled by the cron job in DatabaseStats cog
 
     async def cog_unload(self):
         if self.db_pool:
@@ -2586,7 +2989,7 @@ class ResetStats(commands.Cog):
     async def reset_user(self, interaction: discord.Interaction, user: Optional[discord.User] = None):
         await _handle_reset_command(self, interaction, "user", user, is_interaction=True)
 
-    @reset_group.command(name="schedules", description="View pending reset schedules (Admin only)")
+    @reset_group.command(name="schedules", description="View and delete reset schedules (Admin only)")
     @app_commands.default_permissions(administrator=True)
     async def view_schedules(self, interaction: discord.Interaction):
         if not self.db_manager:
@@ -2596,14 +2999,12 @@ class ResetStats(commands.Cog):
             return
 
         try:
-            all_schedules = await self.db_manager.get_pending_reset_schedules(lookahead_hours=720)
-            guild_schedules = [
-                s for s in all_schedules if s['guild_id'] == interaction.guild.id]
+            guild_schedules = await self.db_manager.get_all_schedules_for_guild(interaction.guild.id)
 
             if not guild_schedules:
                 embed = discord.Embed(
-                    title="Pending Reset Schedules",
-                    description="No pending reset schedules found for this server.",
+                    title="Reset Schedules",
+                    description="No reset schedules found for this server.\n\nYou can create schedules using the `/reset` command.",
                     color=discord.Color.blue(),
                     timestamp=datetime.now(timezone.utc)
                 )
@@ -2611,10 +3012,11 @@ class ResetStats(commands.Cog):
                 return
 
             view = ScheduleView(guild_schedules, self.db_manager,
-                                interaction.guild.id, interaction.user.id)
+                                interaction.guild.id, interaction.user.id, interaction.guild)
             await interaction.response.send_message(embed=view.create_embed(), view=view, ephemeral=True)
 
         except Exception as e:
+            logger.error(f"Error in view_schedules: {e}")
             embed = discord.Embed(title="Error", description=str(e)[
                                   :200], color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)

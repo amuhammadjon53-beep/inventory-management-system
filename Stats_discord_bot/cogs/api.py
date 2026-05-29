@@ -28,7 +28,7 @@ import aiohttp
 import logging
 import uuid
 import secrets
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime, time
 import re
 import redis.asyncio as redis
@@ -450,54 +450,37 @@ class CreateAdvancedScheduleRequest(BaseModel):
     """Request model for creating an advanced reset schedule with multiple values support"""
     guild_id: str
     requested_by_id: str
-    reset_types: List[str] = Field(...,
-                                   description="List of stat types to reset")
-    schedule_name: Optional[str] = Field(
-        None, max_length=100, description="Optional name for the schedule")
+    reset_types: List[str] = Field(..., description="List of stat types to reset")
+    schedule_name: Optional[str] = Field(None, max_length=100, description="Optional name for the schedule")
 
     # Schedule type
-    schedule_type: ScheduleType = Field(
-        default=ScheduleType.RECURRING, description="Type of schedule")
+    schedule_type: ScheduleType = Field(default=ScheduleType.RECURRING, description="Type of schedule")
 
     # For one-time execution
-    target_time: Optional[datetime] = Field(
-        None, description="Specific date/time for one-time execution")
+    target_time: Optional[datetime] = Field(None, description="Specific date/time for one-time execution")
 
     # For recurring schedules (multiple values support)
-    recurring_pattern: Optional[RecurringPattern] = Field(
-        None, description="Pattern for recurring schedule")
-    recurring_weekdays: Optional[List[int]] = Field(
-        None, description="List of weekdays (0=Monday to 6=Sunday)")
-    recurring_days_of_month: Optional[List[int]] = Field(
-        None, description="List of days of month (1-31)")
-    recurring_times: Optional[List[str]] = Field(
-        None, description="List of times in HH:MM format")
-    recurring_interval_days: Optional[int] = Field(
-        None, description="For custom day intervals", ge=1, le=365)
+    recurring_pattern: Optional[RecurringPattern] = Field(None, description="Pattern for recurring schedule")
+    recurring_weekdays: Optional[List[int]] = Field(None, description="List of weekdays (0=Monday to 6=Sunday)")
+    recurring_days_of_month: Optional[List[int]] = Field(None, description="List of days of month (1-31)")
+    recurring_times: Optional[List[str]] = Field(None, description="List of times in HH:MM format")
+    recurring_interval_days: Optional[int] = Field(None, description="For custom day intervals", ge=1, le=365)
 
     # For date range deletion
-    delete_from_date: Optional[datetime] = Field(
-        None, description="Start date for date range deletion")
-    delete_to_date: Optional[datetime] = Field(
-        None, description="End date for date range deletion")
+    delete_from_date: Optional[datetime] = Field(None, description="Start date for date range deletion")
+    delete_to_date: Optional[datetime] = Field(None, description="End date for date range deletion")
 
     # Rolling window time period
-    time_period_days: Optional[int] = Field(
-        None, description="Delete stats from last X days", ge=1, le=365)
+    time_period_days: Optional[int] = Field(None, description="Delete stats from last X days", ge=1, le=365)
 
     # Scope information
-    scope_type: Literal["server", "channel", "category"] = Field(
-        default="server", description="Reset scope")
-    scope_details: Optional[str] = Field(
-        None, description="Human-readable scope description")
-    channel_id: Optional[str] = Field(
-        None, description="Channel ID if scope_type is channel")
-    category_id: Optional[str] = Field(
-        None, description="Category ID if scope_type is category")
+    scope_type: Literal["server", "channel", "category"] = Field(default="server", description="Reset scope")
+    scope_details: Optional[str] = Field(None, description="Human-readable scope description")
+    channel_id: Optional[str] = Field(None, description="Channel ID if scope_type is channel")
+    category_id: Optional[str] = Field(None, description="Category ID if scope_type is category")
 
     # Metadata
-    reason: Optional[str] = Field(
-        None, description="Optional reason for the schedule")
+    reason: Optional[str] = Field(None, description="Optional reason for the schedule")
 
     @field_validator('recurring_times')
     @classmethod
@@ -506,39 +489,36 @@ class CreateAdvancedScheduleRequest(BaseModel):
             pattern = r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$'
             for time_str in v:
                 if not re.match(pattern, time_str):
-                    raise ValueError(
-                        f'Time must be in HH:MM format (e.g., 18:00, 14:30). Got: {time_str}')
+                    raise ValueError(f'Time must be in HH:MM format (e.g., 18:00, 14:30). Got: {time_str}')
         return v
 
-    @field_validator('schedule_type')
-    @classmethod
-    def validate_schedule_type_dependencies(cls, v, info):
-        values = info.data
-        if v == ScheduleType.ONE_TIME and not values.get('target_time'):
-            raise ValueError('target_time required for one_time schedule')
+    # REPLACE the old field_validator with this model_validator
+    @model_validator(mode='after')
+    def validate_schedule_type_dependencies(self):
+        v = self.schedule_type
+        
+        if v == ScheduleType.ONE_TIME:
+            if not self.target_time:
+                raise ValueError('target_time required for one_time schedule')
+                
         elif v == ScheduleType.RECURRING:
-            if not values.get('recurring_pattern'):
-                raise ValueError(
-                    'recurring_pattern required for recurring schedule')
-            pattern = values.get('recurring_pattern')
-            if pattern == RecurringPattern.WEEKLY and not values.get('recurring_weekdays'):
-                raise ValueError(
-                    'recurring_weekdays required for weekly schedule')
-            if pattern == RecurringPattern.MONTHLY and not values.get('recurring_days_of_month'):
-                raise ValueError(
-                    'recurring_days_of_month required for monthly schedule')
-            if pattern == RecurringPattern.CUSTOM_DAYS and not values.get('recurring_interval_days'):
-                raise ValueError(
-                    'recurring_interval_days required for custom_days schedule')
+            if not self.recurring_pattern:
+                raise ValueError('recurring_pattern required for recurring schedule')
+            
+            if self.recurring_pattern == RecurringPattern.WEEKLY and not self.recurring_weekdays:
+                raise ValueError('recurring_weekdays required for weekly schedule')
+            if self.recurring_pattern == RecurringPattern.MONTHLY and not self.recurring_days_of_month:
+                raise ValueError('recurring_days_of_month required for monthly schedule')
+            if self.recurring_pattern == RecurringPattern.CUSTOM_DAYS and not self.recurring_interval_days:
+                raise ValueError('recurring_interval_days required for custom_days schedule')
+                
         elif v == ScheduleType.DATE_RANGE:
-            if not values.get('delete_from_date') or not values.get('delete_to_date'):
-                raise ValueError(
-                    'delete_from_date and delete_to_date required for date_range schedule')
-            if values.get('delete_from_date') and values.get('delete_to_date'):
-                if values['delete_from_date'] >= values['delete_to_date']:
-                    raise ValueError(
-                        'delete_from_date must be before delete_to_date')
-        return v
+            if not self.delete_from_date or not self.delete_to_date:
+                raise ValueError('delete_from_date and delete_to_date required for date_range schedule')
+            if self.delete_from_date >= self.delete_to_date:
+                raise ValueError('delete_from_date must be before delete_to_date')
+        
+        return self
 
 
 class CreateScheduleResponse(BaseModel):
@@ -556,7 +536,7 @@ class CreateScheduleResponse(BaseModel):
 class UpdateScheduleRequest(BaseModel):
     """Request model for updating a schedule"""
     schedule_id: int
-    guild_id: str  # ← MUST be str, NOT int!
+    guild_id: str
     enabled: Optional[bool] = None
     schedule_name: Optional[str] = Field(None, max_length=100)
     reset_types: Optional[List[str]] = None
@@ -572,10 +552,13 @@ class UpdateScheduleRequest(BaseModel):
     @classmethod
     def validate_recurring_times(cls, v):
         if v:
-            pattern = r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$'
+            pattern = r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$'
+            normalized = []
             for time_str in v:
                 if not re.match(pattern, time_str):
-                    raise ValueError(f'Time must be in HH:MM format. Got: {time_str}')
+                    raise ValueError(f'Time must be in HH:MM or HH:MM:SS format. Got: {time_str}')
+                normalized.append(time_str[:5])  # Normalize to HH:MM
+            return normalized
         return v
     
     @field_validator('recurring_weekdays')
@@ -595,6 +578,18 @@ class UpdateScheduleRequest(BaseModel):
                 if day < 1 or day > 31:
                     raise ValueError(f'Day of month must be between 1 and 31. Got: {day}')
         return v
+    
+    # Add this model validator if you have similar cross-field validation
+    @model_validator(mode='after')
+    def validate_recurring_pattern_dependencies(self):
+        if self.recurring_pattern:
+            if self.recurring_pattern == 'weekly' and not self.recurring_weekdays:
+                raise ValueError('recurring_weekdays required for weekly schedule')
+            if self.recurring_pattern == 'monthly' and not self.recurring_days_of_month:
+                raise ValueError('recurring_days_of_month required for monthly schedule')
+            if self.recurring_pattern == 'custom_days' and not self.recurring_interval_days:
+                raise ValueError('recurring_interval_days required for custom_days schedule')
+        return self
 
 
 # ============================================
@@ -23717,7 +23712,8 @@ async def get_reset_schedules(request: GetSchedulesRequest):
                        target_time, recurring_pattern, recurring_weekdays, recurring_days_of_month,
                        recurring_times, recurring_interval_days, next_execution_at,
                        time_period_days, scope_type, scope_details, channel_id, category_id,
-                       completed, created_at, executed_at, failure_count, last_error
+                       completed, created_at, executed_at, failure_count, last_error,
+                       schedule_name, enabled, reason, updated_at
                 FROM reset_schedules
                 WHERE guild_id = $1 AND completed = FALSE
                 ORDER BY next_execution_at ASC NULLS LAST
@@ -23727,7 +23723,7 @@ async def get_reset_schedules(request: GetSchedulesRequest):
             for row in rows:
                 schedule = dict(row)
                 # Convert datetime objects to ISO format strings
-                for key in ['target_time', 'next_execution_at', 'created_at', 'executed_at']:
+                for key in ['target_time', 'next_execution_at', 'created_at', 'executed_at', 'updated_at']:
                     if schedule.get(key):
                         schedule[key] = schedule[key].isoformat()
                 schedules.append(schedule)
@@ -23839,7 +23835,8 @@ async def get_upcoming_reset_schedules(request: GetSchedulesRequest):
                        target_time, recurring_pattern, recurring_weekdays, recurring_days_of_month,
                        recurring_times, recurring_interval_days, next_execution_at,
                        time_period_days, scope_type, scope_details, channel_id, category_id,
-                       completed, created_at, executed_at, failure_count, last_error
+                       completed, created_at, executed_at, failure_count, last_error,
+                       schedule_name, enabled, reason, updated_at
                 FROM reset_schedules
                 WHERE guild_id = $1 
                 AND completed = FALSE 
@@ -23852,7 +23849,7 @@ async def get_upcoming_reset_schedules(request: GetSchedulesRequest):
             schedules = []
             for row in rows:
                 schedule = dict(row)
-                for key in ['target_time', 'next_execution_at', 'created_at', 'executed_at']:
+                for key in ['target_time', 'next_execution_at', 'created_at', 'executed_at', 'updated_at']:
                     if schedule.get(key):
                         schedule[key] = schedule[key].isoformat()
                 schedules.append(schedule)
@@ -23888,7 +23885,8 @@ async def get_reset_schedule_history(request: GetSchedulesRequest):
                        target_time, recurring_pattern, recurring_weekdays, recurring_days_of_month,
                        recurring_times, recurring_interval_days, executed_at,
                        time_period_days, scope_type, scope_details, channel_id, category_id,
-                       completed, created_at, executed_at, failure_count, last_error
+                       completed, created_at, executed_at, failure_count, last_error,
+                       schedule_name, enabled, reason, updated_at
                 FROM reset_schedules
                 WHERE guild_id = $1 AND completed = TRUE
                 ORDER BY executed_at DESC
@@ -23898,7 +23896,7 @@ async def get_reset_schedule_history(request: GetSchedulesRequest):
             schedules = []
             for row in rows:
                 schedule = dict(row)
-                for key in ['target_time', 'executed_at', 'created_at']:
+                for key in ['target_time', 'executed_at', 'created_at', 'updated_at']:
                     if schedule.get(key):
                         schedule[key] = schedule[key].isoformat()
                 schedules.append(schedule)
