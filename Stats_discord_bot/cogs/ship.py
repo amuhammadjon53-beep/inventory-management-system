@@ -50,11 +50,54 @@ class ShipConfig:
     }
 
 
+# PAGE JUMP MODAL
+
+class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
+    def __init__(self, view, total_pages):
+        super().__init__(timeout=60)
+        self.view = view
+        self.total_pages = total_pages
+
+        self.page_number = discord.ui.TextInput(
+            label=f'Enter page number (1-{total_pages})',
+            placeholder=f'1 to {total_pages}',
+            min_length=1,
+            max_length=4,
+            required=True
+        )
+        self.add_item(self.page_number)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            page = int(self.page_number.value) - 1
+
+            if page < 0 or page >= self.total_pages:
+                embed = discord.Embed(
+                    title="❌ Invalid Page",
+                    description=f"Page {page + 1} does not exist. Please enter a number between 1 and {self.total_pages}.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            await interaction.response.defer()
+            self.view.page = page
+            await self.view.update_message(interaction)
+
+        except ValueError:
+            embed = discord.Embed(
+                title="❌ Invalid Input",
+                description="Please enter a valid page number.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 # SHIP LEADERBOARD VIEW
 
 class ShipLeaderboardView(discord.ui.View):
     def __init__(self, cog_instance, guild: discord.Guild, days_back: int = 30,
-                 page: int = 0, selected_role_id: str = None):
+                 page: int = 0, selected_role_id: str = None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
@@ -62,6 +105,7 @@ class ShipLeaderboardView(discord.ui.View):
         self.page = page
         self.selected_role_id = selected_role_id
         self.show_time_buttons = False
+        self.using_server_default = using_server_default
         self._update_buttons()
 
     def _update_buttons(self):
@@ -99,25 +143,54 @@ class ShipLeaderboardView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
-            row = 3
-            for days in ShipConfig.TIME_PERIODS:
+            # Row 3: All Time + 4 time periods
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="ship_all_time",
+                row=3
+            )
+            all_time_button.callback = self.create_all_time_callback()
+            self.add_item(all_time_button)
+
+            # Add first 4 time periods to row 3
+            for i, days in enumerate(ShipConfig.TIME_PERIODS[:4]):
                 days_button = discord.ui.Button(
                     style=discord.ButtonStyle.primary if self.current_days == days else discord.ButtonStyle.secondary,
                     label=f"{days} Days",
                     custom_id=f"ship_days_{days}",
-                    row=row
+                    row=3
                 )
                 days_button.callback = self.create_days_callback(days)
                 self.add_item(days_button)
 
+            # Row 4: remaining time period (90 days) + Custom button
+            # Add the 5th time period (90 days) to row 4
+            if len(ShipConfig.TIME_PERIODS) > 4:
+                days_button = discord.ui.Button(
+                    style=discord.ButtonStyle.primary if self.current_days == ShipConfig.TIME_PERIODS[
+                        4] else discord.ButtonStyle.secondary,
+                    label=f"{ShipConfig.TIME_PERIODS[4]} Days",
+                    custom_id=f"ship_days_{ShipConfig.TIME_PERIODS[4]}",
+                    row=4
+                )
+                days_button.callback = self.create_days_callback(
+                    ShipConfig.TIME_PERIODS[4])
+                self.add_item(days_button)
+
             custom_button = discord.ui.Button(
                 style=discord.ButtonStyle.success,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in ShipConfig.TIME_PERIODS else "Custom",
+                label=f"Custom ({self.current_days}d)" if self.current_days not in ShipConfig.TIME_PERIODS and self.current_days != 999999 else "Custom",
                 custom_id="ship_custom_days",
-                row=row
+                row=4
             )
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
+
+    def create_all_time_callback(self):
+        async def callback(interaction: discord.Interaction):
+            await self.handle_time_period_change(interaction, 999999)
+        return callback
 
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
@@ -153,23 +226,25 @@ class ShipLeaderboardView(discord.ui.View):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
         self.current_days = days
+        self.using_server_default = False
         self.show_time_buttons = False
         self.page = 0
         await self.update_message(interaction)
 
     async def handle_custom_days(self, interaction: discord.Interaction):
         modal = ShipLeaderboardTimeModal(
-            self.cog, interaction.message.id, self.guild)
+            self.cog, interaction.message.id, self.guild, self)
         await interaction.response.send_modal(modal)
 
     async def generate_image(self):
         leaderboard_data = await self.cog.get_ship_leaderboard_data(
             self.guild.id, self.current_days, self.selected_role_id
         )
+        display_days = "All Time" if self.current_days == 999999 else self.current_days
         return await self.cog.generate_ship_leaderboard_image(
             guild=self.guild,
             leaderboard_data=leaderboard_data,
-            days_back=self.current_days,
+            days_back=display_days,
             role_id=self.selected_role_id,
             page=self.page
         )
@@ -215,11 +290,12 @@ class ShipLeaderboardView(discord.ui.View):
 # TIME MODAL
 
 class ShipLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
-    def __init__(self, cog_instance, original_message_id, guild):
+    def __init__(self, cog_instance, original_message_id, guild, view):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
+        self.view = view
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -241,9 +317,16 @@ class ShipLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
             if self.original_message_id in self.cog.active_views:
                 view = self.cog.active_views[self.original_message_id]
                 view.current_days = days
+                view.using_server_default = False
                 view.show_time_buttons = False
                 view.page = 0
                 await view.update_message(interaction)
+            elif self.view:
+                self.view.current_days = days
+                self.view.using_server_default = False
+                self.view.show_time_buttons = False
+                self.view.page = 0
+                await self.view.update_message(interaction)
             else:
                 await interaction.followup.send("❌ Could not find the leaderboard view. Please try the command again.", ephemeral=True)
 
@@ -359,7 +442,20 @@ class NextButton(discord.ui.Button):
 class PageIndicator(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary, label="Page 1/1",
-                         custom_id="ship_page", disabled=True)
+                         custom_id="ship_page", disabled=False)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+
+        leaderboard_data = await view.cog.get_ship_leaderboard_data(
+            view.guild.id, view.current_days, view.selected_role_id
+        )
+        total_ships = len(leaderboard_data)
+        total_pages = max(
+            1, (total_ships + ShipConfig.SHIPS_PER_PAGE - 1) // ShipConfig.SHIPS_PER_PAGE)
+
+        modal = PageJumpModal(view, total_pages)
+        await interaction.response.send_modal(modal)
 
 
 # DRAWING FUNCTIONS
@@ -499,18 +595,14 @@ class ServerUIIntegration:
         else:
             positions = ShipConfig.SERVER_UI_POSITIONS
 
-        # User profile picture
         avatar_x, avatar_y = positions['avatar']['x'], positions['avatar']['y']
         avatar_size = positions['avatar']['size']
 
-        # Server name
         text_start_x = positions['text_start']['x']
         text_start_y = positions['text_start']['y']
 
-        # Rectangle for text constraints
         username_rectangle = positions['username_rectangle']
 
-        # Server profile picture
         try:
             if guild.icon:
                 icon_url = guild.icon.url
@@ -638,6 +730,30 @@ class ShipCog(commands.Cog):
             print(f"❌ Failed to create ship scores table: {e}")
             import traceback
             traceback.print_exc()
+
+    # GET SERVER DEFAULT DAYS
+    async def get_server_default_days(self, guild: discord.Guild) -> tuple:
+        """Get the default days back from server settings. Returns (days_back, display_text)"""
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                return (ShipConfig.DEFAULT_DAYS_BACK, f"{ShipConfig.DEFAULT_DAYS_BACK} days")
+
+            settings = await settings_cog.get_guild_settings(guild.id)
+            mode = settings.get('default_time_mode', 'days_back')
+
+            if mode == 'all_time':
+                return (999999, "All Time")
+            elif mode == 'days_back':
+                days = settings.get(
+                    'default_days_back') or ShipConfig.DEFAULT_DAYS_BACK
+                return (days, f"{days} days")
+            else:
+                return (ShipConfig.DEFAULT_DAYS_BACK, "Custom")
+
+        except Exception as e:
+            print(f"Error getting server default days: {e}")
+            return (ShipConfig.DEFAULT_DAYS_BACK, f"{ShipConfig.DEFAULT_DAYS_BACK} days")
 
     # PERMISSION CHECK
     async def check_permission(self, ctx_or_interaction) -> bool:
@@ -795,6 +911,13 @@ class ShipCog(commands.Cog):
             return []
 
         try:
+            if days_back == 999999:
+                time_condition = ""
+                time_params = []
+            else:
+                time_condition = "AND last_shipped >= NOW() - INTERVAL '1 day' * $2"
+                time_params = [days_back]
+
             role_member_ids = None
             if role_id and role_id != "none":
                 guild = self.bot.get_guild(guild_id)
@@ -808,33 +931,63 @@ class ShipCog(commands.Cog):
                 if role_member_ids:
                     placeholders = ', '.join(
                         f'${i+3}' for i in range(len(role_member_ids)))
-                    query = f"""
-                        SELECT 
-                            guild_id, user1_id, user2_id, ship_name, compatibility_score,
-                            mentions_score, activity_score, channels_score, 
-                            vc_score, recentness_score, times_shipped, last_shipped
-                        FROM ship_scores 
-                        WHERE guild_id = $1 
-                        AND last_shipped >= NOW() - INTERVAL '1 day' * $2
-                        AND user1_id IN ({placeholders})
-                        AND user2_id IN ({placeholders})
-                        ORDER BY compatibility_score DESC 
-                        LIMIT {limit}
-                    """
-                    params = [guild_id, days_back] + role_member_ids
+
+                    if days_back == 999999:
+                        query = f"""
+                            SELECT 
+                                guild_id, user1_id, user2_id, ship_name, compatibility_score,
+                                mentions_score, activity_score, channels_score, 
+                                vc_score, recentness_score, times_shipped, last_shipped
+                            FROM ship_scores 
+                            WHERE guild_id = $1 
+                            AND user1_id IN ({placeholders})
+                            AND user2_id IN ({placeholders})
+                            ORDER BY compatibility_score DESC 
+                            LIMIT {limit}
+                        """
+                        params = [guild_id] + role_member_ids
+                    else:
+                        query = f"""
+                            SELECT 
+                                guild_id, user1_id, user2_id, ship_name, compatibility_score,
+                                mentions_score, activity_score, channels_score, 
+                                vc_score, recentness_score, times_shipped, last_shipped
+                            FROM ship_scores 
+                            WHERE guild_id = $1 
+                            AND last_shipped >= NOW() - INTERVAL '1 day' * $2
+                            AND user1_id IN ({placeholders})
+                            AND user2_id IN ({placeholders})
+                            ORDER BY compatibility_score DESC 
+                            LIMIT {limit}
+                        """
+                        params = [guild_id, days_back] + role_member_ids
+
                     results = await conn.fetch(query, *params)
                 else:
-                    results = await conn.fetch("""
-                        SELECT 
-                            guild_id, user1_id, user2_id, ship_name, compatibility_score,
-                            mentions_score, activity_score, channels_score, 
-                            vc_score, recentness_score, times_shipped, last_shipped
-                        FROM ship_scores 
-                        WHERE guild_id = $1 
-                        AND last_shipped >= NOW() - INTERVAL '1 day' * $2
-                        ORDER BY compatibility_score DESC 
-                        LIMIT $3
-                    """, guild_id, days_back, limit)
+                    if days_back == 999999:
+                        query = """
+                            SELECT 
+                                guild_id, user1_id, user2_id, ship_name, compatibility_score,
+                                mentions_score, activity_score, channels_score, 
+                                vc_score, recentness_score, times_shipped, last_shipped
+                            FROM ship_scores 
+                            WHERE guild_id = $1 
+                            ORDER BY compatibility_score DESC 
+                            LIMIT $2
+                        """
+                        results = await conn.fetch(query, guild_id, limit)
+                    else:
+                        results = await conn.fetch("""
+                            SELECT 
+                                guild_id, user1_id, user2_id, ship_name, compatibility_score,
+                                mentions_score, activity_score, channels_score, 
+                                vc_score, recentness_score, times_shipped, last_shipped
+                            FROM ship_scores 
+                            WHERE guild_id = $1 
+                            AND last_shipped >= NOW() - INTERVAL '1 day' * $2
+                            ORDER BY compatibility_score DESC 
+                            LIMIT $3
+                        """, guild_id, days_back, limit)
 
             ship_data = []
             for row in results:
@@ -853,6 +1006,13 @@ class ShipCog(commands.Cog):
             return 0
 
         try:
+            if days_back == 999999:
+                time_condition = ""
+                time_params = []
+            else:
+                time_condition = "AND last_shipped >= NOW() - INTERVAL '1 day' * $2"
+                time_params = [days_back]
+
             role_member_ids = None
             if role_id and role_id != "none":
                 guild = self.bot.get_guild(guild_id)
@@ -866,23 +1026,42 @@ class ShipCog(commands.Cog):
                 if role_member_ids:
                     placeholders = ', '.join(
                         f'${i+3}' for i in range(len(role_member_ids)))
-                    query = f"""
-                        SELECT COUNT(*) 
-                        FROM ship_scores 
-                        WHERE guild_id = $1 
-                        AND last_shipped >= NOW() - INTERVAL '1 day' * $2
-                        AND user1_id IN ({placeholders})
-                        AND user2_id IN ({placeholders})
-                    """
-                    params = [guild_id, days_back] + role_member_ids
+
+                    if days_back == 999999:
+                        query = f"""
+                            SELECT COUNT(*) 
+                            FROM ship_scores 
+                            WHERE guild_id = $1 
+                            AND user1_id IN ({placeholders})
+                            AND user2_id IN ({placeholders})
+                        """
+                        params = [guild_id] + role_member_ids
+                    else:
+                        query = f"""
+                            SELECT COUNT(*) 
+                            FROM ship_scores 
+                            WHERE guild_id = $1 
+                            AND last_shipped >= NOW() - INTERVAL '1 day' * $2
+                            AND user1_id IN ({placeholders})
+                            AND user2_id IN ({placeholders})
+                        """
+                        params = [guild_id, days_back] + role_member_ids
+
                     count = await conn.fetchval(query, *params)
                 else:
-                    count = await conn.fetchval("""
-                        SELECT COUNT(*) 
-                        FROM ship_scores 
-                        WHERE guild_id = $1 
-                        AND last_shipped >= NOW() - INTERVAL '1 day' * $2
-                    """, guild_id, days_back)
+                    if days_back == 999999:
+                        count = await conn.fetchval("""
+                            SELECT COUNT(*) 
+                            FROM ship_scores 
+                            WHERE guild_id = $1
+                        """, guild_id)
+                    else:
+                        count = await conn.fetchval("""
+                            SELECT COUNT(*) 
+                            FROM ship_scores 
+                            WHERE guild_id = $1 
+                            AND last_shipped >= NOW() - INTERVAL '1 day' * $2
+                        """, guild_id, days_back)
             return count
         except Exception as e:
             print(f"❌ Error getting total ships count: {e}")
@@ -1359,7 +1538,7 @@ class ShipCog(commands.Cog):
     # IMAGE GENERATION
 
     async def generate_ship_leaderboard_image(self, guild: discord.Guild, leaderboard_data: list,
-                                              days_back: int, role_id: str = None, page: int = 0):
+                                              days_back, role_id: str = None, page: int = 0):
 
         try:
             image = Image.open(ShipConfig.TEMPLATE_PATH)
@@ -1384,7 +1563,7 @@ class ShipCog(commands.Cog):
                                    font_small, "white", "black", 1)
 
         self.draw_text_with_stroke(
-            draw, (630, 422), f"{days_back} days", font_small, "white", "black", 1)
+            draw, (630, 422), str(days_back) if isinstance(days_back, str) else f"{days_back} days", font_small, "white", "black", 1)
 
         self.draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
             "%B %d, %Y"), font_small, "white", "black", 1)
@@ -1967,8 +2146,10 @@ class ShipCog(commands.Cog):
                 await ctx_or_interaction.response.defer()
 
             try:
+                default_days, time_display = await self.get_server_default_days(guild)
+
                 leaderboard_data = await self.get_ship_leaderboard_data(
-                    guild.id, ShipConfig.DEFAULT_DAYS_BACK
+                    guild.id, default_days
                 )
 
                 if not leaderboard_data:
@@ -1983,14 +2164,14 @@ class ShipCog(commands.Cog):
                 img_bytes = await self.generate_ship_leaderboard_image(
                     guild=guild,
                     leaderboard_data=leaderboard_data,
-                    days_back=ShipConfig.DEFAULT_DAYS_BACK,
+                    days_back=time_display,
                     page=0
                 )
 
                 file = discord.File(img_bytes, filename="ship_leaderboard.png")
 
                 view = ShipLeaderboardView(
-                    self, guild, days_back=ShipConfig.DEFAULT_DAYS_BACK
+                    self, guild, days_back=default_days, using_server_default=True
                 )
 
                 msg = await send_method(file=file, view=view)

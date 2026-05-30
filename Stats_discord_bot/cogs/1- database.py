@@ -2624,18 +2624,23 @@ class DatabaseStats(commands.Cog):
                         UNIQUE(guild_id, role_id)
                     )
                     ''',
-                    # UPDATED: settings with min_account_age_days
                     '''
                     CREATE TABLE IF NOT EXISTS settings (
-                        guild_id BIGINT PRIMARY KEY,
-                        prefix TEXT DEFAULT 's!',
-                        timezone TEXT DEFAULT 'UTC',
-                        voice_states TEXT[] DEFAULT '{"self_mute", "self_deafen", "streaming", "video"}',
-                        permission_level TEXT DEFAULT 'Default',
-                        bot_filter BOOLEAN DEFAULT TRUE,
-                        dashboard_access_level TEXT DEFAULT 'Member',
-                        min_account_age_days INT DEFAULT 3,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    guild_id BIGINT PRIMARY KEY,
+                    prefix TEXT DEFAULT 's!',
+                    timezone TEXT DEFAULT 'UTC',
+                    voice_states TEXT[] DEFAULT '{"self_mute", "self_deafen", "streaming", "video"}',
+                    permission_level TEXT DEFAULT 'Default',
+                    bot_filter BOOLEAN DEFAULT TRUE,
+                    dashboard_access_level TEXT DEFAULT 'Member',
+                    min_account_age_days INT DEFAULT 3,
+                    default_time_mode TEXT DEFAULT 'days_back' CHECK (default_time_mode IN ('all_time', 'days_back', 'date_range', 'rolling_window')),
+                    default_days_back INT DEFAULT 14,
+                    default_from_date TIMESTAMPTZ DEFAULT NULL,
+                    default_to_date TIMESTAMPTZ DEFAULT NULL,
+                    default_rolling_type TEXT DEFAULT NULL,
+                    default_rolling_value INT DEFAULT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                     ''',
                     '''
@@ -2734,7 +2739,10 @@ class DatabaseStats(commands.Cog):
                         category_id BIGINT,
                         
                         -- Metadata
-                        reason TEXT
+                        schedule_name VARCHAR(100),
+                        enabled BOOLEAN DEFAULT TRUE,
+                        reason TEXT,
+                        updated_at TIMESTAMP DEFAULT NOW()
                     )
                     '''
                 ]
@@ -2762,7 +2770,7 @@ class DatabaseStats(commands.Cog):
 
                 alter_reset_schedules_queries = [
                     # Schedule type columns
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS schedule_type TEXT NOT NULL DEFAULT \'immediate\'',
+                    "ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS schedule_type TEXT NOT NULL DEFAULT 'immediate'",
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_pattern TEXT',
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_weekday INTEGER',
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_day_of_month INTEGER',
@@ -2792,20 +2800,74 @@ class DatabaseStats(commands.Cog):
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS scope_details TEXT',
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS channel_id BIGINT',
                     'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS category_id BIGINT',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS schedule_name VARCHAR(100);',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE;',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS reason TEXT;',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();'
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS schedule_name VARCHAR(100)',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS reason TEXT',
+                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()',
                 ]
 
                 for query in alter_reset_schedules_queries:
                     try:
                         await conn.execute(query)
-                        print(f"  ✅ Added column to reset_schedules")
+                        import re
+                        match = re.search(
+                            r'ADD COLUMN IF NOT EXISTS (\w+)', query)
+                        if match:
+                            print(
+                                f"  ✅ Added/verified column in reset_schedules: {match.group(1)}")
                     except asyncpg.exceptions.DuplicateColumnError:
-                        print(f"  ✅ Column already exists")
+                        print(f"  ✅ Column already exists in reset_schedules")
                     except Exception as e:
                         print(f"  ⚠️ Warning: {e}")
+
+                # ===== ALTER EXISTING SETTINGS TABLE TO ADD ANY MISSING COLUMNS =====
+                print("\n" + "="*60)
+                print("🔄 ALTERING SETTINGS TABLE (ADDING MISSING COLUMNS)")
+                print("="*60)
+
+                alter_settings_queries = [
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_time_mode TEXT DEFAULT 'days_back'",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_days_back INT DEFAULT 14",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_from_date TIMESTAMPTZ DEFAULT NULL",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_to_date TIMESTAMPTZ DEFAULT NULL",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_rolling_type TEXT DEFAULT NULL",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_rolling_value INT DEFAULT NULL"
+                ]
+                for query in alter_settings_queries:
+                    try:
+                        await conn.execute(query)
+                        import re
+                        match = re.search(
+                            r'ADD COLUMN IF NOT EXISTS (\w+)', query)
+                        if match:
+                            print(
+                                f"  ✅ Added/verified column in settings: {match.group(1)}")
+                    except asyncpg.exceptions.DuplicateColumnError:
+                        print(f"  ✅ Column already exists in settings")
+                    except Exception as e:
+                        print(f"  ⚠️ Warning: {e}")
+
+                # Add the CHECK constraint separately — ADD COLUMN IF NOT EXISTS won't
+                # add the constraint if the column already existed without it.
+                try:
+                    await conn.execute("""
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.check_constraints
+                                WHERE constraint_name = 'valid_time_mode'
+                            ) THEN
+                                ALTER TABLE settings
+                                ADD CONSTRAINT valid_time_mode
+                                CHECK (default_time_mode IN ('all_time', 'days_back', 'date_range', 'rolling_window'));
+                            END IF;
+                        END
+                        $$;
+                    """)
+                    print("  ✅ Added/verified CHECK constraint: valid_time_mode")
+                except Exception as e:
+                    print(
+                        f"  ⚠️ Warning: Could not add valid_time_mode constraint: {e}")
 
                 # ===== ALTER EXISTING TABLES TO ADD ENCRYPTED_USERNAME IF MISSING =====
                 print("\n" + "="*60)
@@ -2922,7 +2984,7 @@ class DatabaseStats(commands.Cog):
                     'CREATE INDEX IF NOT EXISTS idx_reset_schedules_guild ON reset_schedules (guild_id)',
                     'CREATE INDEX IF NOT EXISTS idx_reset_schedules_completed ON reset_schedules (completed, next_execution_at)',
                     'CREATE INDEX IF NOT EXISTS idx_reset_schedules_type ON reset_schedules (schedule_type)',
-                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_recurring ON reset_schedules (recurring_pattern) WHERE schedule_type = \'recurring\'',
+                    "CREATE INDEX IF NOT EXISTS idx_reset_schedules_recurring ON reset_schedules (recurring_pattern) WHERE schedule_type = 'recurring'",
                 ]
 
                 for query in reset_schedules_indexes:

@@ -256,7 +256,7 @@ def draw_text_with_stroke(draw, text, position, font, fill="white", stroke_fill=
 
 # IMAGE GENERATION
 
-async def generate_category_message_stats_image(bot: commands.Bot, guild: discord.Guild, category: discord.CategoryChannel, message_data: dict, days_back: int, role_id: str = None, role_name: str = None):
+async def generate_category_message_stats_image(bot: commands.Bot, guild: discord.Guild, category: discord.CategoryChannel, message_data: dict, days_back, role_id: str = None, role_name: str = None):
     template_path = BASE_DIR / "assets" / "images" / \
         "category message stats final png.png"
     try:
@@ -375,7 +375,8 @@ async def generate_category_message_stats_image(bot: commands.Bot, guild: discor
         draw, role_text, (590, 420), font_small
     )
 
-    time_period_text = f"{days_back} days"
+    time_period_text = days_back if isinstance(
+        days_back, str) else f"{days_back} days"
 
     draw_text_with_stroke(
         draw, time_period_text, (635, 458), font_small
@@ -391,7 +392,6 @@ async def generate_category_message_stats_image(bot: commands.Bot, guild: discor
     ]
 
     for i, ((user_id, message_count), (user_x, user_y), (msg_x, msg_y)) in enumerate(zip(top_users, user_positions, message_positions)):
-        # UPDATED: Use rate-limited get_user_info - only rate limits fallback when user left
         member, username_raw, account_exists = await get_user_info(bot, guild, int(user_id))
 
         if not account_exists:
@@ -475,7 +475,7 @@ async def generate_category_message_stats_image(bot: commands.Bot, guild: discor
     messages_over_days = {}
     daily_data = message_data.get('daily', Counter())
     for days in [1, 5, 10, 20, 30]:
-        if days <= days_back:
+        if days <= (days_back if isinstance(days_back, int) and days_back != 999999 else 30):
             messages_over_days[days] = daily_data.get(days, 0)
 
     time_positions = {
@@ -501,7 +501,7 @@ async def generate_category_message_stats_image(bot: commands.Bot, guild: discor
     return img_bytes
 
 
-async def generate_category_voice_stats_image(bot: commands.Bot, guild: discord.Guild, category: discord.CategoryChannel, voice_data: dict, days_back: int, role_id: str = None, role_name: str = None):
+async def generate_category_voice_stats_image(bot: commands.Bot, guild: discord.Guild, category: discord.CategoryChannel, voice_data: dict, days_back, role_id: str = None, role_name: str = None):
     template_path = BASE_DIR / "assets" / "images" / \
         "category voice stats final png.png"
     try:
@@ -620,7 +620,8 @@ async def generate_category_voice_stats_image(bot: commands.Bot, guild: discord.
         draw, role_text, (590, 420), font_small
     )
 
-    time_period_text = f"{days_back} days"
+    time_period_text = days_back if isinstance(
+        days_back, str) else f"{days_back} days"
 
     draw_text_with_stroke(
         draw, time_period_text, (635, 458), font_small
@@ -635,7 +636,6 @@ async def generate_category_voice_stats_image(bot: commands.Bot, guild: discord.
     ]
 
     for i, ((user_id, user_seconds), (user_x, user_y), (time_x, time_y)) in enumerate(zip(top_users, user_positions, voice_time_positions)):
-        # UPDATED: Use rate-limited get_user_info - only rate limits fallback when user left
         member, username_raw, account_exists = await get_user_info(bot, guild, int(user_id))
 
         if not account_exists:
@@ -717,7 +717,7 @@ async def generate_category_voice_stats_image(bot: commands.Bot, guild: discord.
     voice_time_over_days = {}
     daily_data = voice_data.get('daily', Counter())
     for days in [1, 5, 10, 20, 30]:
-        if days <= days_back:
+        if days <= (days_back if isinstance(days_back, int) and days_back != 999999 else 30):
             voice_time_over_days[days] = daily_data.get(days, 0)
 
     time_positions = {
@@ -782,10 +782,13 @@ class StatsTypeSelectMenu(discord.ui.Select):
         view.stats_type = self.values[0]
         view.selected_role_id = None
         view.current_days = 14
+        view.using_server_default = False
 
         await interaction.response.defer()
 
         view._update_buttons()
+
+        display_days = "All Time" if view.current_days == 999999 else view.current_days
 
         if view.stats_type == "messages":
             category_data = await view.cog._get_category_message_stats(
@@ -800,7 +803,7 @@ class StatsTypeSelectMenu(discord.ui.Select):
                     'timestamp': time.time()
                 }
             img_bytes = await generate_category_message_stats_image(
-                view.cog.bot, view.guild, view.category, category_data, view.current_days, None
+                view.cog.bot, view.guild, view.category, category_data, display_days, None
             )
         else:
             category_data = await view.cog._get_category_voice_stats(
@@ -815,7 +818,7 @@ class StatsTypeSelectMenu(discord.ui.Select):
                     'timestamp': time.time()
                 }
             img_bytes = await generate_category_voice_stats_image(
-                view.cog.bot, view.guild, view.category, category_data, view.current_days, None
+                view.cog.bot, view.guild, view.category, category_data, display_days, None
             )
 
         file = discord.File(
@@ -828,13 +831,14 @@ class StatsTypeSelectMenu(discord.ui.Select):
 # ROLE ID MODAL
 
 class CategoryRoleIDModal(discord.ui.Modal, title='Input Role ID'):
-    def __init__(self, cog_instance, original_message_id, guild, category, stats_type):
+    def __init__(self, cog_instance, original_message_id, guild, category, stats_type, view):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
         self.category = category
         self.stats_type = stats_type
+        self.view = view
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID',
@@ -893,63 +897,59 @@ class CategoryRoleIDModal(discord.ui.Modal, title='Input Role ID'):
                     except:
                         pass
 
-            try:
-                original_message = await interaction.channel.fetch_message(self.original_message_id)
-                if original_message:
-                    if self.stats_type == "messages":
-                        sessions_dict = self.cog.active_category_sessions["messages"]
-                    else:
-                        sessions_dict = self.cog.active_category_sessions["voice"]
+            if self.view:
+                self.view.selected_role_id = role_id
+                self.view.using_server_default = False
 
-                    if self.original_message_id in sessions_dict:
-                        session = sessions_dict[self.original_message_id]
-                        view = session['view']
-                        view.selected_role_id = role_id
-                        session['selected_role_id'] = role_id
+                display_days = "All Time" if self.view.current_days == 999999 else self.view.current_days
 
-                        if self.stats_type == "messages":
-                            category_data = await self.cog._get_category_message_stats(
-                                self.guild, self.category, view.current_days, role_id
-                            )
-                            if category_data is None:
-                                category_data = {
-                                    'total_messages': 0,
-                                    'channels': Counter(),
-                                    'users': Counter(),
-                                    'daily': Counter(),
-                                    'timestamp': time.time()
-                                }
-                            img_bytes = await generate_category_message_stats_image(
-                                self.cog.bot, self.guild, self.category, category_data, view.current_days, role_id, role_name
-                            )
-                        else:
-                            category_data = await self.cog._get_category_voice_stats(
-                                self.guild, self.category, view.current_days, role_id
-                            )
-                            if category_data is None:
-                                category_data = {
-                                    'total_seconds': 0,
-                                    'channels': Counter(),
-                                    'users': Counter(),
-                                    'daily': Counter(),
-                                    'timestamp': time.time()
-                                }
-                            img_bytes = await generate_category_voice_stats_image(
-                                self.cog.bot, self.guild, self.category, category_data, view.current_days, role_id, role_name
-                            )
-
-                        file = discord.File(
-                            img_bytes,
-                            filename=f"category_{self.stats_type}_stats.png"
-                        )
-                        await original_message.edit(attachments=[file], view=view)
-                    else:
-                        await interaction.followup.send("❌ Session expired. Use the command again.", ephemeral=True)
+                if self.stats_type == "messages":
+                    category_data = await self.cog._get_category_message_stats(
+                        self.guild, self.category, self.view.current_days, role_id
+                    )
+                    if category_data is None:
+                        category_data = {
+                            'total_messages': 0,
+                            'channels': Counter(),
+                            'users': Counter(),
+                            'daily': Counter(),
+                            'timestamp': time.time()
+                        }
+                    img_bytes = await generate_category_message_stats_image(
+                        self.cog.bot, self.guild, self.category, category_data, display_days, role_id, role_name
+                    )
                 else:
-                    await interaction.followup.send("❌ Original message not found.", ephemeral=True)
-            except Exception as e:
-                print(f"Error updating role filter: {e}")
-                await interaction.followup.send("❌ An error occurred while updating the role filter.", ephemeral=True)
+                    category_data = await self.cog._get_category_voice_stats(
+                        self.guild, self.category, self.view.current_days, role_id
+                    )
+                    if category_data is None:
+                        category_data = {
+                            'total_seconds': 0,
+                            'channels': Counter(),
+                            'users': Counter(),
+                            'daily': Counter(),
+                            'timestamp': time.time()
+                        }
+                    img_bytes = await generate_category_voice_stats_image(
+                        self.cog.bot, self.guild, self.category, category_data, display_days, role_id, role_name
+                    )
+
+                self.view._update_buttons()
+                file = discord.File(
+                    img_bytes,
+                    filename=f"category_{self.stats_type}_stats.png"
+                )
+
+                try:
+                    original_message = await interaction.channel.fetch_message(self.original_message_id)
+                    if original_message:
+                        await original_message.edit(attachments=[file], view=self.view)
+                    else:
+                        await interaction.followup.send(file=file, view=self.view)
+                except discord.NotFound:
+                    await interaction.followup.send(file=file, view=self.view)
+            else:
+                await interaction.followup.send("❌ Could not find session view.", ephemeral=True)
 
         except Exception as e:
             print(f"Error in role ID modal: {e}")
@@ -959,13 +959,14 @@ class CategoryRoleIDModal(discord.ui.Modal, title='Input Role ID'):
 # TIME MODAL
 
 class CategoryStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
-    def __init__(self, cog_instance, original_message_id, guild, category, stats_type):
+    def __init__(self, cog_instance, original_message_id, guild, category, stats_type, view):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
         self.category = category
         self.stats_type = stats_type
+        self.view = view
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -984,75 +985,73 @@ class CategoryStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
             await interaction.response.defer()
 
-            try:
-                original_message = await interaction.channel.fetch_message(self.original_message_id)
-                if original_message:
-                    if self.stats_type == "messages":
-                        sessions_dict = self.cog.active_category_sessions["messages"]
-                    else:
-                        sessions_dict = self.cog.active_category_sessions["voice"]
+            if self.view:
+                self.view.current_days = days
+                self.view.using_server_default = False
+                self.view.show_time_buttons = False
 
-                    if self.original_message_id in sessions_dict:
-                        session = sessions_dict[self.original_message_id]
-                        view = session['view']
-                        view.current_days = days
-                        session['current_days'] = days
-                        view.show_time_buttons = False
+                display_days = "All Time" if days == 999999 else days
 
-                        if self.stats_type == "messages":
-                            category_data = await self.cog._get_category_message_stats(
-                                self.guild, self.category, days, view.selected_role_id
-                            )
-                            if category_data is None:
-                                category_data = {
-                                    'total_messages': 0,
-                                    'channels': Counter(),
-                                    'users': Counter(),
-                                    'daily': Counter(),
-                                    'timestamp': time.time()
-                                }
-                            img_bytes = await generate_category_message_stats_image(
-                                self.cog.bot, self.guild, self.category, category_data, days, view.selected_role_id
-                            )
-                        else:
-                            category_data = await self.cog._get_category_voice_stats(
-                                self.guild, self.category, days, view.selected_role_id
-                            )
-                            if category_data is None:
-                                category_data = {
-                                    'total_seconds': 0,
-                                    'channels': Counter(),
-                                    'users': Counter(),
-                                    'daily': Counter(),
-                                    'timestamp': time.time()
-                                }
-                            img_bytes = await generate_category_voice_stats_image(
-                                self.cog.bot, self.guild, self.category, category_data, days, view.selected_role_id
-                            )
-
-                        file = discord.File(
-                            img_bytes,
-                            filename=f"category_{self.stats_type}_stats.png"
-                        )
-                        view._update_buttons()
-                        await original_message.edit(attachments=[file], view=view)
-                    else:
-                        await interaction.followup.send("❌ Session expired. Use the command again.", ephemeral=True)
+                if self.stats_type == "messages":
+                    category_data = await self.cog._get_category_message_stats(
+                        self.guild, self.category, days, self.view.selected_role_id
+                    )
+                    if category_data is None:
+                        category_data = {
+                            'total_messages': 0,
+                            'channels': Counter(),
+                            'users': Counter(),
+                            'daily': Counter(),
+                            'timestamp': time.time()
+                        }
+                    img_bytes = await generate_category_message_stats_image(
+                        self.cog.bot, self.guild, self.category, category_data, display_days, self.view.selected_role_id
+                    )
                 else:
-                    await interaction.followup.send("❌ Original message not found.", ephemeral=True)
-            except Exception as e:
-                print(f"Error updating time period: {e}")
-                await interaction.followup.send("❌ An error occurred while updating the time period.", ephemeral=True)
+                    category_data = await self.cog._get_category_voice_stats(
+                        self.guild, self.category, days, self.view.selected_role_id
+                    )
+                    if category_data is None:
+                        category_data = {
+                            'total_seconds': 0,
+                            'channels': Counter(),
+                            'users': Counter(),
+                            'daily': Counter(),
+                            'timestamp': time.time()
+                        }
+                    img_bytes = await generate_category_voice_stats_image(
+                        self.cog.bot, self.guild, self.category, category_data, display_days, self.view.selected_role_id
+                    )
+
+                self.view._update_buttons()
+                file = discord.File(
+                    img_bytes,
+                    filename=f"category_{self.stats_type}_stats.png"
+                )
+
+                try:
+                    original_message = await interaction.channel.fetch_message(self.original_message_id)
+                    if original_message:
+                        await original_message.edit(attachments=[file], view=self.view)
+                    else:
+                        await interaction.followup.send(file=file, view=self.view)
+                except discord.NotFound:
+                    await interaction.followup.send(file=file, view=self.view)
+            else:
+                await interaction.followup.send("❌ Could not find session view.", ephemeral=True)
 
         except ValueError:
             await interaction.response.send_message("❌ Please enter a valid number.", ephemeral=True)
+        except Exception as e:
+            print(f"Error in time modal: {e}")
+            await interaction.followup.send("❌ An error occurred.", ephemeral=True)
 
 
 # MAIN VIEW
 
 class CategoryStatsView(discord.ui.View):
     def __init__(self, cog_instance, guild: discord.Guild, category: discord.CategoryChannel,
-                 days_back: int, stats_type: str, selected_role_id: str = None):
+                 days_back: int, stats_type: str, selected_role_id: str = None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
@@ -1061,6 +1060,7 @@ class CategoryStatsView(discord.ui.View):
         self.stats_type = stats_type
         self.selected_role_id = selected_role_id
         self.show_time_buttons = False
+        self.using_server_default = using_server_default
         self._update_buttons()
 
     def _update_buttons(self):
@@ -1096,6 +1096,15 @@ class CategoryStatsView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id=f"category_all_time",
+                row=2
+            )
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
+
             days_7_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
@@ -1117,7 +1126,7 @@ class CategoryStatsView(discord.ui.View):
             custom_button = discord.ui.Button(
                 style=discord.ButtonStyle.success,
                 label=f"Custom ({self.current_days}d)" if self.current_days not in [
-                    7, 14, 30] else "Custom",
+                    7, 14, 30, 999999] else "Custom",
                 custom_id=f"category_custom_days",
                 row=2
             )
@@ -1134,7 +1143,7 @@ class CategoryStatsView(discord.ui.View):
 
     async def input_role_callback(self, interaction: discord.Interaction):
         modal = CategoryRoleIDModal(
-            self.cog, interaction.message.id, self.guild, self.category, self.stats_type
+            self.cog, interaction.message.id, self.guild, self.category, self.stats_type, self
         )
         await interaction.response.send_modal(modal)
 
@@ -1143,6 +1152,9 @@ class CategoryStatsView(discord.ui.View):
 
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
+
+    async def all_time_callback(self, interaction: discord.Interaction):
+        await self.handle_button_click(interaction, days=999999)
 
     async def days_7_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, days=7)
@@ -1155,7 +1167,7 @@ class CategoryStatsView(discord.ui.View):
 
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = CategoryStatsTimeModal(
-            self.cog, interaction.message.id, self.guild, self.category, self.stats_type
+            self.cog, interaction.message.id, self.guild, self.category, self.stats_type, self
         )
         await interaction.response.send_modal(modal)
 
@@ -1165,6 +1177,7 @@ class CategoryStatsView(discord.ui.View):
 
             if days:
                 self.current_days = days
+                self.using_server_default = False
                 self.show_time_buttons = False
 
             # Get role name from database
@@ -1184,6 +1197,8 @@ class CategoryStatsView(discord.ui.View):
                     except:
                         pass
 
+            display_days = "All Time" if self.current_days == 999999 else self.current_days
+
             if self.stats_type == 'messages':
                 category_data = await self.cog._get_category_message_stats(
                     self.guild, self.category, self.current_days, self.selected_role_id
@@ -1197,7 +1212,7 @@ class CategoryStatsView(discord.ui.View):
                         'timestamp': time.time()
                     }
                 img_bytes = await generate_category_message_stats_image(
-                    self.cog.bot, self.guild, self.category, category_data, self.current_days, self.selected_role_id, role_name
+                    self.cog.bot, self.guild, self.category, category_data, display_days, self.selected_role_id, role_name
                 )
             else:
                 category_data = await self.cog._get_category_voice_stats(
@@ -1212,7 +1227,7 @@ class CategoryStatsView(discord.ui.View):
                         'timestamp': time.time()
                     }
                 img_bytes = await generate_category_voice_stats_image(
-                    self.cog.bot, self.guild, self.category, category_data, self.current_days, self.selected_role_id, role_name
+                    self.cog.bot, self.guild, self.category, category_data, display_days, self.selected_role_id, role_name
                 )
 
             self._update_buttons()
@@ -1255,6 +1270,29 @@ class CategoryStats(commands.Cog):
         }
         self.rate_limiter = get_rate_limiter()
 
+    # GET SERVER DEFAULT DAYS
+    async def get_server_default_days(self, guild_id: int) -> tuple:
+        """Get the default days back from server settings. Returns (days_back, display_text)"""
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                return (14, "14 days")
+
+            settings = await settings_cog.get_guild_settings(guild_id)
+            mode = settings.get('default_time_mode', 'days_back')
+
+            if mode == 'all_time':
+                return (999999, "All Time")
+            elif mode == 'days_back':
+                days = settings.get('default_days_back') or 14
+                return (days, f"{days} days")
+            else:
+                return (14, "Custom")
+
+        except Exception as e:
+            print(f"Error getting server default days: {e}")
+            return (14, "14 days")
+
     # PERMISSION CHECK FUNCTION
     async def check_permission(self, ctx_or_interaction, command_name: str = "category stats") -> bool:
         """Check if user has permission to use the command based on server settings"""
@@ -1286,19 +1324,14 @@ class CategoryStats(commands.Cog):
             if permission_level == 'All':
                 return True
             elif permission_level == 'Default':
-                # For category stats, no special restrictions needed
                 return True
             elif permission_level == 'User Restriction':
-                # For category stats, no user parameter to check, so allow
                 return True
             elif permission_level == 'Admin':
-                # Already checked administrator above
                 return False
             elif permission_level == 'Moderator':
-                # Check for Manage Server permission
                 return user.guild_permissions.manage_guild
 
-            # Default to True if unknown permission level
             return True
 
         except Exception as e:
@@ -1319,7 +1352,12 @@ class CategoryStats(commands.Cog):
                 role_ids = [int(role_id)]
 
             end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
+
+            # Handle All Time (days_back == 999999)
+            if days_back == 999999:
+                start_time = None
+            else:
+                start_time = end_time - timedelta(days=days_back)
 
             # Get channel count (still uses static method)
             channel_count_data = await db_cog.q_category_channel_count(
@@ -1386,7 +1424,7 @@ class CategoryStats(commands.Cog):
 
             for days_str, count in timeseries_data.items():
                 days = int(days_str.replace('d', ''))
-                if days <= days_back:
+                if days_back == 999999 or days <= days_back:
                     category_data['daily'][days] = count
 
             category_data['timestamp'] = time.time()
@@ -1411,7 +1449,12 @@ class CategoryStats(commands.Cog):
                 role_ids = [int(role_id)]
 
             end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
+
+            # Handle All Time (days_back == 999999)
+            if days_back == 999999:
+                start_time = None
+            else:
+                start_time = end_time - timedelta(days=days_back)
 
             category_data = {
                 'total_seconds': 0,
@@ -1472,7 +1515,7 @@ class CategoryStats(commands.Cog):
 
             for days_str, seconds in timeseries_data.items():
                 days = int(days_str.replace('d', ''))
-                if days <= days_back:
+                if days_back == 999999 or days <= days_back:
                     category_data['daily'][days] = seconds
 
             category_data['timestamp'] = time.time()
@@ -1499,7 +1542,6 @@ class CategoryStats(commands.Cog):
             else:
                 user = ctx_or_interaction.author
                 guild = ctx_or_interaction.guild
-                # Try to delete the command message
                 try:
                     await ctx_or_interaction.message.delete()
                 except:
@@ -1509,7 +1551,6 @@ class CategoryStats(commands.Cog):
             # Check permissions
             has_permission = await self.check_permission(ctx_or_interaction)
             if not has_permission:
-                # Get settings to determine required permission
                 settings_cog = self.bot.get_cog('Settings')
                 if settings_cog:
                     settings = await settings_cog.get_guild_settings(guild.id)
@@ -1558,18 +1599,15 @@ class CategoryStats(commands.Cog):
             # Try to find the category
             category = None
             try:
-                # First try to get by ID
                 category_id_int = int(category_id)
                 category = guild.get_channel(category_id_int)
 
-                # If not found by ID, try to search by name
                 if category is None or not isinstance(category, discord.CategoryChannel):
                     for cat in guild.categories:
                         if str(cat.id) == category_id or cat.name.lower() == category_id.lower():
                             category = cat
                             break
             except ValueError:
-                # If category_id is not a number, search by name
                 for cat in guild.categories:
                     if cat.name.lower() == category_id.lower():
                         category = cat
@@ -1585,8 +1623,11 @@ class CategoryStats(commands.Cog):
             if is_interaction:
                 await ctx_or_interaction.response.defer()
 
+            # Get server default days
+            default_days, time_display = await self.get_server_default_days(guild.id)
+
             stats_type = "messages"
-            days_back = 14
+            days_back = default_days
 
             if stats_type == "messages":
                 category_data = await self._get_category_message_stats(guild, category, days_back)
@@ -1598,7 +1639,7 @@ class CategoryStats(commands.Cog):
                         'daily': Counter(),
                         'timestamp': time.time()
                     }
-                img_bytes = await generate_category_message_stats_image(self.bot, guild, category, category_data, days_back)
+                img_bytes = await generate_category_message_stats_image(self.bot, guild, category, category_data, time_display)
             else:
                 category_data = await self._get_category_voice_stats(guild, category, days_back)
                 if category_data is None:
@@ -1609,10 +1650,10 @@ class CategoryStats(commands.Cog):
                         'daily': Counter(),
                         'timestamp': time.time()
                     }
-                img_bytes = await generate_category_voice_stats_image(self.bot, guild, category, category_data, days_back)
+                img_bytes = await generate_category_voice_stats_image(self.bot, guild, category, category_data, time_display)
 
             view = CategoryStatsView(
-                self, guild, category, days_back=days_back, stats_type=stats_type
+                self, guild, category, days_back=days_back, stats_type=stats_type, using_server_default=True
             )
 
             file = discord.File(img_bytes, filename="category_stats.png")
@@ -1684,7 +1725,6 @@ class CategoryStats(commands.Cog):
         category="Select a category to get stats for"
     )
     async def category_stats(self, interaction: discord.Interaction, category: discord.CategoryChannel):
-        # Convert category to string ID for the internal handler
         await self._handle_category_stats_command(interaction, str(category.id), is_interaction=True)
 
 

@@ -95,6 +95,92 @@ class TimezoneDistribution(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # GET SERVER DEFAULT DAYS
+    async def get_server_default_days(self, guild_id: int) -> tuple:
+        """Get the default days back from server settings. Returns (days_back, display_text)"""
+        try:
+            settings_cog = self.get_settings_cog()
+            if not settings_cog:
+                return (30, "30 days")
+
+            settings = await settings_cog.get_guild_settings(guild_id)
+            mode = settings.get('default_time_mode', 'days_back')
+
+            if mode == 'all_time':
+                return (999999, "All Time")
+            elif mode == 'days_back':
+                days = settings.get('default_days_back') or 30
+                return (days, f"{days} days")
+            elif mode == 'date_range':
+                from_date = settings.get('date_range_from')
+                to_date = settings.get('date_range_to')
+
+                if from_date:
+                    try:
+                        from_date_obj = datetime.fromisoformat(from_date)
+                        now = datetime.now()
+                        days_diff = (now - from_date_obj).days
+
+                        if to_date:
+                            to_date_obj = datetime.fromisoformat(to_date)
+                            display = f"{from_date_obj.strftime('%m-%d-%Y')} → {to_date_obj.strftime('%m-%d-%Y')}"
+                        else:
+                            display = f"{from_date_obj.strftime('%m-%d-%Y')} → now"
+
+                        return (days_diff, display)
+                    except:
+                        return (30, "Custom")
+                else:
+                    return (30, "Custom")
+            elif mode == 'rolling_window':
+                window_type = settings.get('rolling_window_type', 'week')
+
+                if window_type == 'week':
+                    weekday = settings.get('rolling_weekday', 0)  # 0 = Monday
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday',
+                                     'Thursday', 'Friday', 'Saturday', 'Sunday']
+                    weekday_name = weekday_names[weekday] if 0 <= weekday < 7 else 'Monday'
+
+                    now = datetime.now()
+                    days_since = (now.weekday() - weekday) % 7
+                    if days_since == 0:
+                        days_since = 7
+
+                    return (days_since, f"Since last {weekday_name}")
+                elif window_type == 'month':
+                    day_of_month = settings.get('rolling_month_day', 1)
+                    now = datetime.now()
+
+                    if now.day >= day_of_month:
+                        days_since = now.day - day_of_month
+                    else:
+                        # Go back to previous month
+                        from datetime import date
+                        prev_month = date(now.year, now.month,
+                                          1) - timedelta(days=1)
+                        days_in_prev_month = prev_month.day
+                        days_since = days_in_prev_month - day_of_month + now.day
+
+                    if days_since == 0:
+                        days_since = 30  # Approximate, for display purposes
+
+                    # Format day with ordinal suffix
+                    if 11 <= day_of_month <= 13:
+                        suffix = "th"
+                    else:
+                        suffix = {1: "st", 2: "nd", 3: "rd"}.get(
+                            day_of_month % 10, "th")
+
+                    return (days_since, f"Since the {day_of_month}{suffix}")
+                else:
+                    return (30, "30 days")
+            else:
+                return (30, "Custom")
+
+        except Exception as e:
+            print(f"Error getting server default days: {e}")
+            return (30, "30 days")
+
     # INTERNAL FUNCTION FOR BOTH COMMANDS
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_distribution_command(self, ctx_or_interaction, is_interaction=False):
@@ -195,12 +281,17 @@ class TimezoneDistribution(commands.Cog):
             # Get timezone from settings
             timezone = await self.get_guild_timezone(guild.id)
 
+            # Get server default days and display text
+            default_days, display_text = await self.get_server_default_days(guild.id)
+
             view = self.TimezoneActivityView(
                 self,
                 guild,
                 timezone=timezone,  # Use timezone from settings
                 activity_type="Messages",
-                days_back=30
+                days_back=default_days,
+                display_text=display_text,  # Pass display_text
+                using_server_default=True
             )
 
             chart_buffer = await view.generate_chart()
@@ -213,7 +304,8 @@ class TimezoneDistribution(commands.Cog):
                 'user_id': user.id,
                 'timezone': timezone,
                 'activity_type': "Messages",
-                'current_days': 30,
+                'current_days': default_days,
+                'current_display_text': display_text,
                 'view': view
             }
 
@@ -245,7 +337,7 @@ class TimezoneDistribution(commands.Cog):
         """Get per hour statistic distribution in the server"""
         await self._handle_distribution_command(ctx, is_interaction=False)
 
-    # QUERY FUNCTION - UPDATED TO USE AGGREGATED TABLES
+    # QUERY FUNCTION - UPDATED TO USE AGGREGATED TABLES WITH ALL TIME SUPPORT
     async def get_hourly_activity_data(self, guild_id: int, activity_type: str, days_back: int = 30, role_filter_ids=None):
         """Get hourly activity data using aggregated tables"""
         try:
@@ -269,12 +361,21 @@ class TimezoneDistribution(commands.Cog):
                 elif not role_filter_ids:
                     role_filter_ids = None
 
-            result = await db_cog.q_server_activity_distribution(
-                guild_id=guild_id,
-                days_back=days_back,
-                role_filter_ids=role_filter_ids,  # This should now be None or a list of ints
-                timezone_str='UTC'
-            )
+            # Handle All Time (days_back == 999999) - pass None for days_back to get all data
+            if days_back == 999999:
+                result = await db_cog.q_server_activity_distribution(
+                    guild_id=guild_id,
+                    days_back=None,  # Pass None for all time
+                    role_filter_ids=role_filter_ids,
+                    timezone_str='UTC'
+                )
+            else:
+                result = await db_cog.q_server_activity_distribution(
+                    guild_id=guild_id,
+                    days_back=days_back,
+                    role_filter_ids=role_filter_ids,
+                    timezone_str='UTC'
+                )
 
             if activity_type == "Messages":
                 messages_data = result.get('messages', {})
@@ -380,7 +481,7 @@ class TimezoneDistribution(commands.Cog):
 
         draw.text((x, y), text, font=font, fill=fill_color)
 
-    async def create_clock_pie_chart(self, activity_levels: list, timezone: str, activity_type: str, guild: discord.Guild, days_back: int, role_filter_name: str = None):
+    async def create_clock_pie_chart(self, activity_levels: list, timezone: str, activity_type: str, guild: discord.Guild, display_text: str, role_filter_name: str = None):
         try:
             background = Image.open(self.background_image_path).convert('RGBA')
             image = background.copy()
@@ -581,9 +682,9 @@ class TimezoneDistribution(commands.Cog):
             draw_text_with_stroke_fixed(draw, (560, 38), datetime.now().strftime("%B %d, %Y"),
                                         font_small, "white", "black", 1)
 
-            time_period_text = f"{days_back} days"
+            # Use the passed display_text instead of days_back
             draw_text_with_stroke_fixed(
-                draw, (105, 423), time_period_text, font_medium, "white", "black", 1)
+                draw, (105, 423), display_text, font_medium, "white", "black", 1)
 
             if role_filter_name:
                 role_filter_text = f"Filter: {role_filter_name}"
@@ -667,9 +768,9 @@ class TimezoneDistribution(commands.Cog):
             print(f"Error creating Pillow chart: {e}")
             import traceback
             traceback.print_exc()
-            return self.create_clock_pie_chart_fallback(activity_levels, timezone, activity_type)
+            return self.create_clock_pie_chart_fallback(activity_levels, timezone, activity_type, display_text, role_filter_name)
 
-    def create_clock_pie_chart_fallback(self, activity_levels: list, timezone: str, activity_type: str):
+    def create_clock_pie_chart_fallback(self, activity_levels: list, timezone: str, activity_type: str, display_text: str, role_filter_name: str = None):
         plt.style.use('default')
         fig, ax = plt.subplots(
             figsize=(10, 10), subplot_kw=dict(projection='polar'))
@@ -688,6 +789,12 @@ class TimezoneDistribution(commands.Cog):
             color = colors[category]
             ax.bar(theta[i], 1, width=width, bottom=0, color=color,
                    alpha=1.0, edgecolor='white', linewidth=1)
+
+        # Add title with time period info
+        title = f"{activity_type} Distribution - {display_text}"
+        if role_filter_name:
+            title += f" (Filter: {role_filter_name})"
+        ax.set_title(title, pad=20, fontsize=12)
 
         ax.set_theta_zero_location("N")
         ax.set_theta_direction(-1)
@@ -708,10 +815,11 @@ class TimezoneDistribution(commands.Cog):
     # TIME MODAL
 
     class TimezoneTimeModal(discord.ui.Modal, title='Custom Time Period'):
-        def __init__(self, cog_instance, guild):
+        def __init__(self, cog_instance, guild, view):
             super().__init__(timeout=300)
             self.cog = cog_instance
             self.guild = guild
+            self.view = view
 
         days = discord.ui.TextInput(
             label='Enter number of days',
@@ -730,22 +838,14 @@ class TimezoneDistribution(commands.Cog):
 
                 await interaction.response.defer(ephemeral=False)
 
-                message = interaction.message
-                if not message:
-                    await interaction.followup.send("❌ Could not find original message.", ephemeral=True)
-                    return
-
-                if message.id in self.cog.active_sessions:
-                    session_data = self.cog.active_sessions[message.id]
-                    view = session_data.get('view')
-
-                    if view:
-                        view.current_days = days
-                        await view.update_message(interaction)
-                    else:
-                        await interaction.followup.send("❌ Could not update chart.", ephemeral=True)
+                if self.view:
+                    self.view.current_days = days
+                    # Update display text
+                    self.view.current_display_text = f"{days} days"
+                    self.view.using_server_default = False
+                    await self.view.update_message(interaction)
                 else:
-                    await interaction.followup.send("❌ Session expired. Please run the command again.", ephemeral=True)
+                    await interaction.followup.send("❌ Could not update chart.", ephemeral=True)
 
             except ValueError:
                 await interaction.response.send_message("❌ Please enter a valid number.", ephemeral=True)
@@ -754,10 +854,11 @@ class TimezoneDistribution(commands.Cog):
                 await interaction.followup.send("❌ An error occurred while updating stats.", ephemeral=True)
 
     class RoleFilterModal(discord.ui.Modal, title='Input Role ID'):
-        def __init__(self, cog_instance, guild):
+        def __init__(self, cog_instance, guild, view):
             super().__init__(timeout=300)
             self.cog = cog_instance
             self.guild = guild
+            self.view = view
 
         role_id = discord.ui.TextInput(
             label='Enter Role ID or "none"',
@@ -801,23 +902,12 @@ class TimezoneDistribution(commands.Cog):
 
                 await interaction.response.defer(ephemeral=False)
 
-                message = interaction.message
-                if not message:
-                    await interaction.followup.send("❌ Could not find original message.", ephemeral=True)
-                    return
-
-                if message.id in self.cog.active_sessions:
-                    session_data = self.cog.active_sessions[message.id]
-                    view = session_data.get('view')
-
-                    if view:
-                        view.role_filter_ids = role_filter_ids
-                        view.role_filter_name = role_name
-                        await view.update_message(interaction)
-                    else:
-                        await interaction.followup.send("❌ Could not update chart.", ephemeral=True)
+                if self.view:
+                    self.view.role_filter_ids = role_filter_ids
+                    self.view.role_filter_name = role_name
+                    await self.view.update_message(interaction)
                 else:
-                    await interaction.followup.send("❌ Session expired. Please run the command again.", ephemeral=True)
+                    await interaction.followup.send("❌ Could not update chart.", ephemeral=True)
 
             except Exception as e:
                 print(f"Error in role filter modal submit: {e}")
@@ -868,16 +958,18 @@ class TimezoneDistribution(commands.Cog):
     # MAIN VIEW
 
     class TimezoneActivityView(discord.ui.View):
-        def __init__(self, cog, guild: discord.Guild, timezone: str = "UTC", activity_type: str = "Messages", days_back: int = 30):
+        def __init__(self, cog, guild: discord.Guild, timezone: str = "UTC", activity_type: str = "Messages", days_back: int = 30, display_text: str = "30 days", using_server_default: bool = True):
             super().__init__(timeout=600)
             self.cog = cog
             self.guild = guild
             self.timezone = timezone
             self.activity_type = activity_type
             self.current_days = days_back
+            self.current_display_text = display_text  # Store display text
             self.show_time_buttons = False
             self.role_filter_ids = None
             self.role_filter_name = None
+            self.using_server_default = using_server_default
             self._update_buttons()
 
         def _update_buttons(self):
@@ -912,12 +1004,21 @@ class TimezoneDistribution(commands.Cog):
             self.add_item(role_filter_button)
 
             if self.show_time_buttons:
+                all_time_button = discord.ui.Button(
+                    style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                    label="All Time",
+                    custom_id="timezone_all_time"
+                )
+                all_time_button.callback = self.all_time_callback
+                self.add_item(all_time_button)
+
                 days_7_button = discord.ui.Button(
                     style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
                     label="7 Days",
                     custom_id="timezone_days_7"
                 )
                 days_7_button.callback = self.days_7_callback
+                self.add_item(days_7_button)
 
                 days_14_button = discord.ui.Button(
                     style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
@@ -925,6 +1026,7 @@ class TimezoneDistribution(commands.Cog):
                     custom_id="timezone_days_14"
                 )
                 days_14_button.callback = self.days_14_callback
+                self.add_item(days_14_button)
 
                 days_30_button = discord.ui.Button(
                     style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
@@ -932,6 +1034,7 @@ class TimezoneDistribution(commands.Cog):
                     custom_id="timezone_days_30"
                 )
                 days_30_button.callback = self.days_30_callback
+                self.add_item(days_30_button)
 
                 days_90_button = discord.ui.Button(
                     style=discord.ButtonStyle.primary if self.current_days == 90 else discord.ButtonStyle.secondary,
@@ -939,19 +1042,19 @@ class TimezoneDistribution(commands.Cog):
                     custom_id="timezone_days_90"
                 )
                 days_90_button.callback = self.days_90_callback
+                self.add_item(days_90_button)
 
+                # Use display text for custom button label
+                custom_label = self.current_display_text if self.current_days not in [
+                    7, 14, 30, 90, 999999] else "Custom"
+                if len(custom_label) > 20:
+                    custom_label = custom_label[:17] + "..."
                 custom_button = discord.ui.Button(
                     style=discord.ButtonStyle.success,
-                    label=f"Custom ({self.current_days}d)" if self.current_days not in [
-                        7, 14, 30, 90] else "Custom",
+                    label=custom_label,
                     custom_id="timezone_custom_days"
                 )
                 custom_button.callback = self.custom_days_callback
-
-                self.add_item(days_7_button)
-                self.add_item(days_14_button)
-                self.add_item(days_30_button)
-                self.add_item(days_90_button)
                 self.add_item(custom_button)
 
         async def refresh_callback(self, interaction: discord.Interaction):
@@ -963,17 +1066,20 @@ class TimezoneDistribution(commands.Cog):
         async def role_filter_callback(self, interaction: discord.Interaction):
             await self.handle_role_filter(interaction)
 
+        async def all_time_callback(self, interaction: discord.Interaction):
+            await self.handle_time_period_change(interaction, 999999, "All Time")
+
         async def days_7_callback(self, interaction: discord.Interaction):
-            await self.handle_time_period_change(interaction, 7)
+            await self.handle_time_period_change(interaction, 7, "7 days")
 
         async def days_14_callback(self, interaction: discord.Interaction):
-            await self.handle_time_period_change(interaction, 14)
+            await self.handle_time_period_change(interaction, 14, "14 days")
 
         async def days_30_callback(self, interaction: discord.Interaction):
-            await self.handle_time_period_change(interaction, 30)
+            await self.handle_time_period_change(interaction, 30, "30 days")
 
         async def days_90_callback(self, interaction: discord.Interaction):
-            await self.handle_time_period_change(interaction, 90)
+            await self.handle_time_period_change(interaction, 90, "90 days")
 
         async def custom_days_callback(self, interaction: discord.Interaction):
             await self.handle_custom_days(interaction)
@@ -989,21 +1095,26 @@ class TimezoneDistribution(commands.Cog):
             await interaction.edit_original_response(view=self)
 
         async def handle_role_filter(self, interaction: discord.Interaction):
-            modal = TimezoneDistribution.RoleFilterModal(self.cog, self.guild)
+            modal = TimezoneDistribution.RoleFilterModal(
+                self.cog, self.guild, self)
             await interaction.response.send_modal(modal)
 
-        async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+        async def handle_time_period_change(self, interaction: discord.Interaction, days: int, display_text: str = None):
             await interaction.response.defer(ephemeral=False, thinking=False)
             self.current_days = days
+            if display_text is not None:
+                self.current_display_text = display_text
+            self.using_server_default = False
             self.show_time_buttons = False
             await self.update_message(interaction)
 
         async def handle_custom_days(self, interaction: discord.Interaction):
             modal = TimezoneDistribution.TimezoneTimeModal(
-                self.cog, self.guild)
+                self.cog, self.guild, self)
             await interaction.response.send_modal(modal)
 
         async def generate_chart(self):
+            # Use stored display_text for the chart
             hourly_data = await self.cog.get_hourly_activity_data(
                 self.guild.id,
                 self.activity_type,
@@ -1015,7 +1126,7 @@ class TimezoneDistribution(commands.Cog):
             activity_levels = self.cog.categorize_activity_levels(
                 timezone_data)
             chart_buffer = await self.cog.create_clock_pie_chart(
-                activity_levels, self.timezone, self.activity_type, self.guild, self.current_days, self.role_filter_name
+                activity_levels, self.timezone, self.activity_type, self.guild, self.current_display_text, self.role_filter_name
             )
             return chart_buffer
 

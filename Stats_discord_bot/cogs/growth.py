@@ -275,6 +275,53 @@ def draw_text_with_stroke_and_emoji(pilmoji_draw, position, text, font, text_col
                       emoji_position_offset=(0, 0))
 
 # =========================================================
+# PAGE JUMP MODAL
+# =========================================================
+
+
+class GrowthPageJumpModal(discord.ui.Modal, title='Jump to Day'):
+    def __init__(self, view, total_days):
+        super().__init__(timeout=60)
+        self.view = view
+        self.total_days = total_days
+
+        self.day_number = discord.ui.TextInput(
+            label=f'Enter day number (1-{total_days})',
+            placeholder=f'1 to {total_days}',
+            min_length=1,
+            max_length=4,
+            required=True
+        )
+        self.add_item(self.day_number)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            day = int(self.day_number.value) - 1
+
+            if day < 0 or day >= self.total_days:
+                embed = discord.Embed(
+                    title="❌ Invalid Day",
+                    description=f"Day {day + 1} does not exist. Please enter a number between 1 and {self.total_days}.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            await interaction.response.defer()
+            self.view.current_days = day + 1
+            self.view.show_time_buttons = False
+            await self.view.update_chart(interaction)
+
+        except ValueError:
+            embed = discord.Embed(
+                title="❌ Invalid Input",
+                description="Please enter a valid day number.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
 # TIME SETTINGS MODAL
 # =========================================================
 
@@ -301,6 +348,7 @@ class GrowthTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
             await interaction.response.defer()
             self.view.current_days = days
+            self.view.using_server_default = False
             self.view.show_time_buttons = False
             await self.view.update_chart(interaction)
 
@@ -375,7 +423,7 @@ class GrowthSelectMenu(discord.ui.Select):
 
 class GrowthView(discord.ui.View):
     def __init__(self, cog, guild_id: int, days: int = 14, growth_type: str = "member_count",
-                 chart_type: str = "member", role_id: Optional[int] = None):
+                 chart_type: str = "member", role_id: Optional[int] = None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog
         self.guild_id = guild_id
@@ -386,6 +434,7 @@ class GrowthView(discord.ui.View):
         self.chart_type = chart_type
         self.role_id = role_id
         self.show_time_buttons = False
+        self.using_server_default = using_server_default
         self.message_id = None
         self.forecast_data = None
 
@@ -431,6 +480,15 @@ class GrowthView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="growth_all_time",
+                row=2
+            )
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
+
             days_7_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
@@ -473,6 +531,9 @@ class GrowthView(discord.ui.View):
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    async def all_time_callback(self, interaction: discord.Interaction):
+        await self.handle_button_click(interaction, days=999999)
+
     async def days_7_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, days=7)
 
@@ -496,6 +557,7 @@ class GrowthView(discord.ui.View):
 
             if days:
                 self.current_days = days
+                self.using_server_default = False
                 self.show_time_buttons = False
 
             await self.update_chart(interaction)
@@ -522,6 +584,8 @@ class GrowthView(discord.ui.View):
 
     async def update_chart(self, interaction: discord.Interaction):
         try:
+            display_days = "All Time" if self.current_days == 999999 else self.current_days
+
             if self.chart_type == "member":
                 if self.growth_type == "member_count":
                     data = await self.cog.fetch_member_count_history(self.guild_id, self.current_days)
@@ -566,7 +630,7 @@ class GrowthView(discord.ui.View):
                     label = self.create_role_label(data, self.current_days)
 
             final_image_bytes = await self.cog.draw_growth_on_template(
-                chart_img, label, self.current_days,
+                chart_img, label, display_days,
                 timestamps, y_labels, self.current_selection,
                 self.growth_type, self.guild_id, self.chart_type,
                 self.role_id, self.forecast_data if self.growth_type == "forecast" else None
@@ -897,6 +961,33 @@ class GrowthSystem(commands.Cog):
             return True, None
 
     # =========================================================
+    # GET SERVER DEFAULT DAYS
+    # =========================================================
+
+    async def get_server_default_days(self, guild_id: int) -> tuple:
+        """Get the default days back from server settings. Returns (days_back, display_text)"""
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                return (14, "14 days")
+
+            settings = await settings_cog.get_guild_settings(guild_id)
+            mode = settings.get('default_time_mode', 'days_back')
+
+            if mode == 'all_time':
+                return (999999, "All Time")
+            elif mode == 'days_back':
+                days = settings.get('default_days_back') or 14
+                return (days, f"{days} days")
+            else:
+                # For rolling window or date range, use 14 days as fallback but show "Custom"
+                return (14, "Custom")
+
+        except Exception as e:
+            print(f"Error getting server default days: {e}")
+            return (14, "14 days")
+
+    # =========================================================
     # BOT FILTER HELPER METHOD
     # =========================================================
 
@@ -1008,16 +1099,29 @@ class GrowthSystem(commands.Cog):
             return {'counts': []}
 
         end = datetime.now(timezone.utc)
-        start = end - timedelta(days=days)
+
+        # Handle All Time (days == 999999)
+        if days == 999999:
+            start = None
+        else:
+            start = end - timedelta(days=days)
 
         try:
             async with self.pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT recorded_at, member_count
-                    FROM server_member_counts
-                    WHERE guild_id = $1 AND recorded_at >= $2
-                    ORDER BY recorded_at
-                """, guild_id, start)
+                if start is None:
+                    rows = await conn.fetch("""
+                        SELECT recorded_at, member_count
+                        FROM server_member_counts
+                        WHERE guild_id = $1
+                        ORDER BY recorded_at
+                    """, guild_id)
+                else:
+                    rows = await conn.fetch("""
+                        SELECT recorded_at, member_count
+                        FROM server_member_counts
+                        WHERE guild_id = $1 AND recorded_at >= $2
+                        ORDER BY recorded_at
+                    """, guild_id, start)
 
                 # If no historical data exists, take a current snapshot with bot filtering
                 if not rows:
@@ -1073,13 +1177,23 @@ class GrowthSystem(commands.Cog):
                 return self._get_empty_growth_data()
 
             async with self.pool.acquire() as conn:
-                start_date = current_utc.date() - timedelta(days=days - 1)
+                if days == 999999:
+                    # For All Time, get all available data
+                    start_date = None
+                    days_to_fetch = 3650  # Cap at ~10 years
+                else:
+                    start_date = current_utc.date() - timedelta(days=days - 1)
+                    days_to_fetch = days
 
                 joins_points = []
                 leaves_points = []
 
-                for day_offset in range(days):
-                    current_date = start_date + timedelta(days=day_offset)
+                for day_offset in range(days_to_fetch):
+                    if start_date:
+                        current_date = start_date + timedelta(days=day_offset)
+                    else:
+                        current_date = current_utc.date() - timedelta(days=days_to_fetch - day_offset - 1)
+
                     day_start = datetime.combine(
                         current_date, datetime.min.time()).replace(tzinfo=timezone.utc)
                     day_end = datetime.combine(
@@ -1156,13 +1270,22 @@ class GrowthSystem(commands.Cog):
                 return self._get_empty_growth_data()
 
             async with self.pool.acquire() as conn:
-                start_date = current_utc.date() - timedelta(days=days - 1)
+                if days == 999999:
+                    start_date = None
+                    days_to_fetch = 3650
+                else:
+                    start_date = current_utc.date() - timedelta(days=days - 1)
+                    days_to_fetch = days
 
                 added_points = []
                 removed_points = []
 
-                for day_offset in range(days):
-                    current_date = start_date + timedelta(days=day_offset)
+                for day_offset in range(days_to_fetch):
+                    if start_date:
+                        current_date = start_date + timedelta(days=day_offset)
+                    else:
+                        current_date = current_utc.date() - timedelta(days=days_to_fetch - day_offset - 1)
+
                     day_start = datetime.combine(
                         current_date, datetime.min.time()).replace(tzinfo=timezone.utc)
                     day_end = datetime.combine(
@@ -1856,7 +1979,7 @@ class GrowthSystem(commands.Cog):
             print(f"❌ Error in draw_growth_header: {e}")
             return template
 
-    async def draw_growth_on_template(self, chart_img: Image.Image, label_text: str, days: int,
+    async def draw_growth_on_template(self, chart_img: Image.Image, label_text: str, days_back,
                                       timestamps: List[str], y_labels: List[Tuple[float, str]],
                                       growth_type: str, chart_type: str, guild_id: int,
                                       template_type: str = "member", role_id: Optional[int] = None,
@@ -1915,19 +2038,23 @@ class GrowthSystem(commands.Cog):
             # Time period text (moved left 3 units for member count)
             if template_type == "member":
                 if growth_type == "member_count":
-                    time_text = f"Last {days} Days"
+                    time_text = days_back if isinstance(
+                        days_back, str) else f"Last {days_back} Days"
                     time_x = 95  # moved left from 108
                     current_font = time_font
                 elif growth_type == "joins_leaves":
-                    time_text = f"Last {days} Days"
+                    time_text = days_back if isinstance(
+                        days_back, str) else f"Last {days_back} Days"
                     time_x = 108
                     current_font = horndon_font
                 else:
-                    time_text = f"Next {days} Days"
+                    time_text = days_back if isinstance(
+                        days_back, str) else f"Next {days_back} Days"
                     time_x = 108
                     current_font = horndon_font
             else:
-                time_text = f"Last {days} Days"
+                time_text = days_back if isinstance(
+                    days_back, str) else f"Last {days_back} Days"
                 time_x = 108
                 current_font = horndon_font
 
@@ -2085,8 +2212,11 @@ class GrowthSystem(commands.Cog):
             if is_interaction:
                 await ctx_or_interaction.response.defer()
 
-            view = GrowthView(self, guild.id, days=14,
-                              growth_type="member_count", chart_type="member")
+            # Get server default days
+            default_days, time_display = await self.get_server_default_days(guild.id)
+
+            view = GrowthView(self, guild.id, days=default_days,
+                              growth_type="member_count", chart_type="member", using_server_default=True)
 
             if view.growth_type == "member_count":
                 data = await view.cog.fetch_member_count_history(guild.id, view.current_days)
@@ -2108,7 +2238,7 @@ class GrowthSystem(commands.Cog):
                 label = view.create_member_label(data, view.current_days)
 
             final_image_bytes = await self.draw_growth_on_template(
-                chart_img, label, view.current_days,
+                chart_img, label, time_display,
                 timestamps, y_labels, view.current_selection, view.growth_type, guild.id, "member"
             )
 
@@ -2184,8 +2314,11 @@ class GrowthSystem(commands.Cog):
             if is_interaction:
                 await ctx_or_interaction.response.defer()
 
-            view = GrowthView(self, guild.id, days=14, chart_type="role",
-                              growth_type="role_additions_removals", role_id=role.id)
+            # Get server default days
+            default_days, time_display = await self.get_server_default_days(guild.id)
+
+            view = GrowthView(self, guild.id, days=default_days, chart_type="role",
+                              growth_type="role_additions_removals", role_id=role.id, using_server_default=True)
 
             data = await view.fetch_role_growth_data()
 
@@ -2202,7 +2335,7 @@ class GrowthSystem(commands.Cog):
 
             label = view.create_role_label(data, view.current_days)
             final_image_bytes = await self.draw_growth_on_template(
-                chart_img, label, view.current_days,
+                chart_img, label, time_display,
                 timestamps, y_labels, view.current_selection, view.growth_type, guild.id, "role", role.id
             )
 
