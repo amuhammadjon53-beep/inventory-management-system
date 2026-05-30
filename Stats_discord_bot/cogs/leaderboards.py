@@ -1954,15 +1954,15 @@ class ChannelLeaderboardView(discord.ui.View):
     def _update_buttons(self):
         self.clear_items()
 
-        # Row 0: Pagination buttons
-        self.add_item(PrevButton())
-        self.add_item(PageIndicator())
-        self.add_item(NextButton())
-
-        # Row 1: Dropdown menu (BEFORE role filter)
+        # Row 0: Dropdown menu (FIRST - before pagination)
         if self.channel_type in ["text", "voice"]:
             self.add_item(ChannelLeaderboardTypeSelect(
                 self.leaderboard_type, self.channel_type))
+
+        # Row 1: Pagination buttons
+        self.add_item(PrevButton())
+        self.add_item(PageIndicator())
+        self.add_item(NextButton())
 
         # Row 2: Role filter button
         self.add_item(RoleIdButton())
@@ -2250,13 +2250,13 @@ class ServerLeaderboardView(discord.ui.View):
     def _update_buttons(self):
         self.clear_items()
 
-        # Row 0: Pagination buttons
+        # Row 0: Dropdown menu (FIRST - before pagination)
+        self.add_item(ServerLeaderboardTypeSelect(self.leaderboard_type))
+
+        # Row 1: Pagination buttons
         self.add_item(PrevButton())
         self.add_item(PageIndicator())
         self.add_item(NextButton())
-
-        # Row 1: Dropdown menu (BEFORE role filter)
-        self.add_item(ServerLeaderboardTypeSelect(self.leaderboard_type))
 
         # Row 2: Role filter button
         self.add_item(RoleIdButton())
@@ -2545,13 +2545,13 @@ class CategoryLeaderboardView(discord.ui.View):
     def _update_buttons(self):
         self.clear_items()
 
-        # Row 0: Pagination buttons
+        # Row 0: Dropdown menu (FIRST - before pagination)
+        self.add_item(CategoryLeaderboardTypeSelect(self.leaderboard_type))
+
+        # Row 1: Pagination buttons
         self.add_item(PrevButton())
         self.add_item(PageIndicator())
         self.add_item(NextButton())
-
-        # Row 1: Dropdown menu (BEFORE role filter)
-        self.add_item(CategoryLeaderboardTypeSelect(self.leaderboard_type))
 
         # Row 2: Role filter button
         self.add_item(RoleIdButton())
@@ -2814,7 +2814,7 @@ class MentionsLeaderboardView(discord.ui.View):
     def _update_buttons(self):
         self.clear_items()
 
-        # Row 0: Pagination buttons
+        # Row 0: No dropdown for mentions, so add pagination first
         self.add_item(PrevButton())
         self.add_item(PageIndicator())
         self.add_item(NextButton())
@@ -3013,16 +3013,16 @@ class RoleLeaderboardView(discord.ui.View):
     def _update_buttons(self):
         self.clear_items()
 
-        # Row 0: Pagination buttons
-        self.add_item(PrevButton())
-        self.add_item(PageIndicator())
-        self.add_item(NextButton())
-
-        # Row 1: Dropdown menu (BEFORE role filter)
+        # Row 0: Dropdown menu (FIRST - before pagination)
         has_channel_or_category = (self.channel is not None) or (
             self.category is not None)
         self.add_item(RoleLeaderboardTypeSelect(
             self.leaderboard_type, has_channel_or_category))
+
+        # Row 1: Pagination buttons
+        self.add_item(PrevButton())
+        self.add_item(PageIndicator())
+        self.add_item(NextButton())
 
         # Row 2: Role filter button
         self.add_item(RoleIdButton())
