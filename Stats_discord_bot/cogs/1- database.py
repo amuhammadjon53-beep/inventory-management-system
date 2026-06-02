@@ -1673,7 +1673,7 @@ class DatabaseStats(commands.Cog):
 
                 elif batch_type == 'voice_sessions':
                     params = data['params']
-                    if len(params) >= 15:
+                    if len(params) >= 16:
                         guild_id = params[0]
                         user_id = params[1]
                         channel_id = params[2] or 0
@@ -1690,8 +1690,7 @@ class DatabaseStats(commands.Cog):
                         was_video = 1 if params[13] else 0
                         is_bot = params[14] if isinstance(params[14], bool) else bool(
                             params[14]) if params[14] else False
-
-                        hour = ensure_aware(join_time.replace(
+                        hour = ensure_aware(params[15]) if len(params) > 15 else ensure_aware(join_time.replace(
                             minute=0, second=0, microsecond=0))
 
                         try:
@@ -1726,7 +1725,7 @@ class DatabaseStats(commands.Cog):
 
                 elif batch_type == 'mentions':
                     params = data['params']
-                    if len(params) >= 9:
+                    if len(params) >= 10:
                         guild_id = params[0]
                         mentioned_user_id = params[1]
                         mentioner_user_id = params[2]
@@ -1736,6 +1735,7 @@ class DatabaseStats(commands.Cog):
                         created_at = ensure_aware(params[6])
                         encrypted_username = params[7]
                         is_bot = bool(params[8])
+                        encrypted_mentioned_username = params[9]
 
                         hour = ensure_aware(created_at.replace(
                             minute=0, second=0, microsecond=0))
@@ -1744,16 +1744,20 @@ class DatabaseStats(commands.Cog):
                             await conn.execute('''
                                 INSERT INTO user_mentions_hourly 
                                 (hour, guild_id, mentioned_user_id, mentioner_user_id,
-                                channel_id, category_id, mention_count, is_bot, encrypted_username)
-                                VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8)
+                                channel_id, category_id, mention_count, is_bot,
+                                encrypted_username, encrypted_mentioned_username)
+                                VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9)
                                 ON CONFLICT (guild_id, mentioned_user_id, mentioner_user_id, channel_id, hour) 
                                 DO UPDATE SET 
                                     mention_count = user_mentions_hourly.mention_count + 1,
                                     encrypted_username = COALESCE(
                                         user_mentions_hourly.encrypted_username, EXCLUDED.encrypted_username
+                                    ),
+                                    encrypted_mentioned_username = COALESCE(
+                                        user_mentions_hourly.encrypted_mentioned_username, EXCLUDED.encrypted_mentioned_username
                                     )
                             ''', hour, guild_id, mentioned_user_id, mentioner_user_id,
-                                               channel_id, category_id, is_bot, encrypted_username)
+                                               channel_id, category_id, is_bot, encrypted_username, encrypted_mentioned_username)
                         except asyncpg.exceptions.PostgresError as e:
                             raise DatabaseQueryError(
                                 "Failed to insert into user_mentions_hourly",
@@ -2185,7 +2189,7 @@ class DatabaseStats(commands.Cog):
 
                         elif batch_type == 'mentions':
                             params = data.get('params', [])
-                            if len(params) >= 9:
+                            if len(params) >= 10:
                                 guild_id = params[0]
                                 mentioned_user_id = params[1]
                                 mentioner_user_id = params[2]
@@ -2196,6 +2200,7 @@ class DatabaseStats(commands.Cog):
                                 created_at = ensure_aware(created_at)
                                 encrypted_username = params[7]
                                 is_bot = bool(params[8])
+                                encrypted_mentioned_username = params[9]
 
                                 hour = created_at.replace(
                                     minute=0, second=0, microsecond=0)
@@ -2204,17 +2209,21 @@ class DatabaseStats(commands.Cog):
                                 await conn.execute('''
                                     INSERT INTO user_mentions_hourly 
                                     (hour, guild_id, mentioned_user_id, mentioner_user_id,
-                                    channel_id, category_id, mention_count, is_bot, encrypted_username)
-                                    VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8)
+                                    channel_id, category_id, mention_count, is_bot,
+                                    encrypted_username, encrypted_mentioned_username)
+                                    VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9)
                                     ON CONFLICT (guild_id, mentioned_user_id, mentioner_user_id, channel_id, hour) 
                                     DO UPDATE SET 
                                         mention_count = user_mentions_hourly.mention_count + 1,
                                         encrypted_username = COALESCE(
                                             user_mentions_hourly.encrypted_username, EXCLUDED.encrypted_username
+                                        ),
+                                        encrypted_mentioned_username = COALESCE(
+                                            user_mentions_hourly.encrypted_mentioned_username, EXCLUDED.encrypted_mentioned_username
                                         )
                                 ''',
                                                    hour, guild_id, mentioned_user_id, mentioner_user_id,
-                                                   channel_id, category_id, is_bot, encrypted_username)
+                                                   channel_id, category_id, is_bot, encrypted_username, encrypted_mentioned_username)
 
                         elif batch_type == 'emojis':
                             params = data.get('params', [])
@@ -2536,10 +2545,155 @@ class DatabaseStats(commands.Cog):
                 print("📋 CREATING DATABASE TABLES")
                 print("="*60)
 
-                # ===== STATIC TABLES (no aggregation) =====
-                static_table_queries = [
-                    # UPDATED: invite_tracking with is_vanity column
-                    '''
+                # ===== CREATE ALL TABLES FIRST (BEFORE HYPERTABLES) =====
+
+                # Create user_mentions_hourly table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS user_mentions_hourly (
+                        hour TIMESTAMPTZ NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        mentioned_user_id BIGINT NOT NULL,
+                        mentioner_user_id BIGINT NOT NULL,
+                        channel_id BIGINT,
+                        category_id BIGINT,
+                        mention_count INT DEFAULT 1,
+                        is_bot BOOLEAN DEFAULT FALSE,
+                        encrypted_username TEXT,
+                        encrypted_mentioned_username TEXT
+                    )
+                ''')
+                print("  ✅ Created/verified table: user_mentions_hourly")
+
+                # Create message_tracking_hourly table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS message_tracking_hourly (
+                        hour TIMESTAMPTZ NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        channel_id BIGINT,
+                        category_id BIGINT,
+                        message_count INT DEFAULT 0,
+                        total_chars BIGINT DEFAULT 0,
+                        attachment_count INT DEFAULT 0,
+                        embed_count INT DEFAULT 0,
+                        is_bot BOOLEAN DEFAULT FALSE,
+                        encrypted_username TEXT
+                    )
+                ''')
+                print("  ✅ Created/verified table: message_tracking_hourly")
+
+                # Create voice_session_history_hourly table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS voice_session_history_hourly (
+                        hour TIMESTAMPTZ NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        channel_id BIGINT,
+                        category_id BIGINT,
+                        total_seconds BIGINT DEFAULT 0,
+                        session_count INT DEFAULT 0,
+                        state_flags INT DEFAULT 0,
+                        was_muted_count INT DEFAULT 0,
+                        was_deafened_count INT DEFAULT 0,
+                        was_streaming_count INT DEFAULT 0,
+                        was_video_count INT DEFAULT 0,
+                        is_bot BOOLEAN DEFAULT FALSE,
+                        encrypted_username TEXT
+                    )
+                ''')
+                print("  ✅ Created/verified table: voice_session_history_hourly")
+
+                # Create emoji_usage_hourly table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS emoji_usage_hourly (
+                        hour TIMESTAMPTZ NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        channel_id BIGINT,
+                        category_id BIGINT,
+                        emoji_str TEXT NOT NULL,
+                        is_custom BOOLEAN DEFAULT FALSE,
+                        usage_count INT DEFAULT 1,
+                        usage_type TEXT NOT NULL,
+                        is_bot BOOLEAN DEFAULT FALSE,
+                        encrypted_username TEXT
+                    )
+                ''')
+                print("  ✅ Created/verified table: emoji_usage_hourly")
+
+                # Create activity_sessions_hourly table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS activity_sessions_hourly (
+                        hour TIMESTAMPTZ NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        activity_name TEXT NOT NULL,
+                        activity_type TEXT NOT NULL,
+                        total_seconds BIGINT DEFAULT 0,
+                        session_count INT DEFAULT 0,
+                        is_bot BOOLEAN DEFAULT FALSE,
+                        encrypted_username TEXT
+                    )
+                ''')
+                print("  ✅ Created/verified table: activity_sessions_hourly")
+
+                # Create role_growth_hourly table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS role_growth_hourly (
+                        hour TIMESTAMPTZ NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        role_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        added_count INT DEFAULT 0,
+                        removed_count INT DEFAULT 0,
+                        is_bot BOOLEAN DEFAULT FALSE,
+                        encrypted_username TEXT
+                    )
+                ''')
+                print("  ✅ Created/verified table: role_growth_hourly")
+
+                # Create member_joins_hourly table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS member_joins_hourly (
+                        hour TIMESTAMPTZ NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        join_count INT DEFAULT 0,
+                        is_bot BOOLEAN DEFAULT FALSE,
+                        encrypted_username TEXT
+                    )
+                ''')
+                print("  ✅ Created/verified table: member_joins_hourly")
+
+                # Create member_leaves_hourly table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS member_leaves_hourly (
+                        hour TIMESTAMPTZ NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        leave_count INT DEFAULT 0,
+                        is_bot BOOLEAN DEFAULT FALSE,
+                        encrypted_username TEXT
+                    )
+                ''')
+                print("  ✅ Created/verified table: member_leaves_hourly")
+
+                # Create slash_commands_daily table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS slash_commands_daily (
+                        day TIMESTAMPTZ NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        command_name TEXT NOT NULL,
+                        command_count INT DEFAULT 0,
+                        unique_users INT DEFAULT 0,
+                        is_bot BOOLEAN DEFAULT FALSE,
+                        encrypted_username TEXT
+                    )
+                ''')
+                print("  ✅ Created/verified table: slash_commands_daily")
+
+                # Create invite_tracking table (static)
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS invite_tracking (
                         id BIGSERIAL,
                         guild_id BIGINT NOT NULL,
@@ -2550,12 +2704,14 @@ class DatabaseStats(commands.Cog):
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         is_bot BOOLEAN DEFAULT FALSE,
                         is_vanity BOOLEAN DEFAULT FALSE,
-                        
+                        encrypted_username TEXT,
                         PRIMARY KEY (id, created_at)
                     )
-                    ''',
-                    # UPDATED: invite_uses with is_vanity and leaves columns
-                    '''
+                ''')
+                print("  ✅ Created/verified table: invite_tracking")
+
+                # Create invite_uses table (static)
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS invite_uses (
                         id BIGSERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
@@ -2569,8 +2725,11 @@ class DatabaseStats(commands.Cog):
                         deleted BOOLEAN DEFAULT FALSE,
                         UNIQUE(guild_id, invite_code)
                     )
-                    ''',
-                    '''
+                ''')
+                print("  ✅ Created/verified table: invite_uses")
+
+                # Create activities table (static)
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS activities (
                         id BIGSERIAL,
                         guild_id BIGINT NOT NULL,
@@ -2579,12 +2738,13 @@ class DatabaseStats(commands.Cog):
                         activity_name TEXT NOT NULL,
                         activity_type TEXT NOT NULL,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                        
                         PRIMARY KEY (id, created_at)
                     )
-                    ''',
-                    # UPDATED: Blacklist tables with added_by and added_at
-                    '''
+                ''')
+                print("  ✅ Created/verified table: activities")
+
+                # Create blacklist tables
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS blacklisted_users (
                         id BIGSERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
@@ -2593,8 +2753,10 @@ class DatabaseStats(commands.Cog):
                         added_at TIMESTAMPTZ DEFAULT NOW(),
                         UNIQUE(guild_id, user_id)
                     )
-                    ''',
-                    '''
+                ''')
+                print("  ✅ Created/verified table: blacklisted_users")
+
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS blacklisted_channels (
                         id BIGSERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
@@ -2603,8 +2765,10 @@ class DatabaseStats(commands.Cog):
                         added_at TIMESTAMPTZ DEFAULT NOW(),
                         UNIQUE(guild_id, channel_id)
                     )
-                    ''',
-                    '''
+                ''')
+                print("  ✅ Created/verified table: blacklisted_channels")
+
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS blacklisted_categories (
                         id BIGSERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
@@ -2613,8 +2777,10 @@ class DatabaseStats(commands.Cog):
                         added_at TIMESTAMPTZ DEFAULT NOW(),
                         UNIQUE(guild_id, category_id)
                     )
-                    ''',
-                    '''
+                ''')
+                print("  ✅ Created/verified table: blacklisted_categories")
+
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS blacklisted_roles (
                         id BIGSERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
@@ -2623,40 +2789,49 @@ class DatabaseStats(commands.Cog):
                         added_at TIMESTAMPTZ DEFAULT NOW(),
                         UNIQUE(guild_id, role_id)
                     )
-                    ''',
-                    '''
+                ''')
+                print("  ✅ Created/verified table: blacklisted_roles")
+
+                # Create settings table
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS settings (
-                    guild_id BIGINT PRIMARY KEY,
-                    prefix TEXT DEFAULT 's!',
-                    timezone TEXT DEFAULT 'UTC',
-                    voice_states TEXT[] DEFAULT '{"self_mute", "self_deafen", "streaming", "video"}',
-                    permission_level TEXT DEFAULT 'Default',
-                    bot_filter BOOLEAN DEFAULT TRUE,
-                    dashboard_access_level TEXT DEFAULT 'Member',
-                    min_account_age_days INT DEFAULT 3,
-                    default_time_mode TEXT DEFAULT 'days_back' CHECK (default_time_mode IN ('all_time', 'days_back', 'date_range', 'rolling_window')),
-                    default_days_back INT DEFAULT 14,
-                    default_from_date TIMESTAMPTZ DEFAULT NULL,
-                    default_to_date TIMESTAMPTZ DEFAULT NULL,
-                    default_rolling_type TEXT DEFAULT NULL,
-                    default_rolling_value INT DEFAULT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        guild_id BIGINT PRIMARY KEY,
+                        prefix TEXT DEFAULT 's!',
+                        timezone TEXT DEFAULT 'UTC',
+                        voice_states TEXT[] DEFAULT '{"self_mute", "self_deafen", "streaming", "video"}',
+                        permission_level TEXT DEFAULT 'Default',
+                        bot_filter BOOLEAN DEFAULT TRUE,
+                        dashboard_access_level TEXT DEFAULT 'Member',
+                        min_account_age_days INT DEFAULT 3,
+                        default_time_mode TEXT DEFAULT 'days_back' CHECK (default_time_mode IN ('all_time', 'days_back', 'date_range', 'rolling_window')),
+                        default_days_back INT DEFAULT 14,
+                        default_from_date TIMESTAMPTZ DEFAULT NULL,
+                        default_to_date TIMESTAMPTZ DEFAULT NULL,
+                        default_rolling_type TEXT DEFAULT NULL,
+                        default_rolling_value INT DEFAULT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                    ''',
-                    '''
+                ''')
+                print("  ✅ Created/verified table: settings")
+
+                # Create current_role_members table
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS current_role_members (
                         id BIGSERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
                         user_id BIGINT NOT NULL,
                         role_id BIGINT NOT NULL,
-                        role_name TEXT NOT NULL DEFAULT 'Unknown Role',  
-                        role_color INT DEFAULT 0,                        
+                        role_name TEXT NOT NULL DEFAULT 'Unknown Role',
+                        role_color INT DEFAULT 0,
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         is_bot BOOLEAN DEFAULT FALSE,
                         UNIQUE(guild_id, user_id, role_id)
                     )
-                    ''',
-                    '''
+                ''')
+                print("  ✅ Created/verified table: current_role_members")
+
+                # Create member_growth_stats table
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS member_growth_stats (
                         id BIGSERIAL,
                         guild_id BIGINT NOT NULL,
@@ -2667,8 +2842,11 @@ class DatabaseStats(commands.Cog):
                         PRIMARY KEY (id, date),
                         UNIQUE(guild_id, date)
                     )
-                    ''',
-                    '''
+                ''')
+                print("  ✅ Created/verified table: member_growth_stats")
+
+                # Create discord_channels table
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS discord_channels (
                         id BIGSERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
@@ -2680,8 +2858,11 @@ class DatabaseStats(commands.Cog):
                         last_synced TIMESTAMP DEFAULT NOW(),
                         created_at TIMESTAMP DEFAULT NOW()
                     )
-                    ''',
-                    '''
+                ''')
+                print("  ✅ Created/verified table: discord_channels")
+
+                # Create server_member_counts table
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS server_member_counts (
                         id BIGSERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
@@ -2689,41 +2870,29 @@ class DatabaseStats(commands.Cog):
                         member_count INT NOT NULL,
                         UNIQUE(guild_id, recorded_at)
                     )
-                    ''',
-                    # UPDATED: reset_schedules table with ALL advanced scheduling columns
-                    '''
+                ''')
+                print("  ✅ Created/verified table: server_member_counts")
+
+                # Create reset_schedules table
+                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS reset_schedules (
                         id SERIAL PRIMARY KEY,
                         guild_id BIGINT NOT NULL,
                         requested_by_id BIGINT NOT NULL,
                         reset_types TEXT[] NOT NULL,
-                        
-                        -- Schedule type
                         schedule_type TEXT NOT NULL DEFAULT 'immediate',
-                        
-                        -- For immediate or one-time execution
                         target_time TIMESTAMPTZ,
-                        
-                        -- For recurring schedules (single value - legacy)
                         recurring_pattern TEXT,
                         recurring_weekday INTEGER,
                         recurring_day_of_month INTEGER,
                         recurring_time TIME,
                         recurring_interval_days INTEGER,
-                        
-                        -- For recurring schedules (multiple values - new)
                         recurring_weekdays INTEGER[],
                         recurring_days_of_month INTEGER[],
                         recurring_times TIME[],
-                        
-                        -- For date range deletion
                         delete_from_date TIMESTAMPTZ,
                         delete_to_date TIMESTAMPTZ,
-                        
-                        -- Rolling window time period
                         time_period_days INTEGER,
-                        
-                        -- Execution tracking
                         completed BOOLEAN DEFAULT FALSE NOT NULL,
                         last_executed_at TIMESTAMPTZ,
                         next_execution_at TIMESTAMPTZ,
@@ -2731,154 +2900,68 @@ class DatabaseStats(commands.Cog):
                         executed_at TIMESTAMPTZ,
                         failure_count INTEGER DEFAULT 0,
                         last_error TEXT,
-                        
-                        -- Scope information
                         scope_type TEXT,
                         scope_details TEXT,
                         channel_id BIGINT,
                         category_id BIGINT,
-                        
-                        -- Metadata
                         schedule_name VARCHAR(100),
                         enabled BOOLEAN DEFAULT TRUE,
                         reason TEXT,
                         updated_at TIMESTAMP DEFAULT NOW()
                     )
-                    '''
-                ]
+                ''')
+                print("  ✅ Created/verified table: reset_schedules")
 
-                for query in static_table_queries:
-                    try:
-                        await conn.execute(query)
-                        import re
-                        match = re.search(
-                            r'CREATE TABLE IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(
-                                f"  ✅ Created/verified static table: {match.group(1)}")
-                    except asyncpg.exceptions.PostgresError as e:
-                        raise DatabaseQueryError(
-                            "Failed to create static database table",
-                            context={'operation': 'initialize_database'},
-                            original=e
-                        )
-
-                # ===== ALTER EXISTING RESET_SCHEDULES TABLE TO ADD ANY MISSING COLUMNS =====
+                # ===== ADD PRIMARY KEYS AND CONSTRAINTS =====
                 print("\n" + "="*60)
-                print("🔄 ALTERING RESET_SCHEDULES TABLE (ADDING MISSING COLUMNS)")
+                print("🔑 ADDING PRIMARY KEYS AND CONSTRAINTS")
                 print("="*60)
 
-                alter_reset_schedules_queries = [
-                    # Schedule type columns
-                    "ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS schedule_type TEXT NOT NULL DEFAULT 'immediate'",
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_pattern TEXT',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_weekday INTEGER',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_day_of_month INTEGER',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_time TIME',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_interval_days INTEGER',
-
-                    # Multi-value columns
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_weekdays INTEGER[]',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_days_of_month INTEGER[]',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS recurring_times TIME[]',
-
-                    # Date range columns
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS delete_from_date TIMESTAMPTZ',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS delete_to_date TIMESTAMPTZ',
-
-                    # Rolling window time period
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS time_period_days INTEGER',
-
-                    # Execution tracking columns
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS last_executed_at TIMESTAMPTZ',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS next_execution_at TIMESTAMPTZ',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS failure_count INTEGER DEFAULT 0',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS last_error TEXT',
-
-                    # Scope columns
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS scope_type TEXT',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS scope_details TEXT',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS channel_id BIGINT',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS category_id BIGINT',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS schedule_name VARCHAR(100)',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS reason TEXT',
-                    'ALTER TABLE reset_schedules ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()',
+                constraints = [
+                    ('message_tracking_hourly_pkey', 'message_tracking_hourly',
+                     '(guild_id, user_id, channel_id, hour)'),
+                    ('voice_session_history_hourly_pkey', 'voice_session_history_hourly',
+                     '(guild_id, user_id, channel_id, hour, state_flags)'),
+                    ('emoji_usage_hourly_pkey', 'emoji_usage_hourly',
+                     '(guild_id, user_id, channel_id, emoji_str, usage_type, hour)'),
+                    ('user_mentions_hourly_pkey', 'user_mentions_hourly',
+                     '(guild_id, mentioned_user_id, mentioner_user_id, channel_id, hour)'),
+                    ('activity_sessions_hourly_pkey', 'activity_sessions_hourly',
+                     '(guild_id, user_id, activity_name, activity_type, hour)'),
+                    ('role_growth_hourly_pkey', 'role_growth_hourly',
+                     '(guild_id, role_id, user_id, hour)'),
+                    ('member_joins_hourly_pkey', 'member_joins_hourly',
+                     '(guild_id, user_id, hour)'),
+                    ('member_leaves_hourly_pkey', 'member_leaves_hourly',
+                     '(guild_id, user_id, hour)'),
+                    ('slash_commands_daily_pkey', 'slash_commands_daily',
+                     '(guild_id, command_name, day)')
                 ]
 
-                for query in alter_reset_schedules_queries:
-                    try:
-                        await conn.execute(query)
-                        import re
-                        match = re.search(
-                            r'ADD COLUMN IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(
-                                f"  ✅ Added/verified column in reset_schedules: {match.group(1)}")
-                    except asyncpg.exceptions.DuplicateColumnError:
-                        print(f"  ✅ Column already exists in reset_schedules")
-                    except Exception as e:
-                        print(f"  ⚠️ Warning: {e}")
-
-                # ===== ALTER EXISTING SETTINGS TABLE TO ADD ANY MISSING COLUMNS =====
-                print("\n" + "="*60)
-                print("🔄 ALTERING SETTINGS TABLE (ADDING MISSING COLUMNS)")
-                print("="*60)
-
-                alter_settings_queries = [
-                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_time_mode TEXT DEFAULT 'days_back'",
-                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_days_back INT DEFAULT 14",
-                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_from_date TIMESTAMPTZ DEFAULT NULL",
-                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_to_date TIMESTAMPTZ DEFAULT NULL",
-                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_rolling_type TEXT DEFAULT NULL",
-                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_rolling_value INT DEFAULT NULL"
-                ]
-                for query in alter_settings_queries:
-                    try:
-                        await conn.execute(query)
-                        import re
-                        match = re.search(
-                            r'ADD COLUMN IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(
-                                f"  ✅ Added/verified column in settings: {match.group(1)}")
-                    except asyncpg.exceptions.DuplicateColumnError:
-                        print(f"  ✅ Column already exists in settings")
-                    except Exception as e:
-                        print(f"  ⚠️ Warning: {e}")
-
-                # Add the CHECK constraint separately — ADD COLUMN IF NOT EXISTS won't
-                # add the constraint if the column already existed without it.
-                try:
-                    await conn.execute("""
+                for constraint_name, table, columns in constraints:
+                    await conn.execute(f'''
                         DO $$
                         BEGIN
                             IF NOT EXISTS (
-                                SELECT 1 FROM information_schema.check_constraints
-                                WHERE constraint_name = 'valid_time_mode'
+                                SELECT 1 FROM information_schema.table_constraints 
+                                WHERE constraint_name = '{constraint_name}' AND table_name = '{table}'
                             ) THEN
-                                ALTER TABLE settings
-                                ADD CONSTRAINT valid_time_mode
-                                CHECK (default_time_mode IN ('all_time', 'days_back', 'date_range', 'rolling_window'));
+                                ALTER TABLE {table} ADD PRIMARY KEY {columns};
                             END IF;
-                        END
-                        $$;
-                    """)
-                    print("  ✅ Added/verified CHECK constraint: valid_time_mode")
-                except Exception as e:
-                    print(
-                        f"  ⚠️ Warning: Could not add valid_time_mode constraint: {e}")
+                        END $$;
+                    ''')
+                    print(f"  ✅ Added/verified primary key to {table}")
 
-                # ===== ALTER EXISTING TABLES TO ADD ENCRYPTED_USERNAME IF MISSING =====
+                # ===== ALTER EXISTING TABLES TO ADD MISSING COLUMNS =====
                 print("\n" + "="*60)
-                print("🔐 ADDING ENCRYPTED_USERNAME COLUMN TO EXISTING TABLES")
+                print("🔄 ALTERING TABLES TO ADD MISSING COLUMNS")
                 print("="*60)
 
                 alter_queries = [
+                    "ALTER TABLE user_mentions_hourly ADD COLUMN IF NOT EXISTS encrypted_mentioned_username TEXT",
                     "ALTER TABLE message_tracking_hourly ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
                     "ALTER TABLE voice_session_history_hourly ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
                     "ALTER TABLE emoji_usage_hourly ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
-                    "ALTER TABLE user_mentions_hourly ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
                     "ALTER TABLE activity_sessions_hourly ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
                     "ALTER TABLE role_growth_hourly ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
                     "ALTER TABLE member_joins_hourly ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
@@ -2890,71 +2973,50 @@ class DatabaseStats(commands.Cog):
                 for query in alter_queries:
                     try:
                         await conn.execute(query)
-                        print(f"  ✅ Added encrypted_username column")
-                    except asyncpg.exceptions.DuplicateColumnError:
-                        print(f"  ✅ Column already exists")
                     except Exception as e:
-                        print(f"  ⚠️ Warning: {e}")
+                        print(f"  ⚠️ Warning setting column: {e}")
+                print("  ✅ All column extensions checked")
 
-                # ===== ALTER EXISTING BLACKLIST TABLES TO ADD MISSING COLUMNS =====
-                print("\n" + "="*60)
-                print("🔄 ALTERING BLACKLIST TABLES (ADDING MISSING COLUMNS)")
-                print("="*60)
-
-                blacklist_alter_queries = [
-                    'ALTER TABLE blacklisted_users ADD COLUMN IF NOT EXISTS added_by BIGINT NOT NULL DEFAULT 0',
-                    'ALTER TABLE blacklisted_channels ADD COLUMN IF NOT EXISTS added_by BIGINT NOT NULL DEFAULT 0',
-                    'ALTER TABLE blacklisted_categories ADD COLUMN IF NOT EXISTS added_by BIGINT NOT NULL DEFAULT 0',
-                    'ALTER TABLE blacklisted_roles ADD COLUMN IF NOT EXISTS added_by BIGINT NOT NULL DEFAULT 0',
-                    'ALTER TABLE blacklisted_users ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ DEFAULT NOW()',
-                    'ALTER TABLE blacklisted_channels ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ DEFAULT NOW()',
-                    'ALTER TABLE blacklisted_categories ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ DEFAULT NOW()',
-                    'ALTER TABLE blacklisted_roles ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ DEFAULT NOW()',
-                ]
-
-                for query in blacklist_alter_queries:
-                    try:
-                        await conn.execute(query)
-                        import re
-                        match = re.search(r'ALTER TABLE (\w+)', query)
-                        if match:
-                            print(
-                                f"  ✅ Updated {match.group(1)} with missing columns")
-                    except asyncpg.exceptions.PostgresError as e:
-                        print(f"  ⚠️ Warning: Could not alter table: {e}")
+                try:
+                    await conn.execute("""
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM information_schema.check_constraints WHERE constraint_name = 'valid_time_mode'
+                            ) THEN
+                                ALTER TABLE settings ADD CONSTRAINT valid_time_mode CHECK (default_time_mode IN ('all_time', 'days_back', 'date_range', 'rolling_window'));
+                            END IF;
+                        END $$;
+                    """)
+                    print("  ✅ Added/verified CHECK constraint: valid_time_mode")
+                except Exception as e:
+                    print(
+                        f"  ⚠️ Warning: Could not add valid_time_mode constraint: {e}")
 
                 # ===== CREATE INDEXES =====
                 print("\n" + "="*60)
                 print("📊 CREATING INDEXES")
                 print("="*60)
 
-                # Hourly table indexes - CRITICAL for query performance
                 hourly_index_queries = [
                     'CREATE INDEX IF NOT EXISTS idx_message_hourly_guild_hour ON message_tracking_hourly(guild_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_message_hourly_guild_user_hour ON message_tracking_hourly(guild_id, user_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_message_hourly_guild_channel_hour ON message_tracking_hourly(guild_id, channel_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_message_hourly_guild_category_hour ON message_tracking_hourly(guild_id, category_id, hour)',
-                    'CREATE INDEX IF NOT EXISTS idx_message_hourly_user_hour ON message_tracking_hourly(user_id, hour)',
-
                     'CREATE INDEX IF NOT EXISTS idx_voice_hourly_guild_hour ON voice_session_history_hourly(guild_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_voice_hourly_guild_user_hour ON voice_session_history_hourly(guild_id, user_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_voice_hourly_guild_channel_hour ON voice_session_history_hourly(guild_id, channel_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_voice_hourly_guild_category_hour ON voice_session_history_hourly(guild_id, category_id, hour)',
-                    'CREATE INDEX IF NOT EXISTS idx_voice_hourly_user_hour ON voice_session_history_hourly(user_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_voice_hourly_state_flags ON voice_session_history_hourly(state_flags, hour)',
-
                     'CREATE INDEX IF NOT EXISTS idx_emoji_hourly_guild_hour ON emoji_usage_hourly(guild_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_emoji_hourly_guild_user_hour ON emoji_usage_hourly(guild_id, user_id, hour)',
-
                     'CREATE INDEX IF NOT EXISTS idx_mentions_hourly_guild_hour ON user_mentions_hourly(guild_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_mentions_hourly_guild_mentioned_hour ON user_mentions_hourly(guild_id, mentioned_user_id, hour)',
-
+                    'CREATE INDEX IF NOT EXISTS idx_mentions_hourly_guild_mentioner_hour ON user_mentions_hourly(guild_id, mentioner_user_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_slash_daily_guild_day ON slash_commands_daily(guild_id, day)',
-
                     'CREATE INDEX IF NOT EXISTS idx_role_growth_hourly_guild_hour ON role_growth_hourly(guild_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_role_growth_role_hour ON role_growth_hourly(role_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_role_growth_composite ON role_growth_hourly(guild_id, role_id, hour)',
-
                     'CREATE INDEX IF NOT EXISTS idx_joins_hourly_guild_hour ON member_joins_hourly(guild_id, hour)',
                     'CREATE INDEX IF NOT EXISTS idx_leaves_hourly_guild_hour ON member_leaves_hourly(guild_id, hour)',
                 ]
@@ -2962,49 +3024,16 @@ class DatabaseStats(commands.Cog):
                 for query in hourly_index_queries:
                     try:
                         await conn.execute(query)
-                        import re
-                        match = re.search(r'INDEX IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(
-                                f"  ✅ Created/verified hourly index: {match.group(1)}")
                     except asyncpg.exceptions.PostgresError as e:
-                        raise DatabaseQueryError(
-                            "Failed to create hourly aggregated index",
-                            context={'operation': 'initialize_database'},
-                            original=e
-                        )
-
-                # ===== CREATE RESET SCHEDULES INDEXES =====
-                print("\n" + "="*60)
-                print("📊 CREATING RESET SCHEDULES INDEXES")
-                print("="*60)
-
-                reset_schedules_indexes = [
-                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_pending ON reset_schedules (next_execution_at) WHERE completed = FALSE',
-                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_guild ON reset_schedules (guild_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_completed ON reset_schedules (completed, next_execution_at)',
-                    'CREATE INDEX IF NOT EXISTS idx_reset_schedules_type ON reset_schedules (schedule_type)',
-                    "CREATE INDEX IF NOT EXISTS idx_reset_schedules_recurring ON reset_schedules (recurring_pattern) WHERE schedule_type = 'recurring'",
-                ]
-
-                for query in reset_schedules_indexes:
-                    try:
-                        await conn.execute(query)
-                        import re
-                        match = re.search(r'INDEX IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(f"  ✅ Created index: {match.group(1)}")
-                    except asyncpg.exceptions.PostgresError as e:
-                        print(
-                            f"  ⚠️ Warning: Could not create reset_schedules index: {e}")
+                        print(f"  ⚠️ Could not create index: {e}")
+                print("  ✅ All indexes checked/created")
 
                 # ===== CREATE HYPERTABLES =====
                 print("\n" + "="*60)
                 print("📈 CREATING HYPERTABLES")
                 print("="*60)
 
-                # Hourly hypertables - CRITICAL for performance
-                hourly_hypertables = [
+                hypertable_configs = [
                     ('message_tracking_hourly', 'hour'),
                     ('voice_session_history_hourly', 'hour'),
                     ('emoji_usage_hourly', 'hour'),
@@ -3012,231 +3041,79 @@ class DatabaseStats(commands.Cog):
                     ('activity_sessions_hourly', 'hour'),
                     ('role_growth_hourly', 'hour'),
                     ('member_joins_hourly', 'hour'),
-                    ('member_leaves_hourly', 'hour')
+                    ('member_leaves_hourly', 'hour'),
+                    # Corrected time column mapping
+                    ('slash_commands_daily', 'day')
                 ]
 
-                for table_name, time_column in hourly_hypertables:
+                for table_name, time_col in hypertable_configs:
                     try:
-                        is_hypertable = await conn.fetchval(f'''
-                            SELECT EXISTS (
-                                SELECT 1 FROM timescaledb_information.hypertables 
-                                WHERE hypertable_name = '{table_name}'
+                        await conn.execute(f"SELECT create_hypertable('{table_name}', '{time_col}', if_not_exists => TRUE)")
+                        print(
+                            f"  ✅ Hypertable ready: {table_name} (on column: {time_col})")
+                    except Exception as e:
+                        print(
+                            f"  ⚠️ Error registering hypertable {table_name}: {e}")
+
+                # ===== PURGE RETENTION POLICIES =====
+                print("\n" + "="*60)
+                print("🗑️ PURGING ALL RETENTION POLICIES")
+                print("="*60)
+
+                for table_name, _ in hypertable_configs:
+                    try:
+                        # if_exists => true prevents crashes if the policy wasn't set yet
+                        await conn.execute(f"SELECT remove_retention_policy('{table_name}', if_exists => true)")
+                        print(
+                            f"  🗑️ Safely dropped retention policy for: {table_name}")
+                    except Exception as e:
+                        print(
+                            f"  ⚠️ Could not drop retention policy on {table_name}: {e}")
+
+                # ===== CONFIGURE COMPRESSION POLICIES =====
+                print("\n" + "="*60)
+                print("🤐 CONFIGURING COMPRESSION POLICIES")
+                print("="*60)
+
+                # Define specific parameters per table to fix the daily mapping issue
+                compression_configs = [
+                    ('message_tracking_hourly', 'hour'),
+                    ('voice_session_history_hourly', 'hour'),
+                    ('emoji_usage_hourly', 'hour'),
+                    ('user_mentions_hourly', 'hour'),
+                    ('activity_sessions_hourly', 'hour'),
+                    ('role_growth_hourly', 'hour'),
+                    ('member_joins_hourly', 'hour'),
+                    ('member_leaves_hourly', 'hour'),
+                    # FIX: Set compress_orderby to 'day'
+                    ('slash_commands_daily', 'day')
+                ]
+
+                for table_name, time_col in compression_configs:
+                    try:
+                        # Enable compression alterations on the hypertable settings
+                        await conn.execute(f"""
+                            ALTER TABLE {table_name} SET (
+                                timescaledb.compress,
+                                timescaledb.compress_segmentby = 'guild_id',
+                                timescaledb.compress_orderby = '{time_col} DESC'
                             )
-                        ''')
+                        """)
 
-                        if not is_hypertable:
-                            try:
-                                await conn.execute(f'''
-                                    SELECT create_hypertable(
-                                        '{table_name}', 
-                                        '{time_column}', 
-                                        chunk_time_interval => INTERVAL '7 days',
-                                        if_not_exists => TRUE
-                                    )
-                                ''')
-                                print(f"  ✅ Created hypertable: {table_name}")
-                            except asyncpg.exceptions.PostgresError as e:
-                                if "already a hypertable" not in str(e):
-                                    raise DatabaseQueryError(
-                                        f"Failed to create hypertable for {table_name}",
-                                        context={'table': table_name,
-                                                 'time_column': time_column},
-                                        original=e
-                                    )
-                                else:
-                                    print(
-                                        f"✅ {table_name} is already a hypertable")
-                        else:
-                            print(f"✅ {table_name} is already a hypertable")
-                    except asyncpg.exceptions.PostgresError as e:
-                        raise DatabaseQueryError(
-                            f"Error checking hypertable status for {table_name}",
-                            context={'table': table_name},
-                            original=e
-                        )
+                        # Add background job policy if it doesn't exist (e.g., compress after 14 days)
+                        await conn.execute(f"""
+                            SELECT add_compression_policy('{table_name}', INTERVAL '14 days', if_not_exists => true)
+                        """)
+                        print(
+                            f"  ✅ Compression policy configured for: {table_name}")
+                    except Exception as e:
+                        print(f"  ⚠️ Compression error on {table_name}: {e}")
 
-                # Daily hypertable (slash_commands)
-                try:
-                    is_hypertable = await conn.fetchval('''
-                        SELECT EXISTS (
-                            SELECT 1 FROM timescaledb_information.hypertables 
-                            WHERE hypertable_name = 'slash_commands_daily'
-                        )
-                    ''')
+            return True
 
-                    if not is_hypertable:
-                        try:
-                            await conn.execute('''
-                                SELECT create_hypertable(
-                                    'slash_commands_daily', 
-                                    'day', 
-                                    chunk_time_interval => INTERVAL '30 days',
-                                    if_not_exists => TRUE
-                                )
-                            ''')
-                            print("  ✅ Created hypertable: slash_commands_daily")
-                        except asyncpg.exceptions.PostgresError as e:
-                            if "already a hypertable" not in str(e):
-                                raise DatabaseQueryError(
-                                    "Failed to create hypertable for slash_commands_daily",
-                                    context={'table': 'slash_commands_daily'},
-                                    original=e
-                                )
-                            else:
-                                print(
-                                    "  ✅ slash_commands_daily is already a hypertable")
-                    else:
-                        print("  ✅ slash_commands_daily is already a hypertable")
-                except asyncpg.exceptions.PostgresError as e:
-                    raise DatabaseQueryError(
-                        "Error checking hypertable status for slash_commands_daily",
-                        context={'table': 'slash_commands_daily'},
-                        original=e
-                    )
-
-                # Create indexes for discord_channels table
-                print("\n" + "="*60)
-                print("📊 CREATING DISCORD CHANNELS INDEXES")
-                print("="*60)
-
-                discord_channel_indexes = [
-                    'CREATE INDEX IF NOT EXISTS idx_discord_channels_guild ON discord_channels(guild_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_discord_channels_guild_type ON discord_channels(guild_id, channel_type)',
-                    'CREATE INDEX IF NOT EXISTS idx_discord_channels_category ON discord_channels(guild_id, category_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_discord_channels_deleted ON discord_channels(guild_id, is_deleted)',
-                    'CREATE INDEX IF NOT EXISTS idx_discord_channels_active ON discord_channels(guild_id, channel_type, is_deleted) WHERE is_deleted = FALSE',
-                    'CREATE INDEX IF NOT EXISTS idx_discord_channels_channel_id ON discord_channels(channel_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_discord_channels_last_synced ON discord_channels(last_synced)',
-                ]
-
-                for query in discord_channel_indexes:
-                    try:
-                        await conn.execute(query)
-                        import re
-                        match = re.search(r'INDEX IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(f"  ✅ Created index: {match.group(1)}")
-                    except asyncpg.exceptions.PostgresError as e:
-                        print(f"  ⚠️ Warning: Could not create index: {e}")
-
-                # Create indexes for blacklist tables
-                print("\n" + "="*60)
-                print("📊 CREATING BLACKLIST INDEXES")
-                print("="*60)
-
-                blacklist_indexes = [
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_users_guild ON blacklisted_users(guild_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_users_added_by ON blacklisted_users(added_by)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_users_added_at ON blacklisted_users(added_at)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_channels_guild ON blacklisted_channels(guild_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_channels_added_by ON blacklisted_channels(added_by)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_channels_added_at ON blacklisted_channels(added_at)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_categories_guild ON blacklisted_categories(guild_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_categories_added_by ON blacklisted_categories(added_by)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_categories_added_at ON blacklisted_categories(added_at)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_roles_guild ON blacklisted_roles(guild_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_roles_added_by ON blacklisted_roles(added_by)',
-                    'CREATE INDEX IF NOT EXISTS idx_blacklisted_roles_added_at ON blacklisted_roles(added_at)',
-                ]
-
-                for query in blacklist_indexes:
-                    try:
-                        await conn.execute(query)
-                        import re
-                        match = re.search(r'INDEX IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(f"  ✅ Created index: {match.group(1)}")
-                    except asyncpg.exceptions.PostgresError as e:
-                        print(f"  ⚠️ Warning: Could not create index: {e}")
-
-                # Create indexes for invite tracking tables
-                print("\n" + "="*60)
-                print("📊 CREATING INVITE TRACKING INDEXES")
-                print("="*60)
-
-                invite_indexes = [
-                    'CREATE INDEX IF NOT EXISTS idx_invite_tracking_guild_invitee ON invite_tracking(guild_id, invitee_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_invite_tracking_guild_inviter ON invite_tracking(guild_id, inviter_id)',
-                    'CREATE INDEX IF NOT EXISTS idx_invite_tracking_code ON invite_tracking(invite_code)',
-                    'CREATE INDEX IF NOT EXISTS idx_invite_tracking_created ON invite_tracking(created_at DESC)',
-                    'CREATE INDEX IF NOT EXISTS idx_invite_tracking_vanity ON invite_tracking(guild_id, is_vanity)',
-                    'CREATE INDEX IF NOT EXISTS idx_invite_uses_guild_code ON invite_uses(guild_id, invite_code)',
-                    'CREATE INDEX IF NOT EXISTS idx_invite_uses_vanity ON invite_uses(guild_id, is_vanity)',
-                    'CREATE INDEX IF NOT EXISTS idx_invite_uses_updated ON invite_uses(updated_at DESC)',
-                ]
-
-                for query in invite_indexes:
-                    try:
-                        await conn.execute(query)
-                        import re
-                        match = re.search(r'INDEX IF NOT EXISTS (\w+)', query)
-                        if match:
-                            print(f"  ✅ Created index: {match.group(1)}")
-                    except asyncpg.exceptions.PostgresError as e:
-                        print(f"  ⚠️ Warning: Could not create index: {e}")
-
-                # Create a helpful view for channel hierarchies
-                try:
-                    await conn.execute('''
-                        CREATE OR REPLACE VIEW discord_channel_hierarchy AS
-                        SELECT 
-                            c.guild_id,
-                            c.channel_id,
-                            c.channel_name,
-                            c.channel_type,
-                            cat.channel_id as category_id,
-                            cat.channel_name as category_name,
-                            CASE 
-                                WHEN c.category_id IS NOT NULL THEN cat.channel_name || ' / ' || c.channel_name
-                                ELSE c.channel_name
-                            END as full_path
-                        FROM discord_channels c
-                        LEFT JOIN discord_channels cat 
-                            ON cat.guild_id = c.guild_id 
-                            AND cat.channel_id = c.category_id 
-                            AND cat.channel_type = 'category'
-                            AND cat.is_deleted = FALSE
-                        WHERE c.is_deleted = FALSE
-                    ''')
-                    print("  ✅ Created view: discord_channel_hierarchy")
-                except Exception as e:
-                    print(f"  ⚠️ Warning: Could not create view: {e}")
-
-                self.db_connected = True
-                return True
-
-        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
-            raise DatabaseConnectionError(
-                "Database connection does not exist during initialization",
-                context={'operation': 'initialize_database'},
-                original=e
-            )
-        except asyncpg.exceptions.ConnectionFailureError as e:
-            raise DatabaseConnectionError(
-                "Database connection failed during initialization",
-                context={'operation': 'initialize_database'},
-                original=e
-            )
-        except asyncpg.exceptions.QueryCanceledError as e:
-            raise DatabaseTimeoutError(
-                "Database operation timed out during initialization",
-                context={'operation': 'initialize_database'},
-                original=e
-            )
-        except asyncpg.exceptions.PostgresError as e:
-            raise DatabaseQueryError(
-                "Database error during initialization",
-                context={'operation': 'initialize_database'},
-                original=e
-            )
         except Exception as e:
-            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
-                raise DatabaseQueryError(
-                    "Unexpected error during database initialization",
-                    context={'operation': 'initialize_database'},
-                    original=e
-                )
-            raise
+            print(f"❌ Critical database initialization failure: {e}")
+            return False
 
     # ======================================================================
     # SHUTDOWN - FIXED EXCEPTION HANDLING
@@ -3726,6 +3603,28 @@ class DatabaseStats(commands.Cog):
         except Exception as e:
             print(f"Decrypt failed for {encrypted[:50]}...: {e}")
             return None
+
+    async def get_decrypted_mentioned_username(self, guild_id: int, user_id: int) -> Optional[str]:
+        """Get decrypted username for a mentioned user."""
+        if not self.pool:
+            return None
+
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow('''
+                    SELECT encrypted_mentioned_username
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioned_user_id = $2
+                    AND encrypted_mentioned_username IS NOT NULL
+                    LIMIT 1
+                ''', guild_id, user_id)
+
+                if row and row['encrypted_mentioned_username']:
+                    return self.decrypt_username(row['encrypted_mentioned_username'])
+        except Exception as e:
+            print(f"Error getting mentioned username for {user_id}: {e}")
+
+        return None
 
     async def get_decrypted_username_any_table(self, guild_id: int, user_id: int) -> Optional[str]:
         """Get decrypted username by trying all relevant tables."""
@@ -10298,7 +10197,2127 @@ class DatabaseStats(commands.Cog):
                     original=e
                 )
             raise
+    # ======================================================================
+    # MENTIONS LEADERBOARD QUERIES - ENHANCED WITH SCOPE SUPPORT
+    # ======================================================================
 
+    async def q_leaderboard_mentions_target_user_server(
+        self, guild_id: int, target_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who mention a target user (SERVER SCOPE).
+        Shows top users that mentioned the target user in the server.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND mentioned_user_id = $2
+                '''
+                params = [guild_id, target_user_id]
+                param_index = 3
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioned_user_id = $2
+                '''
+                total_params = [guild_id, target_user_id]
+                total_param_index = 3
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server mentions leaderboard for target user",
+                context={'guild_id': guild_id,
+                         'target_user_id': target_user_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_target_user_channel(
+        self, guild_id: int, channel_id: int, target_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who mention a target user (CHANNEL SCOPE).
+        Shows top users that mentioned the target user in a specific channel.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND channel_id = $2
+                    AND mentioned_user_id = $3
+                '''
+                params = [guild_id, channel_id, target_user_id]
+                param_index = 4
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=channel_id
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2 AND mentioned_user_id = $3
+                '''
+                total_params = [guild_id, channel_id, target_user_id]
+                total_param_index = 4
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel mentions leaderboard for target user",
+                context={'guild_id': guild_id, 'channel_id': channel_id,
+                         'target_user_id': target_user_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_target_user_category(
+        self, guild_id: int, category_id: int, target_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who mention a target user (CATEGORY SCOPE).
+        Shows top users that mentioned the target user in a specific category.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND category_id = $2
+                    AND mentioned_user_id = $3
+                '''
+                params = [guild_id, category_id, target_user_id]
+                param_index = 4
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=category_id
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2 AND mentioned_user_id = $3
+                '''
+                total_params = [guild_id, category_id, target_user_id]
+                total_param_index = 4
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category mentions leaderboard for target user",
+                context={'guild_id': guild_id, 'category_id': category_id,
+                         'target_user_id': target_user_id},
+                original=e
+            )
+
+    # ======================================================================
+    # MENTIONS SENT LEADERBOARD (Total mentions sent by users)
+    # ======================================================================
+
+    async def q_leaderboard_mentions_sent_server(
+        self, guild_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who sent the most mentions (SERVER SCOPE).
+        Shows top users by total mentions sent in the server.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioned_user_id) as unique_targets,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+                param_index = 2
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                total_params = [guild_id]
+                total_param_index = 2
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_targets': row['unique_targets'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server mentions sent leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_sent_channel(
+        self, guild_id: int, channel_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who sent the most mentions (CHANNEL SCOPE).
+        Shows top users by total mentions sent in a specific channel.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioned_user_id) as unique_targets,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND channel_id = $2
+                '''
+                params = [guild_id, channel_id]
+                param_index = 3
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=channel_id
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                total_params = [guild_id, channel_id]
+                total_param_index = 3
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_targets': row['unique_targets'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel mentions sent leaderboard",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_sent_category(
+        self, guild_id: int, category_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who sent the most mentions (CATEGORY SCOPE).
+        Shows top users by total mentions sent in a specific category.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioned_user_id) as unique_targets,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND category_id = $2
+                '''
+                params = [guild_id, category_id]
+                param_index = 3
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=category_id
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                total_params = [guild_id, category_id]
+                total_param_index = 3
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_targets': row['unique_targets'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category mentions sent leaderboard",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+    # ======================================================================
+    # MENTIONS RECEIVED LEADERBOARD (Total mentions received by users)
+    # ======================================================================
+
+    async def q_leaderboard_mentions_received_server(
+        self, guild_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who received the most mentions (SERVER SCOPE).
+        Shows top users by total mentions received in the server.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioned_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioner_user_id) as unique_senders,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+                param_index = 2
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                total_params = [guild_id]
+                total_param_index = 2
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioned_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioned_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_senders': row['unique_senders'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server mentions received leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_received_channel(
+        self, guild_id: int, channel_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who received the most mentions (CHANNEL SCOPE).
+        Shows top users by total mentions received in a specific channel.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioned_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioner_user_id) as unique_senders,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND channel_id = $2
+                '''
+                params = [guild_id, channel_id]
+                param_index = 3
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=channel_id
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                total_params = [guild_id, channel_id]
+                total_param_index = 3
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioned_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioned_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_senders': row['unique_senders'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel mentions received leaderboard",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_received_category(
+        self, guild_id: int, category_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who received the most mentions (CATEGORY SCOPE).
+        Shows top users by total mentions received in a specific category.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioned_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioner_user_id) as unique_senders,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND category_id = $2
+                '''
+                params = [guild_id, category_id]
+                param_index = 3
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=category_id
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                total_params = [guild_id, category_id]
+                total_param_index = 3
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioned_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioned_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_senders': row['unique_senders'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category mentions received leaderboard",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+    # ======================================================================
+    # MENTIONS RATIO CALCULATOR (Received / Sent)
+    # ======================================================================
+
+    async def q_user_mentions_ratio_server(
+        self, guild_id: int, user_id: int,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """
+        Calculate mentions ratio for a user (SERVER SCOPE).
+        Returns mentions_sent, mentions_received, and ratio (received/sent).
+        """
+        if not self.pool:
+            return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                # Query for mentions sent
+                sent_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as mentions_sent
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioner_user_id = $2
+                '''
+                sent_params = [guild_id, user_id]
+                sent_param_index = 3
+
+                if start_time:
+                    sent_query += f" AND hour >= ${sent_param_index}"
+                    sent_params.append(start_time)
+                    sent_param_index += 1
+                if end_time:
+                    sent_query += f" AND hour <= ${sent_param_index}"
+                    sent_params.append(end_time)
+                    sent_param_index += 1
+
+                sent_query, sent_params = await self._apply_bot_filter(sent_query, sent_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+                sent_row = await conn.fetchrow(sent_query, *sent_params)
+                mentions_sent = sent_row['mentions_sent'] if sent_row else 0
+
+                # Query for mentions received
+                received_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as mentions_received
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioned_user_id = $2
+                '''
+                received_params = [guild_id, user_id]
+                received_param_index = 3
+
+                if start_time:
+                    received_query += f" AND hour >= ${received_param_index}"
+                    received_params.append(start_time)
+                    received_param_index += 1
+                if end_time:
+                    received_query += f" AND hour <= ${received_param_index}"
+                    received_params.append(end_time)
+                    received_param_index += 1
+
+                received_query, received_params = await self._apply_bot_filter(received_query, received_params, guild_id, 'user_mentions_hourly')
+
+                received_row = await conn.fetchrow(received_query, *received_params)
+                mentions_received = received_row['mentions_received'] if received_row else 0
+
+                # Calculate ratio
+                ratio = (mentions_received / mentions_sent) if mentions_sent > 0 else (
+                    float('inf') if mentions_received > 0 else 0.0)
+
+                return {
+                    'mentions_sent': mentions_sent,
+                    'mentions_received': mentions_received,
+                    'ratio': ratio
+                }
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to calculate user mentions ratio",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+    async def q_user_mentions_ratio_channel(
+        self, guild_id: int, channel_id: int, user_id: int,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """
+        Calculate mentions ratio for a user (CHANNEL SCOPE).
+        Returns mentions_sent, mentions_received, and ratio (received/sent).
+        """
+        if not self.pool:
+            return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                sent_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as mentions_sent
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2 AND mentioner_user_id = $3
+                '''
+                sent_params = [guild_id, channel_id, user_id]
+                sent_param_index = 4
+
+                if start_time:
+                    sent_query += f" AND hour >= ${sent_param_index}"
+                    sent_params.append(start_time)
+                    sent_param_index += 1
+                if end_time:
+                    sent_query += f" AND hour <= ${sent_param_index}"
+                    sent_params.append(end_time)
+                    sent_param_index += 1
+
+                sent_query, sent_params = await self._apply_bot_filter(sent_query, sent_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+                sent_row = await conn.fetchrow(sent_query, *sent_params)
+                mentions_sent = sent_row['mentions_sent'] if sent_row else 0
+
+                received_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as mentions_received
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2 AND mentioned_user_id = $3
+                '''
+                received_params = [guild_id, channel_id, user_id]
+                received_param_index = 4
+
+                if start_time:
+                    received_query += f" AND hour >= ${received_param_index}"
+                    received_params.append(start_time)
+                    received_param_index += 1
+                if end_time:
+                    received_query += f" AND hour <= ${received_param_index}"
+                    received_params.append(end_time)
+                    received_param_index += 1
+
+                received_query, received_params = await self._apply_bot_filter(received_query, received_params, guild_id, 'user_mentions_hourly')
+
+                received_row = await conn.fetchrow(received_query, *received_params)
+                mentions_received = received_row['mentions_received'] if received_row else 0
+
+                ratio = (mentions_received / mentions_sent) if mentions_sent > 0 else (
+                    float('inf') if mentions_received > 0 else 0.0)
+
+                return {
+                    'mentions_sent': mentions_sent,
+                    'mentions_received': mentions_received,
+                    'ratio': ratio
+                }
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to calculate channel user mentions ratio",
+                context={'guild_id': guild_id,
+                         'channel_id': channel_id, 'user_id': user_id},
+                original=e
+            )
+
+    async def q_user_mentions_ratio_category(
+        self, guild_id: int, category_id: int, user_id: int,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """
+        Calculate mentions ratio for a user (CATEGORY SCOPE).
+        Returns mentions_sent, mentions_received, and ratio (received/sent).
+        """
+        if not self.pool:
+            return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                sent_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as mentions_sent
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2 AND mentioner_user_id = $3
+                '''
+                sent_params = [guild_id, category_id, user_id]
+                sent_param_index = 4
+
+                if start_time:
+                    sent_query += f" AND hour >= ${sent_param_index}"
+                    sent_params.append(start_time)
+                    sent_param_index += 1
+                if end_time:
+                    sent_query += f" AND hour <= ${sent_param_index}"
+                    sent_params.append(end_time)
+                    sent_param_index += 1
+
+                sent_query, sent_params = await self._apply_bot_filter(sent_query, sent_params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+                sent_row = await conn.fetchrow(sent_query, *sent_params)
+                mentions_sent = sent_row['mentions_sent'] if sent_row else 0
+
+                received_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as mentions_received
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2 AND mentioned_user_id = $3
+                '''
+                received_params = [guild_id, category_id, user_id]
+                received_param_index = 4
+
+                if start_time:
+                    received_query += f" AND hour >= ${received_param_index}"
+                    received_params.append(start_time)
+                    received_param_index += 1
+                if end_time:
+                    received_query += f" AND hour <= ${received_param_index}"
+                    received_params.append(end_time)
+                    received_param_index += 1
+
+                received_query, received_params = await self._apply_bot_filter(received_query, received_params, guild_id, 'user_mentions_hourly')
+
+                received_row = await conn.fetchrow(received_query, *received_params)
+                mentions_received = received_row['mentions_received'] if received_row else 0
+
+                ratio = (mentions_received / mentions_sent) if mentions_sent > 0 else (
+                    float('inf') if mentions_received > 0 else 0.0)
+
+                return {
+                    'mentions_sent': mentions_sent,
+                    'mentions_received': mentions_received,
+                    'ratio': ratio
+                }
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to calculate category user mentions ratio",
+                context={'guild_id': guild_id,
+                         'category_id': category_id, 'user_id': user_id},
+                original=e
+            )
+
+    # ======================================================================
+    # MENTIONS RATIO LEADERBOARD
+    # ======================================================================
+
+    async def q_leaderboard_mentions_ratio_server(
+        self, guild_id: int,
+        limit: int = 100,
+        min_mentions_sent: int = 1,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users by mentions ratio (received/sent) - SERVER SCOPE.
+        Users with zero mentions sent are included at the end (ratio = infinity).
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                # Get all users with mention activity
+                query = '''
+                    SELECT 
+                        COALESCE(sent.mentioner_user_id, recv.mentioned_user_id) as user_id,
+                        COALESCE(sent.mentions_sent, 0) as mentions_sent,
+                        COALESCE(recv.mentions_received, 0) as mentions_received
+                    FROM (
+                        SELECT mentioner_user_id, SUM(mention_count) as mentions_sent
+                        FROM user_mentions_hourly
+                        WHERE guild_id = $1
+                    ''' + (f" AND hour >= ${2}" if start_time else "") + (f" AND hour <= ${3}" if end_time else "") + '''
+                        GROUP BY mentioner_user_id
+                    ) sent
+                    FULL OUTER JOIN (
+                        SELECT mentioned_user_id, SUM(mention_count) as mentions_received
+                        FROM user_mentions_hourly
+                        WHERE guild_id = $1
+                    ''' + (f" AND hour >= ${4}" if start_time else "") + (f" AND hour <= ${5}" if end_time else "") + '''
+                        GROUP BY mentioned_user_id
+                    ) recv ON sent.mentioner_user_id = recv.mentioned_user_id
+                    WHERE COALESCE(sent.mentions_sent, 0) >= $6 OR COALESCE(recv.mentions_received, 0) > 0
+                '''
+
+                params = [guild_id]
+                param_index = 2
+
+                if start_time:
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    params.append(end_time)
+                    param_index += 1
+                if start_time and end_time:
+                    params.append(start_time)
+                    params.append(end_time)
+                    param_index = 6
+                elif start_time:
+                    params.append(start_time)
+                    param_index = 5
+                elif end_time:
+                    params.append(end_time)
+                    param_index = 5
+                else:
+                    param_index = 4
+
+                params.append(min_mentions_sent)
+
+                rows = await conn.fetch(query, *params)
+
+                # Calculate ratio for each user
+                user_ratios = []
+                for row in rows:
+                    user_id = row['user_id']
+                    mentions_sent = row['mentions_sent'] or 0
+                    mentions_received = row['mentions_received'] or 0
+
+                    # Skip users below min_mentions_sent
+                    if mentions_sent < min_mentions_sent and mentions_sent > 0:
+                        continue
+
+                    if mentions_sent > 0:
+                        ratio = mentions_received / mentions_sent
+                        ratio_display = ratio
+                    elif mentions_received > 0:
+                        ratio = float('inf')
+                        ratio_display = "∞"
+                    else:
+                        ratio = 0.0
+                        ratio_display = 0.0
+
+                    user_ratios.append({
+                        'user_id': user_id,
+                        'mentions_sent': mentions_sent,
+                        'mentions_received': mentions_received,
+                        'ratio': ratio,
+                        'ratio_display': ratio_display
+                    })
+
+                # Sort by ratio descending (users with infinity go to the top)
+                user_ratios.sort(key=lambda x: x['ratio'] if x['ratio'] != float(
+                    'inf') else float('inf'), reverse=True)
+
+                return user_ratios[:limit]
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server mentions ratio leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_ratio_channel(
+        self, guild_id: int, channel_id: int,
+        limit: int = 100,
+        min_mentions_sent: int = 1,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users by mentions ratio (received/sent) - CHANNEL SCOPE.
+        Users with zero mentions sent are included at the end (ratio = infinity).
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        COALESCE(sent.mentioner_user_id, recv.mentioned_user_id) as user_id,
+                        COALESCE(sent.mentions_sent, 0) as mentions_sent,
+                        COALESCE(recv.mentions_received, 0) as mentions_received
+                    FROM (
+                        SELECT mentioner_user_id, SUM(mention_count) as mentions_sent
+                        FROM user_mentions_hourly
+                        WHERE guild_id = $1 AND channel_id = $2
+                    ''' + (f" AND hour >= ${3}" if start_time else "") + (f" AND hour <= ${4}" if end_time else "") + '''
+                        GROUP BY mentioner_user_id
+                    ) sent
+                    FULL OUTER JOIN (
+                        SELECT mentioned_user_id, SUM(mention_count) as mentions_received
+                        FROM user_mentions_hourly
+                        WHERE guild_id = $1 AND channel_id = $2
+                    ''' + (f" AND hour >= ${5}" if start_time else "") + (f" AND hour <= ${6}" if end_time else "") + '''
+                        GROUP BY mentioned_user_id
+                    ) recv ON sent.mentioner_user_id = recv.mentioned_user_id
+                    WHERE COALESCE(sent.mentions_sent, 0) >= $7 OR COALESCE(recv.mentions_received, 0) > 0
+                '''
+
+                params = [guild_id, channel_id]
+                param_index = 3
+
+                if start_time:
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    params.append(end_time)
+                    param_index += 1
+                if start_time and end_time:
+                    params.append(start_time)
+                    params.append(end_time)
+                    param_index = 7
+                elif start_time:
+                    params.append(start_time)
+                    param_index = 6
+                elif end_time:
+                    params.append(end_time)
+                    param_index = 6
+                else:
+                    param_index = 5
+
+                params.append(min_mentions_sent)
+
+                rows = await conn.fetch(query, *params)
+
+                user_ratios = []
+                for row in rows:
+                    user_id = row['user_id']
+                    mentions_sent = row['mentions_sent'] or 0
+                    mentions_received = row['mentions_received'] or 0
+
+                    if mentions_sent < min_mentions_sent and mentions_sent > 0:
+                        continue
+
+                    if mentions_sent > 0:
+                        ratio = mentions_received / mentions_sent
+                        ratio_display = ratio
+                    elif mentions_received > 0:
+                        ratio = float('inf')
+                        ratio_display = "∞"
+                    else:
+                        ratio = 0.0
+                        ratio_display = 0.0
+
+                    user_ratios.append({
+                        'user_id': user_id,
+                        'mentions_sent': mentions_sent,
+                        'mentions_received': mentions_received,
+                        'ratio': ratio,
+                        'ratio_display': ratio_display
+                    })
+
+                user_ratios.sort(key=lambda x: x['ratio'] if x['ratio'] != float(
+                    'inf') else float('inf'), reverse=True)
+
+                return user_ratios[:limit]
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel mentions ratio leaderboard",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_ratio_category(
+        self, guild_id: int, category_id: int,
+        limit: int = 100,
+        min_mentions_sent: int = 1,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users by mentions ratio (received/sent) - CATEGORY SCOPE.
+        Users with zero mentions sent are included at the end (ratio = infinity).
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        COALESCE(sent.mentioner_user_id, recv.mentioned_user_id) as user_id,
+                        COALESCE(sent.mentions_sent, 0) as mentions_sent,
+                        COALESCE(recv.mentions_received, 0) as mentions_received
+                    FROM (
+                        SELECT mentioner_user_id, SUM(mention_count) as mentions_sent
+                        FROM user_mentions_hourly
+                        WHERE guild_id = $1 AND category_id = $2
+                    ''' + (f" AND hour >= ${3}" if start_time else "") + (f" AND hour <= ${4}" if end_time else "") + '''
+                        GROUP BY mentioner_user_id
+                    ) sent
+                    FULL OUTER JOIN (
+                        SELECT mentioned_user_id, SUM(mention_count) as mentions_received
+                        FROM user_mentions_hourly
+                        WHERE guild_id = $1 AND category_id = $2
+                    ''' + (f" AND hour >= ${5}" if start_time else "") + (f" AND hour <= ${6}" if end_time else "") + '''
+                        GROUP BY mentioned_user_id
+                    ) recv ON sent.mentioner_user_id = recv.mentioned_user_id
+                    WHERE COALESCE(sent.mentions_sent, 0) >= $7 OR COALESCE(recv.mentions_received, 0) > 0
+                '''
+
+                params = [guild_id, category_id]
+                param_index = 3
+
+                if start_time:
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    params.append(end_time)
+                    param_index += 1
+                if start_time and end_time:
+                    params.append(start_time)
+                    params.append(end_time)
+                    param_index = 7
+                elif start_time:
+                    params.append(start_time)
+                    param_index = 6
+                elif end_time:
+                    params.append(end_time)
+                    param_index = 6
+                else:
+                    param_index = 5
+
+                params.append(min_mentions_sent)
+
+                rows = await conn.fetch(query, *params)
+
+                user_ratios = []
+                for row in rows:
+                    user_id = row['user_id']
+                    mentions_sent = row['mentions_sent'] or 0
+                    mentions_received = row['mentions_received'] or 0
+
+                    if mentions_sent < min_mentions_sent and mentions_sent > 0:
+                        continue
+
+                    if mentions_sent > 0:
+                        ratio = mentions_received / mentions_sent
+                        ratio_display = ratio
+                    elif mentions_received > 0:
+                        ratio = float('inf')
+                        ratio_display = "∞"
+                    else:
+                        ratio = 0.0
+                        ratio_display = 0.0
+
+                    user_ratios.append({
+                        'user_id': user_id,
+                        'mentions_sent': mentions_sent,
+                        'mentions_received': mentions_received,
+                        'ratio': ratio,
+                        'ratio_display': ratio_display
+                    })
+
+                user_ratios.sort(key=lambda x: x['ratio'] if x['ratio'] != float(
+                    'inf') else float('inf'), reverse=True)
+
+                return user_ratios[:limit]
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category mentions ratio leaderboard",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+    # ======================================================================
+    # ENHANCED ORIGINAL MENTIONS LEADERBOARD (with user-to-user direction)
+    # ======================================================================
+
+    async def q_leaderboard_mentions_to_user_server(
+        self, guild_id: int, source_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users that the source user mentioned (SERVER SCOPE).
+        Shows top targets that the source user mentioned.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioned_user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND mentioner_user_id = $2
+                '''
+                params = [guild_id, source_user_id]
+                param_index = 3
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and source_user_id not in user_ids:
+                        return []
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioner_user_id = $2
+                '''
+                total_params = [guild_id, source_user_id]
+                total_param_index = 3
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioned_user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server mentions to user leaderboard",
+                context={'guild_id': guild_id,
+                         'source_user_id': source_user_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_to_user_channel(
+        self, guild_id: int, channel_id: int, source_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users that the source user mentioned (CHANNEL SCOPE).
+        Shows top targets that the source user mentioned in a specific channel.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioned_user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND channel_id = $2
+                    AND mentioner_user_id = $3
+                '''
+                params = [guild_id, channel_id, source_user_id]
+                param_index = 4
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and source_user_id not in user_ids:
+                        return []
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=channel_id
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2 AND mentioner_user_id = $3
+                '''
+                total_params = [guild_id, channel_id, source_user_id]
+                total_param_index = 4
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioned_user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel mentions to user leaderboard",
+                context={'guild_id': guild_id, 'channel_id': channel_id,
+                         'source_user_id': source_user_id},
+                original=e
+            )
+
+    async def q_leaderboard_mentions_to_user_category(
+        self, guild_id: int, category_id: int, source_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users that the source user mentioned (CATEGORY SCOPE).
+        Shows top targets that the source user mentioned in a specific category.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioned_user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND category_id = $2
+                    AND mentioner_user_id = $3
+                '''
+                params = [guild_id, category_id, source_user_id]
+                param_index = 4
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and source_user_id not in user_ids:
+                        return []
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=category_id
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2 AND mentioner_user_id = $3
+                '''
+                total_params = [guild_id, category_id, source_user_id]
+                total_param_index = 4
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioned_user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category mentions to user leaderboard",
+                context={'guild_id': guild_id, 'category_id': category_id,
+                         'source_user_id': source_user_id},
+                original=e
+            )
     # ======================================================================
     # LEADERBOARD CATEGORY - FIXED EXCEPTION HANDLING
     # ======================================================================
@@ -14580,19 +16599,23 @@ class DatabaseStats(commands.Cog):
                 if not await self.check_rate_limit(user_id, 'mention', limit=50, window=30):
                     continue
 
+                # Encrypt BOTH usernames
+                encrypted_mentioner_username = self.encrypt_username(
+                    str(message.author))
                 encrypted_mentioned_username = self.encrypt_username(str(user))
 
                 await self.redis_batch_write('mentions', {
                     'params': [
                         guild_id,
-                        user.id,
-                        user_id,
+                        user.id,                      # mentioned_user_id
+                        user_id,                      # mentioner_user_id
                         channel_id,
                         category_id,
                         message.id,
                         created_at,
-                        encrypted_mentioned_username,
-                        message.author.bot
+                        encrypted_mentioner_username,  # mentioner's username
+                        message.author.bot,
+                        encrypted_mentioned_username  # mentioned user's username
                     ]
                 })
 
