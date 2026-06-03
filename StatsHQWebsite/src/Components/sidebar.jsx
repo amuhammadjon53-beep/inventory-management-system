@@ -397,6 +397,7 @@ const DashboardSidebar = ({
     else if (path.includes('/Dashboard/Activity')) setCurrentPage('activity');
     else if (path.includes('/Dashboard/Emoji Tracking')) setCurrentPage('emojis');
     else if (path.includes('/Dashboard/Invite Tracking')) setCurrentPage('invites');
+    else if (path.includes('/Dashboard/Mentions')) setCurrentPage('mentions');
     else if (path.includes('/Dashboard/Growth')) setCurrentPage('growth');
     else if (path.includes('/Dashboard/Settings')) setCurrentPage('settings');
     else if (path.includes('/Dashboard/Blacklist')) setCurrentPage('blacklist');
@@ -566,6 +567,9 @@ const DashboardSidebar = ({
           </a>
           <a href="/Dashboard/Invite Tracking/" className={`nav-item ${currentPage === 'invites' ? 'active' : ''}`}>
             <span className="nav-icon">📨</span>Invites
+          </a>
+          <a href="/Dashboard/Mentions/" className={`nav-item ${currentPage === 'mentions' ? 'active' : ''}`}>
+            <span className="nav-icon">🔔</span>Mentions
           </a>
           <a href="/Dashboard/Growth/" className={`nav-item ${currentPage === 'growth' ? 'active' : ''}`}>
             <span className="nav-icon">📈</span>Growth

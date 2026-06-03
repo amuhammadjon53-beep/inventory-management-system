@@ -450,37 +450,54 @@ class CreateAdvancedScheduleRequest(BaseModel):
     """Request model for creating an advanced reset schedule with multiple values support"""
     guild_id: str
     requested_by_id: str
-    reset_types: List[str] = Field(..., description="List of stat types to reset")
-    schedule_name: Optional[str] = Field(None, max_length=100, description="Optional name for the schedule")
+    reset_types: List[str] = Field(...,
+                                   description="List of stat types to reset")
+    schedule_name: Optional[str] = Field(
+        None, max_length=100, description="Optional name for the schedule")
 
     # Schedule type
-    schedule_type: ScheduleType = Field(default=ScheduleType.RECURRING, description="Type of schedule")
+    schedule_type: ScheduleType = Field(
+        default=ScheduleType.RECURRING, description="Type of schedule")
 
     # For one-time execution
-    target_time: Optional[datetime] = Field(None, description="Specific date/time for one-time execution")
+    target_time: Optional[datetime] = Field(
+        None, description="Specific date/time for one-time execution")
 
     # For recurring schedules (multiple values support)
-    recurring_pattern: Optional[RecurringPattern] = Field(None, description="Pattern for recurring schedule")
-    recurring_weekdays: Optional[List[int]] = Field(None, description="List of weekdays (0=Monday to 6=Sunday)")
-    recurring_days_of_month: Optional[List[int]] = Field(None, description="List of days of month (1-31)")
-    recurring_times: Optional[List[str]] = Field(None, description="List of times in HH:MM format")
-    recurring_interval_days: Optional[int] = Field(None, description="For custom day intervals", ge=1, le=365)
+    recurring_pattern: Optional[RecurringPattern] = Field(
+        None, description="Pattern for recurring schedule")
+    recurring_weekdays: Optional[List[int]] = Field(
+        None, description="List of weekdays (0=Monday to 6=Sunday)")
+    recurring_days_of_month: Optional[List[int]] = Field(
+        None, description="List of days of month (1-31)")
+    recurring_times: Optional[List[str]] = Field(
+        None, description="List of times in HH:MM format")
+    recurring_interval_days: Optional[int] = Field(
+        None, description="For custom day intervals", ge=1, le=365)
 
     # For date range deletion
-    delete_from_date: Optional[datetime] = Field(None, description="Start date for date range deletion")
-    delete_to_date: Optional[datetime] = Field(None, description="End date for date range deletion")
+    delete_from_date: Optional[datetime] = Field(
+        None, description="Start date for date range deletion")
+    delete_to_date: Optional[datetime] = Field(
+        None, description="End date for date range deletion")
 
     # Rolling window time period
-    time_period_days: Optional[int] = Field(None, description="Delete stats from last X days", ge=1, le=365)
+    time_period_days: Optional[int] = Field(
+        None, description="Delete stats from last X days", ge=1, le=365)
 
     # Scope information
-    scope_type: Literal["server", "channel", "category"] = Field(default="server", description="Reset scope")
-    scope_details: Optional[str] = Field(None, description="Human-readable scope description")
-    channel_id: Optional[str] = Field(None, description="Channel ID if scope_type is channel")
-    category_id: Optional[str] = Field(None, description="Category ID if scope_type is category")
+    scope_type: Literal["server", "channel", "category"] = Field(
+        default="server", description="Reset scope")
+    scope_details: Optional[str] = Field(
+        None, description="Human-readable scope description")
+    channel_id: Optional[str] = Field(
+        None, description="Channel ID if scope_type is channel")
+    category_id: Optional[str] = Field(
+        None, description="Category ID if scope_type is category")
 
     # Metadata
-    reason: Optional[str] = Field(None, description="Optional reason for the schedule")
+    reason: Optional[str] = Field(
+        None, description="Optional reason for the schedule")
 
     @field_validator('recurring_times')
     @classmethod
@@ -489,35 +506,42 @@ class CreateAdvancedScheduleRequest(BaseModel):
             pattern = r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$'
             for time_str in v:
                 if not re.match(pattern, time_str):
-                    raise ValueError(f'Time must be in HH:MM format (e.g., 18:00, 14:30). Got: {time_str}')
+                    raise ValueError(
+                        f'Time must be in HH:MM format (e.g., 18:00, 14:30). Got: {time_str}')
         return v
 
     # REPLACE the old field_validator with this model_validator
     @model_validator(mode='after')
     def validate_schedule_type_dependencies(self):
         v = self.schedule_type
-        
+
         if v == ScheduleType.ONE_TIME:
             if not self.target_time:
                 raise ValueError('target_time required for one_time schedule')
-                
+
         elif v == ScheduleType.RECURRING:
             if not self.recurring_pattern:
-                raise ValueError('recurring_pattern required for recurring schedule')
-            
+                raise ValueError(
+                    'recurring_pattern required for recurring schedule')
+
             if self.recurring_pattern == RecurringPattern.WEEKLY and not self.recurring_weekdays:
-                raise ValueError('recurring_weekdays required for weekly schedule')
+                raise ValueError(
+                    'recurring_weekdays required for weekly schedule')
             if self.recurring_pattern == RecurringPattern.MONTHLY and not self.recurring_days_of_month:
-                raise ValueError('recurring_days_of_month required for monthly schedule')
+                raise ValueError(
+                    'recurring_days_of_month required for monthly schedule')
             if self.recurring_pattern == RecurringPattern.CUSTOM_DAYS and not self.recurring_interval_days:
-                raise ValueError('recurring_interval_days required for custom_days schedule')
-                
+                raise ValueError(
+                    'recurring_interval_days required for custom_days schedule')
+
         elif v == ScheduleType.DATE_RANGE:
             if not self.delete_from_date or not self.delete_to_date:
-                raise ValueError('delete_from_date and delete_to_date required for date_range schedule')
+                raise ValueError(
+                    'delete_from_date and delete_to_date required for date_range schedule')
             if self.delete_from_date >= self.delete_to_date:
-                raise ValueError('delete_from_date must be before delete_to_date')
-        
+                raise ValueError(
+                    'delete_from_date must be before delete_to_date')
+
         return self
 
 
@@ -540,7 +564,8 @@ class UpdateScheduleRequest(BaseModel):
     enabled: Optional[bool] = None
     schedule_name: Optional[str] = Field(None, max_length=100)
     reset_types: Optional[List[str]] = None
-    recurring_pattern: Optional[str] = Field(None, pattern="^(daily|weekly|monthly|custom_days)$")
+    recurring_pattern: Optional[str] = Field(
+        None, pattern="^(daily|weekly|monthly|custom_days)$")
     recurring_weekdays: Optional[List[int]] = None
     recurring_days_of_month: Optional[List[int]] = None
     recurring_times: Optional[List[str]] = None
@@ -556,39 +581,45 @@ class UpdateScheduleRequest(BaseModel):
             normalized = []
             for time_str in v:
                 if not re.match(pattern, time_str):
-                    raise ValueError(f'Time must be in HH:MM or HH:MM:SS format. Got: {time_str}')
+                    raise ValueError(
+                        f'Time must be in HH:MM or HH:MM:SS format. Got: {time_str}')
                 normalized.append(time_str[:5])  # Normalize to HH:MM
             return normalized
         return v
-    
+
     @field_validator('recurring_weekdays')
     @classmethod
     def validate_recurring_weekdays(cls, v):
         if v:
             for weekday in v:
                 if weekday < 0 or weekday > 6:
-                    raise ValueError(f'Weekday must be between 0 and 6. Got: {weekday}')
+                    raise ValueError(
+                        f'Weekday must be between 0 and 6. Got: {weekday}')
         return v
-    
+
     @field_validator('recurring_days_of_month')
     @classmethod
     def validate_recurring_days_of_month(cls, v):
         if v:
             for day in v:
                 if day < 1 or day > 31:
-                    raise ValueError(f'Day of month must be between 1 and 31. Got: {day}')
+                    raise ValueError(
+                        f'Day of month must be between 1 and 31. Got: {day}')
         return v
-    
+
     # Add this model validator if you have similar cross-field validation
     @model_validator(mode='after')
     def validate_recurring_pattern_dependencies(self):
         if self.recurring_pattern:
             if self.recurring_pattern == 'weekly' and not self.recurring_weekdays:
-                raise ValueError('recurring_weekdays required for weekly schedule')
+                raise ValueError(
+                    'recurring_weekdays required for weekly schedule')
             if self.recurring_pattern == 'monthly' and not self.recurring_days_of_month:
-                raise ValueError('recurring_days_of_month required for monthly schedule')
+                raise ValueError(
+                    'recurring_days_of_month required for monthly schedule')
             if self.recurring_pattern == 'custom_days' and not self.recurring_interval_days:
-                raise ValueError('recurring_interval_days required for custom_days schedule')
+                raise ValueError(
+                    'recurring_interval_days required for custom_days schedule')
         return self
 
 
@@ -1508,6 +1539,7 @@ class GrowthForecaster:
             'data_points_analyzed': self.n,
             'smoothed_data': [round(x, 2) for x in smoothed_data]
         }
+
 
 # ============================================
 # AUTH DATABASE MANAGER (unchanged)
@@ -2680,6 +2712,14 @@ class Constants:
         'suppressed': 1 << 7
     }
 
+
+def ensure_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Convert naive datetime to aware UTC datetime."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 # ============================================
 # DATABASE STATS API
 # ============================================
@@ -4256,8 +4296,9 @@ class DatabaseStatsAPI:
             return None
 
     async def get_decrypted_username_from_mentions(self, guild_id: int, user_id: int) -> Optional[str]:
-        """Get decrypted username from user_mentions_hourly table (as mentioner)."""
+        """Get decrypted username from user_mentions_hourly table."""
         if not self.pool:
+            print(f"DEBUG: No pool for user {user_id}")
             return None
 
         try:
@@ -4267,35 +4308,84 @@ class DatabaseStatsAPI:
                 user_id_int = int(user_id) if not isinstance(
                     user_id, int) else user_id
 
-                # Try to get as mentioner first (most recent)
+                print(
+                    f"DEBUG: Querying mentions table for user {user_id_int} in guild {guild_id_int}")
+
+                # First try to get as mentioner (user who sent mentions)
                 row = await conn.fetchrow("""
-                    SELECT encrypted_username
+                    SELECT encrypted_username, hour
                     FROM user_mentions_hourly
                     WHERE guild_id = $1 AND mentioner_user_id = $2
                     AND encrypted_username IS NOT NULL
+                    AND encrypted_username != ''
                     ORDER BY hour DESC
                     LIMIT 1
                 """, guild_id_int, user_id_int)
 
-                if row and row['encrypted_username']:
-                    return self.decrypt_username(row['encrypted_username'])
+                if row:
+                    print(
+                        f"DEBUG: Found row as mentioner, encrypted_username length: {len(row['encrypted_username']) if row['encrypted_username'] else 0}")
+                    decrypted = self.decrypt_username(
+                        row['encrypted_username'])
+                    if decrypted:
+                        print(
+                            f"DEBUG: Successfully decrypted as mentioner: {decrypted}")
+                        return decrypted
+                    else:
+                        print(
+                            f"DEBUG: Failed to decrypt mentioner username, raw encrypted: {row['encrypted_username'][:50]}...")
+                else:
+                    print(f"DEBUG: No row found as mentioner")
 
-                # Try as mentioned user if not found as mentioner
+                # Then try as mentioned user (user who received mentions)
                 row = await conn.fetchrow("""
-                    SELECT encrypted_username
+                    SELECT encrypted_mentioned_username as encrypted_username, hour
                     FROM user_mentions_hourly
                     WHERE guild_id = $1 AND mentioned_user_id = $2
-                    AND encrypted_username IS NOT NULL
+                    AND encrypted_mentioned_username IS NOT NULL
+                    AND encrypted_mentioned_username != ''
                     ORDER BY hour DESC
                     LIMIT 1
                 """, guild_id_int, user_id_int)
 
-                if row and row['encrypted_username']:
-                    return self.decrypt_username(row['encrypted_username'])
+                if row:
+                    print(
+                        f"DEBUG: Found row as mentioned, encrypted_username length: {len(row['encrypted_username']) if row['encrypted_username'] else 0}")
+                    decrypted = self.decrypt_username(
+                        row['encrypted_username'])
+                    if decrypted:
+                        print(
+                            f"DEBUG: Successfully decrypted as mentioned: {decrypted}")
+                        return decrypted
+                    else:
+                        print(
+                            f"DEBUG: Failed to decrypt mentioned username, raw encrypted: {row['encrypted_username'][:50]}...")
+                else:
+                    print(f"DEBUG: No row found as mentioned")
+
+                # Check if user exists at all in this guild's mentions
+                check_row = await conn.fetchrow("""
+                    SELECT 
+                        COUNT(*) as total,
+                        COUNT(CASE WHEN mentioner_user_id = $2 THEN 1 END) as as_mentioner,
+                        COUNT(CASE WHEN mentioned_user_id = $2 THEN 1 END) as as_mentioned,
+                        COUNT(encrypted_username) as has_mentioner_enc,
+                        COUNT(encrypted_mentioned_username) as has_mentioned_enc
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND (mentioner_user_id = $2 OR mentioned_user_id = $2)
+                """, guild_id_int, user_id_int)
+
+                print(f"DEBUG: User stats - total rows: {check_row['total']}, "
+                      f"as mentioner: {check_row['as_mentioner']}, "
+                      f"as mentioned: {check_row['as_mentioned']}, "
+                      f"has encrypted_username: {check_row['has_mentioner_enc']}, "
+                      f"has encrypted_mentioned_username: {check_row['has_mentioned_enc']}")
 
                 return None
         except Exception as e:
             print(f"Error getting username from mentions for {user_id}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     async def get_decrypted_username_from_invites(self, guild_id: int, user_id: int) -> Optional[str]:
@@ -4468,10 +4558,12 @@ class DatabaseStatsAPI:
                 user_id_int = int(user_id) if not isinstance(
                     user_id, int) else user_id
 
+                # Fix: The column might be called 'user_id' or 'author_id' depending on your schema
+                # Try both possibilities
                 row = await conn.fetchrow("""
                     SELECT encrypted_username
                     FROM slash_commands_daily
-                    WHERE guild_id = $1 AND user_id = $2
+                    WHERE guild_id = $1 AND (user_id = $2 OR author_id = $2)
                     AND encrypted_username IS NOT NULL
                     ORDER BY day DESC
                     LIMIT 1
@@ -4488,6 +4580,7 @@ class DatabaseStatsAPI:
     async def get_decrypted_username_any_table(self, guild_id: int, user_id: int, priority_tables: List[str] = None) -> Optional[str]:
         """
         Get decrypted username from any table that has it, in priority order.
+        For mentions, we prioritize the mentions table since we're in the mentions dashboard.
         """
         # Convert IDs to int at the start
         guild_id_int = int(guild_id) if not isinstance(
@@ -4495,17 +4588,17 @@ class DatabaseStatsAPI:
         user_id_int = int(user_id) if not isinstance(user_id, int) else user_id
 
         if priority_tables is None:
+            # Prioritize mentions table first for the mentions dashboard
             priority_tables = [
+                'mentions',   # First try mentions table
                 'messages',
                 'voice',
                 'emojis',
-                'mentions',
                 'invites',
                 'activity',
                 'member_joins',
                 'member_leaves',
-                'role_growth',
-                'slash_commands'
+                'role_growth'
             ]
 
         print(
@@ -4531,8 +4624,6 @@ class DatabaseStatsAPI:
                 username = await self.get_decrypted_username_from_member_leaves(guild_id_int, user_id_int)
             elif table == 'role_growth':
                 username = await self.get_decrypted_username_from_role_growth(guild_id_int, user_id_int)
-            elif table == 'slash_commands':
-                username = await self.get_decrypted_username_from_slash_commands(guild_id_int, user_id_int)
 
             if username:
                 print(f"DEBUG: Found username in {table} table: {username}")
@@ -10308,6 +10399,571 @@ class DatabaseStatsAPI:
                 f"Error in q_leaderboard_server_top_voice_channels: {e}")
             logger.error(traceback.format_exc())
             return []
+    # ======================================================================
+    # MENTIONS RATIO LEADERBOARD (continued)
+    # ======================================================================
+
+    async def q_leaderboard_mentions_ratio_server(
+        self, guild_id: int,
+        limit: int = 100,
+        min_mentions_sent: int = 1,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users by mentions ratio (received/sent) - SERVER SCOPE.
+        Users with zero mentions sent get sent = 1 for ratio calculation.
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                # Apply role filtering
+                user_ids = None
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if not user_ids:
+                        return []
+
+                # Get sent counts
+                sent_query = """
+                    SELECT 
+                        mentioner_user_id as user_id,
+                        SUM(mention_count) as mentions_sent
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                """
+                sent_params = [guild_id]
+                param_index = 2
+
+                if start_time:
+                    sent_query += f" AND hour >= ${param_index}"
+                    sent_params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    sent_query += f" AND hour <= ${param_index}"
+                    sent_params.append(end_time)
+                    param_index += 1
+
+                if user_ids:
+                    sent_query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                    sent_params.append(user_ids)
+                    param_index += 1
+
+                sent_query, sent_params = await self._apply_bot_filter(sent_query, sent_params, str(guild_id), 'user_mentions_hourly')
+                sent_query += " GROUP BY mentioner_user_id"
+
+                sent_rows = await conn.fetch(sent_query, *sent_params)
+                sent_map = {row['user_id']: row['mentions_sent']
+                            for row in sent_rows}
+
+                # Get received counts
+                received_query = """
+                    SELECT 
+                        mentioned_user_id as user_id,
+                        SUM(mention_count) as mentions_received
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                """
+                received_params = [guild_id]
+                param_index = 2
+
+                if start_time:
+                    received_query += f" AND hour >= ${param_index}"
+                    received_params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    received_query += f" AND hour <= ${param_index}"
+                    received_params.append(end_time)
+                    param_index += 1
+
+                if user_ids:
+                    received_query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                    received_params.append(user_ids)
+                    param_index += 1
+
+                received_query, received_params = await self._apply_bot_filter(received_query, received_params, str(guild_id), 'user_mentions_hourly')
+                received_query += " GROUP BY mentioned_user_id"
+
+                received_rows = await conn.fetch(received_query, *received_params)
+                received_map = {row['user_id']: row['mentions_received']
+                                for row in received_rows}
+
+                # Combine all user IDs
+                all_user_ids = set(sent_map.keys()) | set(received_map.keys())
+
+                # Build result
+                result = []
+                for user_id in all_user_ids:
+                    mentions_sent = sent_map.get(user_id, 0)
+                    mentions_received = received_map.get(user_id, 0)
+
+                    if mentions_sent < min_mentions_sent and mentions_sent > 0:
+                        continue
+
+                    # Use 1 as minimum for ratio calculation to avoid division by zero/infinity
+                    sent_for_ratio = max(mentions_sent, 1)
+                    ratio = mentions_received / sent_for_ratio
+                    ratio_display = round(ratio, 2)
+
+                    result.append({
+                        'user_id': user_id,
+                        'mentions_sent': mentions_sent,
+                        'mentions_received': mentions_received,
+                        'ratio': ratio,
+                        'ratio_display': ratio_display
+                    })
+
+                # Sort by ratio descending
+                result.sort(key=lambda x: x['ratio'], reverse=True)
+
+                return result[:limit] if limit else result
+
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch server mentions ratio leaderboard: {e}")
+            return []
+
+    async def q_leaderboard_mentions_ratio_channel(
+        self, guild_id: int, channel_id: int,
+        limit: int = 100,
+        min_mentions_sent: int = 1,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users by mentions ratio (received/sent) - CHANNEL SCOPE.
+        Users with zero mentions sent get sent = 1 for ratio calculation.
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                user_ids = None
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if not user_ids:
+                        return []
+
+                sent_query = """
+                    SELECT 
+                        mentioner_user_id as user_id,
+                        SUM(mention_count) as mentions_sent
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                """
+                sent_params = [guild_id, channel_id]
+                param_index = 3
+
+                if start_time:
+                    sent_query += f" AND hour >= ${param_index}"
+                    sent_params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    sent_query += f" AND hour <= ${param_index}"
+                    sent_params.append(end_time)
+                    param_index += 1
+
+                if user_ids:
+                    sent_query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                    sent_params.append(user_ids)
+                    param_index += 1
+
+                sent_query, sent_params = await self._apply_bot_filter(sent_query, sent_params, str(guild_id), 'user_mentions_hourly')
+                sent_query += " GROUP BY mentioner_user_id"
+
+                sent_rows = await conn.fetch(sent_query, *sent_params)
+                sent_map = {row['user_id']: row['mentions_sent']
+                            for row in sent_rows}
+
+                received_query = """
+                    SELECT 
+                        mentioned_user_id as user_id,
+                        SUM(mention_count) as mentions_received
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                """
+                received_params = [guild_id, channel_id]
+                param_index = 3
+
+                if start_time:
+                    received_query += f" AND hour >= ${param_index}"
+                    received_params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    received_query += f" AND hour <= ${param_index}"
+                    received_params.append(end_time)
+                    param_index += 1
+
+                if user_ids:
+                    received_query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                    received_params.append(user_ids)
+                    param_index += 1
+
+                received_query, received_params = await self._apply_bot_filter(received_query, received_params, str(guild_id), 'user_mentions_hourly')
+                received_query += " GROUP BY mentioned_user_id"
+
+                received_rows = await conn.fetch(received_query, *received_params)
+                received_map = {row['user_id']: row['mentions_received']
+                                for row in received_rows}
+
+                all_user_ids = set(sent_map.keys()) | set(received_map.keys())
+
+                result = []
+                for user_id in all_user_ids:
+                    mentions_sent = sent_map.get(user_id, 0)
+                    mentions_received = received_map.get(user_id, 0)
+
+                    if mentions_sent < min_mentions_sent and mentions_sent > 0:
+                        continue
+
+                    # Use 1 as minimum for ratio calculation
+                    sent_for_ratio = max(mentions_sent, 1)
+                    ratio = mentions_received / sent_for_ratio
+                    ratio_display = round(ratio, 2)
+
+                    result.append({
+                        'user_id': user_id,
+                        'mentions_sent': mentions_sent,
+                        'mentions_received': mentions_received,
+                        'ratio': ratio,
+                        'ratio_display': ratio_display
+                    })
+
+                result.sort(key=lambda x: x['ratio'], reverse=True)
+
+                return result[:limit] if limit else result
+
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch channel mentions ratio leaderboard: {e}")
+            return []
+
+    async def q_leaderboard_mentions_ratio_category(
+        self, guild_id: int, category_id: int,
+        limit: int = 100,
+        min_mentions_sent: int = 1,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users by mentions ratio (received/sent) - CATEGORY SCOPE.
+        Users with zero mentions sent get sent = 1 for ratio calculation.
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                user_ids = None
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if not user_ids:
+                        return []
+
+                sent_query = """
+                    SELECT 
+                        mentioner_user_id as user_id,
+                        SUM(mention_count) as mentions_sent
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                """
+                sent_params = [guild_id, category_id]
+                param_index = 3
+
+                if start_time:
+                    sent_query += f" AND hour >= ${param_index}"
+                    sent_params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    sent_query += f" AND hour <= ${param_index}"
+                    sent_params.append(end_time)
+                    param_index += 1
+
+                if user_ids:
+                    sent_query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                    sent_params.append(user_ids)
+                    param_index += 1
+
+                sent_query, sent_params = await self._apply_bot_filter(sent_query, sent_params, str(guild_id), 'user_mentions_hourly')
+                sent_query += " GROUP BY mentioner_user_id"
+
+                sent_rows = await conn.fetch(sent_query, *sent_params)
+                sent_map = {row['user_id']: row['mentions_sent']
+                            for row in sent_rows}
+
+                received_query = """
+                    SELECT 
+                        mentioned_user_id as user_id,
+                        SUM(mention_count) as mentions_received
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                """
+                received_params = [guild_id, category_id]
+                param_index = 3
+
+                if start_time:
+                    received_query += f" AND hour >= ${param_index}"
+                    received_params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    received_query += f" AND hour <= ${param_index}"
+                    received_params.append(end_time)
+                    param_index += 1
+
+                if user_ids:
+                    received_query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                    received_params.append(user_ids)
+                    param_index += 1
+
+                received_query, received_params = await self._apply_bot_filter(received_query, received_params, str(guild_id), 'user_mentions_hourly')
+                received_query += " GROUP BY mentioned_user_id"
+
+                received_rows = await conn.fetch(received_query, *received_params)
+                received_map = {row['user_id']: row['mentions_received']
+                                for row in received_rows}
+
+                all_user_ids = set(sent_map.keys()) | set(received_map.keys())
+
+                result = []
+                for user_id in all_user_ids:
+                    mentions_sent = sent_map.get(user_id, 0)
+                    mentions_received = received_map.get(user_id, 0)
+
+                    if mentions_sent < min_mentions_sent and mentions_sent > 0:
+                        continue
+
+                    # Use 1 as minimum for ratio calculation
+                    sent_for_ratio = max(mentions_sent, 1)
+                    ratio = mentions_received / sent_for_ratio
+                    ratio_display = round(ratio, 2)
+
+                    result.append({
+                        'user_id': user_id,
+                        'mentions_sent': mentions_sent,
+                        'mentions_received': mentions_received,
+                        'ratio': ratio,
+                        'ratio_display': ratio_display
+                    })
+
+                result.sort(key=lambda x: x['ratio'], reverse=True)
+
+                return result[:limit] if limit else result
+
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch category mentions ratio leaderboard: {e}")
+            return []
+
+    # ======================================================================
+    # MENTIONS RATIO CALCULATOR (Received / Sent) - already defined but ensure they exist
+    # ======================================================================
+
+    async def q_user_mentions_ratio_server(
+        self, guild_id: int, user_id: int,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """Calculate mentions ratio for a user (SERVER SCOPE)."""
+        if not self.pool:
+            return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                # Query for mentions sent
+                sent_query = """
+                    SELECT COALESCE(SUM(mention_count), 0) as mentions_sent
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioner_user_id = $2
+                """
+                sent_params = [guild_id, user_id]
+                param_index = 3
+
+                if start_time:
+                    sent_query += f" AND hour >= ${param_index}"
+                    sent_params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    sent_query += f" AND hour <= ${param_index}"
+                    sent_params.append(end_time)
+                    param_index += 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if user_ids and user_id not in user_ids:
+                        return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0}
+
+                sent_query, sent_params = await self._apply_bot_filter(sent_query, sent_params, str(guild_id), 'user_mentions_hourly')
+                sent_row = await conn.fetchrow(sent_query, *sent_params)
+                mentions_sent = sent_row['mentions_sent'] if sent_row else 0
+
+                # Query for mentions received
+                received_query = """
+                    SELECT COALESCE(SUM(mention_count), 0) as mentions_received
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioned_user_id = $2
+                """
+                received_params = [guild_id, user_id]
+                param_index = 3
+
+                if start_time:
+                    received_query += f" AND hour >= ${param_index}"
+                    received_params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    received_query += f" AND hour <= ${param_index}"
+                    received_params.append(end_time)
+                    param_index += 1
+
+                received_query, received_params = await self._apply_bot_filter(received_query, received_params, str(guild_id), 'user_mentions_hourly')
+                received_row = await conn.fetchrow(received_query, *received_params)
+                mentions_received = received_row['mentions_received'] if received_row else 0
+
+                # Use 1 as minimum to avoid division by zero
+                sent_for_ratio = max(mentions_sent, 1)
+                ratio = mentions_received / sent_for_ratio
+                ratio_display = round(ratio, 2)
+
+                return {
+                    'mentions_sent': mentions_sent,
+                    'mentions_received': mentions_received,
+                    'ratio': ratio,
+                    'ratio_display': ratio_display
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to calculate user mentions ratio: {e}")
+            return {'mentions_sent': 0, 'mentions_received': 0, 'ratio': 0.0, 'ratio_display': 0.0}
+
+    # ======================================================================
+    # MENTIONS TO USER LEADERBOARD (Who a user mentioned)
+    # ======================================================================
+
+    async def q_leaderboard_mentions_to_user_server(
+        self, guild_id: int, source_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users that the source user mentioned (SERVER SCOPE).
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                query = """
+                    SELECT 
+                        mentioned_user_id as user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioner_user_id = $2
+                """
+                params = [guild_id, source_user_id]
+                param_index = 3
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if user_ids and source_user_id not in user_ids:
+                        return []
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                total_query = """
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioner_user_id = $2
+                """
+                total_params = [guild_id, source_user_id]
+                total_param_index = 3
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += """
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                """
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch server mentions to user leaderboard: {e}")
+            return []
 
     async def q_leaderboard_mentions_target_user(self, guild_id: str, mentioned_user_id: str,
                                                  limit: int = 100000000000,
@@ -11792,6 +12448,1092 @@ class DatabaseStatsAPI:
         """
         return await db_stats.get_decrypted_username_from_db(guild_id, user_id)
 
+    # ======================================================================
+    # MENTIONS LEADERBOARD QUERIES - ENHANCED WITH SCOPE SUPPORT
+    # ======================================================================
+
+    async def q_leaderboard_mentions_target_user_server(
+        self, guild_id: int, target_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who mention a target user (SERVER SCOPE).
+        Shows top users that mentioned the target user in the server.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id) if hasattr(self, 'bot') else None
+        if not guild:
+            # Try to get guild from cache or skip guild validation
+            pass
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND mentioned_user_id = $2
+                '''
+                params = [guild_id, target_user_id]
+                param_index = 3
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioned_user_id = $2
+                '''
+                total_params = [guild_id, target_user_id]
+                total_param_index = 3
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, str(guild_id), 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch server mentions leaderboard for target user: {e}")
+            return []
+
+    async def q_leaderboard_mentions_target_user_channel(
+        self, guild_id: int, channel_id: int, target_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who mention a target user (CHANNEL SCOPE).
+        Shows top users that mentioned the target user in a specific channel.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id) if hasattr(self, 'bot') else None
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND channel_id = $2
+                    AND mentioned_user_id = $3
+                '''
+                params = [guild_id, channel_id, target_user_id]
+                param_index = 4
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=str(channel_id)
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2 AND mentioned_user_id = $3
+                '''
+                total_params = [guild_id, channel_id, target_user_id]
+                total_param_index = 4
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, str(guild_id), 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch channel mentions leaderboard for target user: {e}")
+            return []
+
+    async def q_leaderboard_mentions_target_user_category(
+        self, guild_id: int, category_id: int, target_user_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who mention a target user (CATEGORY SCOPE).
+        Shows top users that mentioned the target user in a specific category.
+        """
+        if not self.pool:
+            return []
+
+        guild = self.bot.get_guild(guild_id) if hasattr(self, 'bot') else None
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND category_id = $2
+                    AND mentioned_user_id = $3
+                '''
+                params = [guild_id, category_id, target_user_id]
+                param_index = 4
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=str(category_id)
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2 AND mentioned_user_id = $3
+                '''
+                total_params = [guild_id, category_id, target_user_id]
+                total_param_index = 4
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, str(guild_id), 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch category mentions leaderboard for target user: {e}")
+            return []
+
+    # ======================================================================
+    # MENTIONS SENT LEADERBOARD (Total mentions sent by users)
+    # ======================================================================
+
+    async def q_leaderboard_mentions_sent_server(
+        self, guild_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who sent the most mentions (SERVER SCOPE).
+        Shows top users by total mentions sent in the server.
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioned_user_id) as unique_targets,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+                param_index = 2
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                total_params = [guild_id]
+                total_param_index = 2
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, str(guild_id), 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_targets': row['unique_targets'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch server mentions sent leaderboard: {e}")
+            return []
+
+    async def q_leaderboard_mentions_sent_channel(
+        self, guild_id: int, channel_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[str]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who sent the most mentions (CHANNEL SCOPE).
+        Shows top users by total mentions sent in a specific channel.
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                # Build base query
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioned_user_id) as unique_targets,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND channel_id = $2
+                '''
+                params = [guild_id, channel_id]
+
+                # Add time filters
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                # Apply bot filter
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+
+                # Apply role filtering
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return []
+
+                # Apply blacklist filters
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=str(channel_id)
+                )
+
+                # Get total for percentage calculation
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                total_params = [guild_id, channel_id]
+
+                if start_time:
+                    total_query += f" AND hour >= ${len(total_params) + 1}"
+                    total_params.append(start_time)
+                if end_time:
+                    total_query += f" AND hour <= ${len(total_params) + 1}"
+                    total_params.append(end_time)
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, str(guild_id), 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${len(total_params) + 1}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                # Complete the main query - use len(params) for the next parameter position
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${len(params) + 1}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions * 100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_targets': row['unique_targets'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(f"Failed to fetch channel mentions sent leaderboard: {e}")
+            return []
+
+    async def q_leaderboard_mentions_sent_category(
+        self, guild_id: int, category_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[str]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who sent the most mentions (CATEGORY SCOPE).
+        Shows top users by total mentions sent in a specific category.
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                # Build base query
+                query = '''
+                    SELECT 
+                        mentioner_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioned_user_id) as unique_targets,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND category_id = $2
+                '''
+                params = [guild_id, category_id]
+
+                # Add time filters
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                # Apply bot filter
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+
+                # Apply role filtering
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return []
+
+                # Apply blacklist filters
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=str(category_id)
+                )
+
+                # Get total for percentage calculation
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                total_params = [guild_id, category_id]
+
+                if start_time:
+                    total_query += f" AND hour >= ${len(total_params) + 1}"
+                    total_params.append(start_time)
+                if end_time:
+                    total_query += f" AND hour <= ${len(total_params) + 1}"
+                    total_params.append(end_time)
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, str(guild_id), 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioner_user_id = ANY(${len(total_params) + 1}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                # Complete the main query - use len(params) for the next parameter position
+                query += '''
+                    GROUP BY mentioner_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${len(params) + 1}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions * 100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioner_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_targets': row['unique_targets'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(f"Failed to fetch category mentions sent leaderboard: {e}")
+            return []
+
+    # ======================================================================
+    # MENTIONS RECEIVED LEADERBOARD (Total mentions received by users)
+    # ======================================================================
+
+    async def q_leaderboard_mentions_received_server(
+        self, guild_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[int]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who received the most mentions (SERVER SCOPE).
+        Shows top users by total mentions received in the server.
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT 
+                        mentioned_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioner_user_id) as unique_senders,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+                param_index = 2
+
+                if start_time:
+                    query += f" AND hour >= ${param_index}"
+                    params.append(start_time)
+                    param_index += 1
+                if end_time:
+                    query += f" AND hour <= ${param_index}"
+                    params.append(end_time)
+                    param_index += 1
+
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+                param_index = len(params) + 1
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), [str(rid) for rid in role_filter_ids])
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${param_index}::bigint[])"
+                        params.append(user_ids)
+                        param_index += 1
+                    else:
+                        return []
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                total_params = [guild_id]
+                total_param_index = 2
+
+                if start_time:
+                    total_query += f" AND hour >= ${total_param_index}"
+                    total_params.append(start_time)
+                    total_param_index += 1
+                if end_time:
+                    total_query += f" AND hour <= ${total_param_index}"
+                    total_params.append(end_time)
+                    total_param_index += 1
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, str(guild_id), 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioned_user_id = ANY(${total_param_index}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                query += '''
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${param_index}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions *
+                                  100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioned_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_senders': row['unique_senders'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch server mentions received leaderboard: {e}")
+            return []
+
+    async def q_leaderboard_mentions_received_channel(
+        self, guild_id: int, channel_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[str]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who received the most mentions (CHANNEL SCOPE).
+        Shows top users by total mentions received in a specific channel.
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                # Build base query
+                query = '''
+                    SELECT 
+                        mentioned_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioner_user_id) as unique_senders,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND channel_id = $2
+                '''
+                params = [guild_id, channel_id]
+
+                # Add time filters
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                # Apply bot filter
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+
+                # Apply role filtering
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return []
+
+                # Apply blacklist filters
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=str(channel_id)
+                )
+
+                # Get total for percentage calculation
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                total_params = [guild_id, channel_id]
+
+                if start_time:
+                    total_query += f" AND hour >= ${len(total_params) + 1}"
+                    total_params.append(start_time)
+                if end_time:
+                    total_query += f" AND hour <= ${len(total_params) + 1}"
+                    total_params.append(end_time)
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, str(guild_id), 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioned_user_id = ANY(${len(total_params) + 1}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                # Complete the main query - use len(params) for the next parameter position
+                query += '''
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${len(params) + 1}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions * 100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioned_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_senders': row['unique_senders'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(f"Failed to fetch channel mentions received leaderboard: {e}")
+            return []
+
+    async def q_leaderboard_mentions_received_category(
+        self, guild_id: int, category_id: int,
+        limit: int = 100,
+        role_filter_ids: Optional[List[str]] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get leaderboard of users who received the most mentions (CATEGORY SCOPE).
+        Shows top users by total mentions received in a specific category.
+        """
+        if not self.pool:
+            return []
+
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+
+            async with self.pool.acquire() as conn:
+                # Build base query
+                query = '''
+                    SELECT 
+                        mentioned_user_id,
+                        SUM(mention_count) as mention_count,
+                        COUNT(DISTINCT mentioner_user_id) as unique_senders,
+                        MAX(hour) as last_mention
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 
+                    AND category_id = $2
+                '''
+                params = [guild_id, category_id]
+
+                # Add time filters
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                # Apply bot filter
+                query, params = await self._apply_bot_filter(query, params, str(guild_id), 'user_mentions_hourly')
+
+                # Apply role filtering
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(str(guild_id), role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return []
+
+                # Apply blacklist filters
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    str(guild_id), query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=str(category_id)
+                )
+
+                # Get total for percentage calculation
+                total_query = '''
+                    SELECT COALESCE(SUM(mention_count), 0) as total_mentions
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                total_params = [guild_id, category_id]
+
+                if start_time:
+                    total_query += f" AND hour >= ${len(total_params) + 1}"
+                    total_params.append(start_time)
+                if end_time:
+                    total_query += f" AND hour <= ${len(total_params) + 1}"
+                    total_params.append(end_time)
+
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, str(guild_id), 'user_mentions_hourly')
+
+                if role_filter_ids and 'user_ids' in locals() and user_ids:
+                    total_query += f" AND mentioned_user_id = ANY(${len(total_params) + 1}::bigint[])"
+                    total_params.append(user_ids)
+
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_mentions = total_row['total_mentions'] if total_row else 0
+
+                if total_mentions == 0:
+                    return []
+
+                # Complete the main query - use len(params) for the next parameter position
+                query += '''
+                    GROUP BY mentioned_user_id
+                    HAVING SUM(mention_count) > 0
+                    ORDER BY mention_count DESC
+                '''
+
+                if limit:
+                    query += f" LIMIT ${len(params) + 1}"
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    user_mentions = row['mention_count'] or 0
+                    percentage = (user_mentions / total_mentions * 100) if total_mentions > 0 else 0
+
+                    result.append({
+                        'user_id': row['mentioned_user_id'],
+                        'mention_count': user_mentions,
+                        'unique_senders': row['unique_senders'] or 0,
+                        'last_mention': row['last_mention'].isoformat() if row['last_mention'] else None,
+                        'percentage': round(percentage, 1)
+                    })
+
+                return result
+
+        except Exception as e:
+            logger.error(f"Failed to fetch category mentions received leaderboard: {e}")
+            return []
+
 
 fernet_key = os.getenv('FERNET_KEY')
 
@@ -13239,10 +14981,7 @@ async def leaderboard_mentions_target_user(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        guild_id_int = int(guild_id)
-        mentioned_user_id_int = int(mentioned_user_id)
-
-        # Parse role_filter_ids if provided
+        # Parse role_filter_ids if provided - keep as strings
         role_filter_list = None
         if role_filter_ids:
             role_filter_list = [rid.strip()
@@ -13256,7 +14995,7 @@ async def leaderboard_mentions_target_user(
                 WHERE guild_id = $1
                 AND mentioned_user_id = $2
             """
-            total_params = [guild_id_int, mentioned_user_id_int]
+            total_params = [guild_id, mentioned_user_id]
             param_index = 3
 
             # Apply role filtering if needed (filtering by mentioner's roles)
@@ -13296,7 +15035,7 @@ async def leaderboard_mentions_target_user(
                 WHERE guild_id = $1
                 AND mentioned_user_id = $2
             """
-            params = [guild_id_int, mentioned_user_id_int]
+            params = [guild_id, mentioned_user_id]
             param_index = 3
 
             # Apply role filtering if needed
@@ -13359,6 +15098,1090 @@ async def leaderboard_mentions_target_user(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============================================
+# MENTIONS LEADERBOARD ENDPOINTS
+# ============================================
+
+
+# ============================================
+# MENTIONS LEADERBOARD ENDPOINTS
+# ============================================
+
+@app.get("/api/mentions/leaderboard/target-user/server")
+async def mentions_leaderboard_target_user_server(
+    guild_id: str,
+    target_user_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users who mention a target user (SERVER SCOPE).
+    Shows top users that mentioned the target user in the server.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        # Convert to int for database methods
+        guild_id_int = int(guild_id)
+        target_user_id_int = int(target_user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_target_user_server(
+            guild_id=guild_id_int,
+            target_user_id=target_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        # Convert user_id to string for JSON response and filter out deleted users
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_target_user_server: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_target_user_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/target-user/channel")
+async def mentions_leaderboard_target_user_channel(
+    guild_id: str,
+    channel_id: str,
+    target_user_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users who mention a target user (CHANNEL SCOPE).
+    Shows top users that mentioned the target user in a specific channel.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+        target_user_id_int = int(target_user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_target_user_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            target_user_id=target_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_target_user_channel: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_target_user_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/target-user/category")
+async def mentions_leaderboard_target_user_category(
+    guild_id: str,
+    category_id: str,
+    target_user_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users who mention a target user (CATEGORY SCOPE).
+    Shows top users that mentioned the target user in a specific category.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+        target_user_id_int = int(target_user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_target_user_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            target_user_id=target_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_target_user_category: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(
+            f"Error in mentions_leaderboard_target_user_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# MENTIONS SENT LEADERBOARD ENDPOINTS
+# ============================================
+
+@app.get("/api/mentions/leaderboard/sent/server")
+async def mentions_leaderboard_sent_server(
+    guild_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users who sent the most mentions (SERVER SCOPE).
+    Shows top users by total mentions sent in the server.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_sent_server(
+            guild_id=guild_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_sent_server: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_sent_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/sent/channel")
+async def mentions_leaderboard_sent_channel(
+    guild_id: str,
+    channel_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users who sent the most mentions (CHANNEL SCOPE).
+    Shows top users by total mentions sent in a specific channel.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_sent_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_sent_channel: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_sent_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/sent/category")
+async def mentions_leaderboard_sent_category(
+    guild_id: str,
+    category_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users who sent the most mentions (CATEGORY SCOPE).
+    Shows top users by total mentions sent in a specific category.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_sent_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_sent_category: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_sent_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# MENTIONS RECEIVED LEADERBOARD ENDPOINTS
+# ============================================
+
+@app.get("/api/mentions/leaderboard/received/server")
+async def mentions_leaderboard_received_server(
+    guild_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users who received the most mentions (SERVER SCOPE).
+    Shows top users by total mentions received in the server.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_received_server(
+            guild_id=guild_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_received_server: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_received_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/received/channel")
+async def mentions_leaderboard_received_channel(
+    guild_id: str,
+    channel_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users who received the most mentions (CHANNEL SCOPE).
+    Shows top users by total mentions received in a specific channel.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_received_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_received_channel: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_received_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/received/category")
+async def mentions_leaderboard_received_category(
+    guild_id: str,
+    category_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users who received the most mentions (CATEGORY SCOPE).
+    Shows top users by total mentions received in a specific category.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_received_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_received_category: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_received_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# MENTIONS RATIO ENDPOINTS
+# ============================================
+
+@app.get("/api/mentions/ratio/server")
+async def mentions_ratio_server(
+    guild_id: str,
+    user_id: str,
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Calculate mentions ratio (received/sent) for a user (SERVER SCOPE).
+    Returns mentions_sent, mentions_received, and ratio.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        user_id_int = int(user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_user_mentions_ratio_server(
+            guild_id=guild_id_int,
+            user_id=user_id_int,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        # Handle infinity values for JSON
+        if result and result.get('ratio') == float('inf'):
+            result['ratio'] = None
+
+        return result
+
+    except ValueError as e:
+        logger.error(f"Invalid ID format in mentions_ratio_server: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_ratio_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/ratio/channel")
+async def mentions_ratio_channel(
+    guild_id: str,
+    channel_id: str,
+    user_id: str,
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Calculate mentions ratio (received/sent) for a user (CHANNEL SCOPE).
+    Returns mentions_sent, mentions_received, and ratio.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+        user_id_int = int(user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_user_mentions_ratio_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            user_id=user_id_int,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result and result.get('ratio') == float('inf'):
+            result['ratio'] = None
+
+        return result
+
+    except ValueError as e:
+        logger.error(f"Invalid ID format in mentions_ratio_channel: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_ratio_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/ratio/category")
+async def mentions_ratio_category(
+    guild_id: str,
+    category_id: str,
+    user_id: str,
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Calculate mentions ratio (received/sent) for a user (CATEGORY SCOPE).
+    Returns mentions_sent, mentions_received, and ratio.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+        user_id_int = int(user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_user_mentions_ratio_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            user_id=user_id_int,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result and result.get('ratio') == float('inf'):
+            result['ratio'] = None
+
+        return result
+
+    except ValueError as e:
+        logger.error(f"Invalid ID format in mentions_ratio_category: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_ratio_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# MENTIONS RATIO LEADERBOARD ENDPOINTS
+# ============================================
+
+@app.get("/api/mentions/leaderboard/ratio/server")
+async def mentions_leaderboard_ratio_server(
+    guild_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    min_mentions_sent: int = Query(
+        1, ge=0, le=10000, description="Minimum mentions sent to be included"),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users by mentions ratio (received/sent) - SERVER SCOPE.
+    Users with zero mentions sent are included at the end (ratio = infinity).
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_ratio_server(
+            guild_id=guild_id_int,
+            limit=limit,
+            min_mentions_sent=min_mentions_sent,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_ratio_server: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_ratio_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/ratio/channel")
+async def mentions_leaderboard_ratio_channel(
+    guild_id: str,
+    channel_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    min_mentions_sent: int = Query(
+        1, ge=0, le=10000, description="Minimum mentions sent to be included"),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users by mentions ratio (received/sent) - CHANNEL SCOPE.
+    Users with zero mentions sent are included at the end (ratio = infinity).
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_ratio_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            limit=limit,
+            min_mentions_sent=min_mentions_sent,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_ratio_channel: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_ratio_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/ratio/category")
+async def mentions_leaderboard_ratio_category(
+    guild_id: str,
+    category_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    min_mentions_sent: int = Query(
+        1, ge=0, le=10000, description="Minimum mentions sent to be included"),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users by mentions ratio (received/sent) - CATEGORY SCOPE.
+    Users with zero mentions sent are included at the end (ratio = infinity).
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_ratio_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            limit=limit,
+            min_mentions_sent=min_mentions_sent,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_ratio_category: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_ratio_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# MENTIONS TO USER LEADERBOARD (Who a user mentioned)
+# ============================================
+
+@app.get("/api/mentions/leaderboard/to-user/server")
+async def mentions_leaderboard_to_user_server(
+    guild_id: str,
+    source_user_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users that the source user mentioned (SERVER SCOPE).
+    Shows top targets that the source user mentioned.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        source_user_id_int = int(source_user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_to_user_server(
+            guild_id=guild_id_int,
+            source_user_id=source_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_to_user_server: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_to_user_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/to-user/channel")
+async def mentions_leaderboard_to_user_channel(
+    guild_id: str,
+    channel_id: str,
+    source_user_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users that the source user mentioned (CHANNEL SCOPE).
+    Shows top targets that the source user mentioned in a specific channel.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+        source_user_id_int = int(source_user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_to_user_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            source_user_id=source_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_to_user_channel: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_to_user_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mentions/leaderboard/to-user/category")
+async def mentions_leaderboard_to_user_category(
+    guild_id: str,
+    category_id: str,
+    source_user_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format"),
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get leaderboard of users that the source user mentioned (CATEGORY SCOPE).
+    Shows top targets that the source user mentioned in a specific category.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+        source_user_id_int = int(source_user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_to_user_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            source_user_id=source_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except ValueError as e:
+        logger.error(
+            f"Invalid ID format in mentions_leaderboard_to_user_category: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
+    except Exception as e:
+        logger.error(f"Error in mentions_leaderboard_to_user_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 # ============================================
 # SERVER MESSAGE HOURLY DISTRIBUTION ENDPOINT
 # ============================================
@@ -23920,9 +26743,9 @@ async def update_reset_schedule(request: UpdateScheduleRequest):
     try:
         if not db_stats.db_connected:
             return {"success": False, "message": "Database not connected"}
-        
+
         guild_id_int = int(request.guild_id)
-        
+
         async with db_stats.pool.acquire() as conn:
             # Verify the schedule exists
             schedule = await conn.fetchrow("""
@@ -23930,54 +26753,54 @@ async def update_reset_schedule(request: UpdateScheduleRequest):
                 FROM reset_schedules 
                 WHERE id = $1 AND guild_id = $2
             """, request.schedule_id, guild_id_int)
-            
+
             if not schedule:
                 return {
-                    "success": False, 
+                    "success": False,
                     "message": f"Schedule #{request.schedule_id} not found in this guild."
                 }
-            
+
             if schedule['completed']:
                 return {
-                    "success": False, 
+                    "success": False,
                     "message": f"Schedule #{request.schedule_id} is already completed and cannot be updated."
                 }
-            
+
             # Build dynamic update query
             updates = []
             params = []
             param_counter = 1
-            
+
             if request.enabled is not None:
                 updates.append(f"enabled = ${param_counter}")
                 params.append(request.enabled)
                 param_counter += 1
-            
+
             if request.schedule_name is not None:
                 updates.append(f"schedule_name = ${param_counter}")
                 params.append(request.schedule_name)
                 param_counter += 1
-            
+
             if request.reset_types is not None:
                 updates.append(f"reset_types = ${param_counter}")
                 params.append(request.reset_types)
                 param_counter += 1
-            
+
             if request.recurring_pattern is not None:
                 updates.append(f"recurring_pattern = ${param_counter}")
                 params.append(request.recurring_pattern)
                 param_counter += 1
-            
+
             if request.recurring_weekdays is not None:
                 updates.append(f"recurring_weekdays = ${param_counter}")
                 params.append(request.recurring_weekdays)
                 param_counter += 1
-            
+
             if request.recurring_days_of_month is not None:
                 updates.append(f"recurring_days_of_month = ${param_counter}")
                 params.append(request.recurring_days_of_month)
                 param_counter += 1
-            
+
             if request.recurring_times is not None:
                 # Convert time strings to time objects
                 time_objects = []
@@ -23986,28 +26809,29 @@ async def update_reset_schedule(request: UpdateScheduleRequest):
                     hour = int(parts[0])
                     minute = int(parts[1]) if len(parts) > 1 else 0
                     second = int(parts[2]) if len(parts) > 2 else 0
-                    time_objects.append(time(hour=hour, minute=minute, second=second))
+                    time_objects.append(
+                        time(hour=hour, minute=minute, second=second))
                 updates.append(f"recurring_times = ${param_counter}")
                 params.append(time_objects)
                 param_counter += 1
-            
+
             if request.recurring_interval_days is not None:
                 updates.append(f"recurring_interval_days = ${param_counter}")
                 params.append(request.recurring_interval_days)
                 param_counter += 1
-            
+
             if request.time_period_days is not None:
                 updates.append(f"time_period_days = ${param_counter}")
                 params.append(request.time_period_days)
                 param_counter += 1
-            
+
             if request.reason is not None:
                 updates.append(f"reason = ${param_counter}")
                 params.append(request.reason)
                 param_counter += 1
-            
+
             updates.append(f"updated_at = NOW()")
-            
+
             if updates:
                 query = f"""
                     UPDATE reset_schedules 
@@ -24016,15 +26840,15 @@ async def update_reset_schedule(request: UpdateScheduleRequest):
                 """
                 params.append(request.schedule_id)
                 params.append(guild_id_int)
-                
+
                 await conn.execute(query, *params)
-            
+
             return {
                 "success": True,
                 "message": f"Schedule #{request.schedule_id} has been updated.",
                 "schedule_id": request.schedule_id
             }
-            
+
     except Exception as e:
         logger.error(f"Error updating schedule: {e}")
         logger.error(traceback.format_exc())
@@ -30565,244 +33389,550 @@ async def public_user_top_categories(
 
 
 # Fix for public_mentions_target_user - remove extra parameter
-@app.get("/api/public/leaderboard/mentions/target-user")
-async def public_mentions_target_user(
+# ============================================
+# PUBLIC MENTIONS LEADERBOARD ENDPOINTS
+# ============================================
+
+@app.get("/api/public/mentions/leaderboard/target-user/server")
+async def public_mentions_leaderboard_target_user_server(
     guild_id: str = Query(..., description="Guild ID"),
-    mentioned_user_id: str = Query(..., description="User ID being mentioned"),
-    limit: int = Query(10, ge=1, le=100000000000),
+    target_user_id: str = Query(..., description="Target user ID"),
+    limit: int = Query(100, ge=1, le=1000),
     role_filter_ids: Optional[str] = Query(
-        None, description="Comma-separated role IDs"),
-    start_time: Optional[datetime] = Query(None),
-    end_time: Optional[datetime] = Query(None)
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
 ):
-    """Public endpoint for mentions leaderboard - only works for StatsHQ"""
+    """
+    Public endpoint - Get leaderboard of users who mention a target user (SERVER SCOPE).
+    Only works for public StatsHQ guild.
+    """
     if guild_id != STATSHQ_GUILD_ID:
         raise HTTPException(
-            status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
 
     try:
-        async with db_stats.pool.acquire() as conn:
-            # First get total mentions
-            total_query = """
-                SELECT COALESCE(SUM(mention_count), 0) as total_mentions
-                FROM user_mentions_hourly
-                WHERE guild_id = $1 AND mentioned_user_id = $2
-            """
-            total_params = [int(guild_id), int(mentioned_user_id)]
-            param_index = 3
+        # Convert to int for database
+        guild_id_int = int(guild_id)
+        target_user_id_int = int(target_user_id)
 
-            if start_time:
-                total_params.append(start_time)
-                total_query += f" AND hour >= ${len(total_params)}"
-            if end_time:
-                total_params.append(end_time)
-                total_query += f" AND hour <= ${len(total_params)}"
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
 
-            total_query, total_params = await db_stats._apply_bot_filter(total_query, total_params, guild_id, 'user_mentions_hourly')
-            total_query, total_params = await db_stats._apply_comprehensive_blacklist_filters(
-                guild_id, total_query, total_params, 'user_mentions_hourly',
-                include_users=True, include_channels=True
-            )
+        result = await db_stats.q_leaderboard_mentions_target_user_server(
+            guild_id=guild_id_int,
+            target_user_id=target_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
 
-            total_row = await conn.fetchrow(total_query, *total_params)
-            total_mentions = total_row['total_mentions'] if total_row else 0
+        # Convert user_id to string for JSON response
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
 
-            if total_mentions == 0:
-                return []
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
 
-            # Get mentioner breakdown
-            query = """
-                SELECT
-                    mentioner_user_id,
-                    SUM(mention_count) as mention_count,
-                    MAX(hour) as last_mention
-                FROM user_mentions_hourly
-                WHERE guild_id = $1 AND mentioned_user_id = $2
-            """
-            params = [int(guild_id), int(mentioned_user_id)]
-            param_index = 3
-
-            if start_time:
-                params.append(start_time)
-                query += f" AND hour >= ${len(params)}"
-            if end_time:
-                params.append(end_time)
-                query += f" AND hour <= ${len(params)}"
-
-            query, params = await db_stats._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
-            query, params = await db_stats._apply_comprehensive_blacklist_filters(
-                guild_id, query, params, 'user_mentions_hourly',
-                include_users=True, include_channels=True
-            )
-
-            query += " GROUP BY mentioner_user_id ORDER BY mention_count DESC"
-            query += f" LIMIT ${len(params) + 1}"
-            params.append(limit)
-
-            rows = await conn.fetch(query, *params)
-
-            result = []
-            for row in rows:
-                percentage = (
-                    row['mention_count'] / total_mentions * 100) if total_mentions > 0 else 0
-                result.append({
-                    "user_id": str(row['mentioner_user_id']),
-                    "mention_count": row['mention_count'],
-                    "last_mention": row['last_mention'].isoformat() if row['last_mention'] else None,
-                    "percentage": round(percentage, 1)
-                })
-
-            return result
+        return result
 
     except Exception as e:
-        logger.error(f"Error in public_mentions_target_user: {e}")
-        return []
+        logger.error(
+            f"Error in public_mentions_leaderboard_target_user_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/public/user/stats/messages")
-async def public_user_stats_messages(request: Request):
-    """Public endpoint for user message stats with role, bot, and blacklist filtering - only works for StatsHQ"""
+@app.get("/api/public/mentions/leaderboard/target-user/channel")
+async def public_mentions_leaderboard_target_user_channel(
+    guild_id: str = Query(..., description="Guild ID"),
+    channel_id: str = Query(..., description="Channel ID"),
+    target_user_id: str = Query(..., description="Target user ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users who mention a target user (CHANNEL SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
     try:
-        body = await request.json()
-        guild_id = body.get('guild_id')
-        user_id = body.get('user_id')
-        start_time_str = body.get('start_time')
-        end_time_str = body.get('end_time')
-        role_filter_ids = body.get('role_filter_ids')
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+        target_user_id_int = int(target_user_id)
 
-        if guild_id != STATSHQ_GUILD_ID:
-            raise HTTPException(
-                status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
 
-        start_time = datetime.fromisoformat(start_time_str.replace(
-            'Z', '+00:00')) if start_time_str else None
-        end_time = datetime.fromisoformat(end_time_str.replace(
-            'Z', '+00:00')) if end_time_str else None
+        result = await db_stats.q_leaderboard_mentions_target_user_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            target_user_id=target_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
 
-        async with db_stats.pool.acquire() as conn:
-            # Apply role filtering
-            if role_filter_ids:
-                if isinstance(role_filter_ids, str):
-                    role_filter_list = [
-                        rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
-                else:
-                    role_filter_list = role_filter_ids
-                user_ids_with_roles = await db_stats._get_users_with_roles(guild_id, role_filter_list)
-                if not user_ids_with_roles or int(user_id) not in user_ids_with_roles:
-                    return {"total_messages": 0, "total_chars": 0, "avg_chars": 0, "first_message": None, "last_message": None}
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
 
-            query = """
-                SELECT
-                    COALESCE(SUM(message_count), 0) as total_messages,
-                    COALESCE(SUM(total_chars), 0) as total_chars,
-                    COALESCE(SUM(total_chars) / NULLIF(SUM(message_count), 0), 0) as avg_chars,
-                    MIN(hour) as first_message,
-                    MAX(hour) as last_message
-                FROM message_tracking_hourly
-                WHERE guild_id = $1 AND user_id = $2
-            """
-            params = [int(guild_id), int(user_id)]
-            param_index = 3
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
 
-            if start_time:
-                params.append(start_time)
-                query += f" AND hour >= ${param_index}"
-                param_index += 1
-            if end_time:
-                params.append(end_time)
-                query += f" AND hour <= ${param_index}"
-                param_index += 1
-
-            query, params = await db_stats._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
-            query, params = await db_stats._apply_comprehensive_blacklist_filters(
-                guild_id, query, params, 'message_tracking_hourly',
-                include_users=True, include_channels=True
-            )
-
-            row = await conn.fetchrow(query, *params)
-
-            return {
-                "total_messages": row['total_messages'] or 0,
-                "total_chars": row['total_chars'] or 0,
-                "avg_chars": round(row['avg_chars'] or 0, 2),
-                "first_message": row['first_message'].isoformat() if row['first_message'] else None,
-                "last_message": row['last_message'].isoformat() if row['last_message'] else None
-            }
+        return result
 
     except Exception as e:
-        logger.error(f"Error in public_user_stats_messages: {e}")
-        return {"total_messages": 0, "total_chars": 0, "avg_chars": 0, "first_message": None, "last_message": None}
+        logger.error(
+            f"Error in public_mentions_leaderboard_target_user_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/public/user/activity/distribution")
-async def public_user_activity_distribution(request: Request):
-    """Public endpoint for user's hourly voice distribution with role, bot, and blacklist filtering - only works for StatsHQ"""
+@app.get("/api/public/mentions/leaderboard/target-user/category")
+async def public_mentions_leaderboard_target_user_category(
+    guild_id: str = Query(..., description="Guild ID"),
+    category_id: str = Query(..., description="Category ID"),
+    target_user_id: str = Query(..., description="Target user ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users who mention a target user (CATEGORY SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
     try:
-        body = await request.json()
-        guild_id = body.get('guild_id')
-        user_id = body.get('user_id')
-        days_back = body.get('days_back', 30)
-        timezone_str = body.get('timezone_str', 'UTC')
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+        target_user_id_int = int(target_user_id)
 
-        if guild_id != STATSHQ_GUILD_ID:
-            raise HTTPException(
-                status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
 
-        voice_by_hour = {f"hour_{i}": 0 for i in range(24)}
+        result = await db_stats.q_leaderboard_mentions_target_user_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            target_user_id=target_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
 
-        async with db_stats.pool.acquire() as conn:
-            query = f"""
-                SELECT 
-                    EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
-                    COALESCE(SUM(total_seconds), 0) as total_seconds
-                FROM voice_session_history_hourly
-                WHERE guild_id = $1 AND user_id = $2
-            """
-            params = [int(guild_id), int(user_id)]
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
 
-            if days_back and days_back > 0:
-                query += f" AND hour >= NOW() - INTERVAL '{days_back} days'"
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
 
-            query, params = await db_stats._apply_voice_state_filter(query, params, guild_id, 'state_flags')
-            query, params = await db_stats._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
-            query, params = await db_stats._apply_comprehensive_blacklist_filters(
-                guild_id, query, params, 'voice_session_history_hourly',
-                include_users=True, include_channels=True
-            )
-
-            query += " GROUP BY hour_of_day ORDER BY hour_of_day"
-
-            rows = await conn.fetch(query, *params)
-
-            for row in rows:
-                hour = int(row['hour_of_day'])
-                voice_by_hour[f"hour_{hour}"] = row['total_seconds'] or 0
-
-            return {
-                "voice": voice_by_hour,
-                "public": True
-            }
+        return result
 
     except Exception as e:
-        logger.error(f"Error in public_user_activity_distribution: {e}")
-        return {"voice": {f"hour_{i}": 0 for i in range(24)}, "public": True}
+        logger.error(
+            f"Error in public_mentions_leaderboard_target_user_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# Fix for public_user_timeseries_messages_daily - fix SQL syntax
-# Fix for public_user_timeseries_messages_daily - handle blacklist filters correctly
-@app.get("/api/public/user/timeseries/messages/daily")
-async def public_user_timeseries_messages_daily(
+# ============================================
+# PUBLIC MENTIONS SENT LEADERBOARD ENDPOINTS
+# ============================================
+
+@app.get("/api/public/mentions/leaderboard/sent/server")
+async def public_mentions_leaderboard_sent_server(
+    guild_id: str = Query(..., description="Guild ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users who sent the most mentions (SERVER SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_sent_server(
+            guild_id=guild_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_mentions_leaderboard_sent_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/mentions/leaderboard/sent/channel")
+async def public_mentions_leaderboard_sent_channel(
+    guild_id: str = Query(..., description="Guild ID"),
+    channel_id: str = Query(..., description="Channel ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users who sent the most mentions (CHANNEL SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_sent_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_mentions_leaderboard_sent_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/mentions/leaderboard/sent/category")
+async def public_mentions_leaderboard_sent_category(
+    guild_id: str = Query(..., description="Guild ID"),
+    category_id: str = Query(..., description="Category ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users who sent the most mentions (CATEGORY SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_sent_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error in public_mentions_leaderboard_sent_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PUBLIC MENTIONS RECEIVED LEADERBOARD ENDPOINTS
+# ============================================
+
+@app.get("/api/public/mentions/leaderboard/received/server")
+async def public_mentions_leaderboard_received_server(
+    guild_id: str = Query(..., description="Guild ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users who received the most mentions (SERVER SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_received_server(
+            guild_id=guild_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error in public_mentions_leaderboard_received_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/mentions/leaderboard/received/channel")
+async def public_mentions_leaderboard_received_channel(
+    guild_id: str = Query(..., description="Guild ID"),
+    channel_id: str = Query(..., description="Channel ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users who received the most mentions (CHANNEL SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_received_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error in public_mentions_leaderboard_received_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/mentions/leaderboard/received/category")
+async def public_mentions_leaderboard_received_category(
+    guild_id: str = Query(..., description="Guild ID"),
+    category_id: str = Query(..., description="Category ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users who received the most mentions (CATEGORY SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_received_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error in public_mentions_leaderboard_received_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PUBLIC MENTIONS RATIO ENDPOINTS
+# ============================================
+
+@app.get("/api/public/mentions/ratio/server")
+async def public_mentions_ratio_server(
     guild_id: str = Query(..., description="Guild ID"),
     user_id: str = Query(..., description="User ID"),
     role_filter_ids: Optional[str] = Query(
-        None, description="Comma-separated role IDs"),
-    start_time: Optional[datetime] = Query(None),
-    end_time: Optional[datetime] = Query(None),
-    timezone_str: Optional[str] = Query(
-        'UTC', description="Timezone for date grouping"),
-    max_points: int = Query(90, ge=1, le=365)
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
 ):
-    """Public endpoint for user daily timeseries - only works for StatsHQ"""
+    """
+    Public endpoint - Calculate mentions ratio (received/sent) for a user (SERVER SCOPE).
+    Only works for public StatsHQ guild.
+    """
     if guild_id != STATSHQ_GUILD_ID:
         raise HTTPException(
             status_code=403,
@@ -30813,77 +33943,511 @@ async def public_user_timeseries_messages_daily(
         guild_id_int = int(guild_id)
         user_id_int = int(user_id)
 
-        role_filter_list = role_filter_ids.split(
-            ',') if role_filter_ids else None
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
 
-        if not end_time:
-            end_time = datetime.utcnow()
-        if not start_time:
-            start_time = end_time - timedelta(days=max_points)
+        result = await db_stats.q_user_mentions_ratio_server(
+            guild_id=guild_id_int,
+            user_id=user_id_int,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
 
-        days_in_range = (end_time - start_time).days
-        if days_in_range > max_points:
-            start_time = end_time - timedelta(days=max_points)
+        if result and 'ratio' in result:
+            if result['ratio'] == float('inf'):
+                result['ratio'] = None
+            else:
+                result['ratio'] = float(result['ratio'])
 
-        async with db_stats.pool.acquire() as conn:
-            # Check role filter
-            if role_filter_list:
-                user_ids_with_roles = await db_stats._get_users_with_roles(guild_id, role_filter_list)
-                if not user_ids_with_roles or user_id_int not in user_ids_with_roles:
-                    return []
-
-            # Build query with proper WHERE clause
-            query = f"""
-                SELECT 
-                    DATE(hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as date,
-                    COALESCE(SUM(message_count), 0) as message_count
-                FROM message_tracking_hourly
-                WHERE guild_id = $1 
-                AND user_id = $2
-                AND hour >= $3 
-                AND hour <= $4
-            """
-            params = [guild_id_int, user_id_int, start_time, end_time]
-
-            # Apply bot filter
-            query, params = await db_stats._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
-
-            # Apply blacklist filters - this method expects a query with WHERE already present
-            # Since we already have WHERE from the base query, it will add "AND ..."
-            query, params = await db_stats._apply_comprehensive_blacklist_filters(
-                guild_id, query, params, 'message_tracking_hourly',
-                include_users=True, include_channels=True
-            )
-
-            # Add GROUP BY and ORDER BY
-            query += " GROUP BY date ORDER BY date ASC"
-
-            rows = await conn.fetch(query, *params)
-
-            data_by_date = {row['date'].isoformat(): row['message_count']
-                            for row in rows}
-
-            result = []
-            current_date = start_time.date()
-            end_date_obj = end_time.date()
-
-            while current_date <= end_date_obj:
-                date_str = current_date.isoformat()
-                result.append({
-                    'date': date_str,
-                    'messages': data_by_date.get(date_str, 0)
-                })
-                current_date += timedelta(days=1)
-
-            return result
+        return result
 
     except Exception as e:
-        logger.error(f"Error in public_user_timeseries_messages_daily: {e}")
-        logger.error(traceback.format_exc())
-        return []
+        logger.error(f"Error in public_mentions_ratio_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/public/mentions/ratio/channel")
+async def public_mentions_ratio_channel(
+    guild_id: str = Query(..., description="Guild ID"),
+    channel_id: str = Query(..., description="Channel ID"),
+    user_id: str = Query(..., description="User ID"),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Calculate mentions ratio (received/sent) for a user (CHANNEL SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+        user_id_int = int(user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_user_mentions_ratio_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            user_id=user_id_int,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result and 'ratio' in result:
+            if result['ratio'] == float('inf'):
+                result['ratio'] = None
+            else:
+                result['ratio'] = float(result['ratio'])
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_mentions_ratio_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/mentions/ratio/category")
+async def public_mentions_ratio_category(
+    guild_id: str = Query(..., description="Guild ID"),
+    category_id: str = Query(..., description="Category ID"),
+    user_id: str = Query(..., description="User ID"),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Calculate mentions ratio (received/sent) for a user (CATEGORY SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+        user_id_int = int(user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_user_mentions_ratio_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            user_id=user_id_int,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result and 'ratio' in result:
+            if result['ratio'] == float('inf'):
+                result['ratio'] = None
+            else:
+                result['ratio'] = float(result['ratio'])
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_mentions_ratio_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PUBLIC MENTIONS RATIO LEADERBOARD ENDPOINTS
+# ============================================
+
+@app.get("/api/public/mentions/leaderboard/ratio/server")
+async def public_mentions_leaderboard_ratio_server(
+    guild_id: str = Query(..., description="Guild ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    min_mentions_sent: int = Query(
+        1, ge=0, le=10000, description="Minimum mentions sent to be included"),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users by mentions ratio (received/sent) - SERVER SCOPE.
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_ratio_server(
+            guild_id=guild_id_int,
+            limit=limit,
+            min_mentions_sent=min_mentions_sent,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+                if 'ratio_display' in item and item['ratio_display'] == "∞":
+                    item['ratio_display'] = None
+                    item['ratio'] = None
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_mentions_leaderboard_ratio_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/mentions/leaderboard/ratio/channel")
+async def public_mentions_leaderboard_ratio_channel(
+    guild_id: str = Query(..., description="Guild ID"),
+    channel_id: str = Query(..., description="Channel ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    min_mentions_sent: int = Query(
+        1, ge=0, le=10000, description="Minimum mentions sent to be included"),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users by mentions ratio (received/sent) - CHANNEL SCOPE.
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_ratio_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            limit=limit,
+            min_mentions_sent=min_mentions_sent,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+                if 'ratio_display' in item and item['ratio_display'] == "∞":
+                    item['ratio_display'] = None
+                    item['ratio'] = None
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error in public_mentions_leaderboard_ratio_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/mentions/leaderboard/ratio/category")
+async def public_mentions_leaderboard_ratio_category(
+    guild_id: str = Query(..., description="Guild ID"),
+    category_id: str = Query(..., description="Category ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    min_mentions_sent: int = Query(
+        1, ge=0, le=10000, description="Minimum mentions sent to be included"),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users by mentions ratio (received/sent) - CATEGORY SCOPE.
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_ratio_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            limit=limit,
+            min_mentions_sent=min_mentions_sent,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+                if 'ratio_display' in item and item['ratio_display'] == "∞":
+                    item['ratio_display'] = None
+                    item['ratio'] = None
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error in public_mentions_leaderboard_ratio_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PUBLIC MENTIONS TO USER LEADERBOARD ENDPOINTS
+# ============================================
+
+@app.get("/api/public/mentions/leaderboard/to-user/server")
+async def public_mentions_leaderboard_to_user_server(
+    guild_id: str = Query(..., description="Guild ID"),
+    source_user_id: str = Query(..., description="Source user ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users that the source user mentioned (SERVER SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        source_user_id_int = int(source_user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_to_user_server(
+            guild_id=guild_id_int,
+            source_user_id=source_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error in public_mentions_leaderboard_to_user_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/mentions/leaderboard/to-user/channel")
+async def public_mentions_leaderboard_to_user_channel(
+    guild_id: str = Query(..., description="Guild ID"),
+    channel_id: str = Query(..., description="Channel ID"),
+    source_user_id: str = Query(..., description="Source user ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users that the source user mentioned (CHANNEL SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        channel_id_int = int(channel_id)
+        source_user_id_int = int(source_user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_to_user_channel(
+            guild_id=guild_id_int,
+            channel_id=channel_id_int,
+            source_user_id=source_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error in public_mentions_leaderboard_to_user_channel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/mentions/leaderboard/to-user/category")
+async def public_mentions_leaderboard_to_user_category(
+    guild_id: str = Query(..., description="Guild ID"),
+    category_id: str = Query(..., description="Category ID"),
+    source_user_id: str = Query(..., description="Source user ID"),
+    limit: int = Query(100, ge=1, le=1000),
+    role_filter_ids: Optional[str] = Query(
+        None, description="Comma-separated list of role IDs"),
+    start_time: Optional[datetime] = Query(
+        None, description="Start time ISO format"),
+    end_time: Optional[datetime] = Query(
+        None, description="End time ISO format")
+):
+    """
+    Public endpoint - Get leaderboard of users that the source user mentioned (CATEGORY SCOPE).
+    Only works for public StatsHQ guild.
+    """
+    if guild_id != STATSHQ_GUILD_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only for public StatsHQ statistics."
+        )
+
+    try:
+        guild_id_int = int(guild_id)
+        category_id_int = int(category_id)
+        source_user_id_int = int(source_user_id)
+
+        role_filter_list = None
+        if role_filter_ids:
+            role_filter_list = [rid.strip()
+                                for rid in role_filter_ids.split(',') if rid.strip()]
+
+        result = await db_stats.q_leaderboard_mentions_to_user_category(
+            guild_id=guild_id_int,
+            category_id=category_id_int,
+            source_user_id=source_user_id_int,
+            limit=limit,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time
+        )
+
+        if result:
+            for item in result:
+                item['user_id'] = str(item['user_id'])
+
+            user_ids = [str(item['user_id']) for item in result]
+            existence_map = await discord_api.verify_entities_exist(guild_id, 'user', user_ids)
+            result = [item for item in result if existence_map.get(
+                str(item['user_id']), True)]
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error in public_mentions_leaderboard_to_user_category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 # Fix for public_channel_top_users
+
+
 @app.get("/api/public/channel/top/users")
 async def public_channel_top_users(
     guild_id: str = Query(..., description="Guild ID"),
