@@ -142,6 +142,566 @@ const AccessDenied = ({ accessLevel }) => {
   );
 };
 
+// ---- Components defined OUTSIDE MentionsDashboard to prevent focus loss on re-render ----
+
+const FiltersSection = ({
+  selectedView, setSelectedView,
+  timePeriod, setTimePeriod,
+  customDaysBack, setCustomDaysBack,
+  customStartDate, setCustomStartDate,
+  customEndDate, setCustomEndDate,
+  timePeriodOptions,
+  // Role filter
+  showRoleFilter,
+  tempRoleSearch, setTempRoleSearch,
+  showRoleDropdown, setShowRoleDropdown,
+  filteredRoles,
+  tempRoleId,
+  handleTempRoleSelect,
+  clearRoleFilter,
+  showApplyButton,
+  applyRoleFilter,
+  selectedRoleId,
+  getRoleName,
+  // User filter
+  userSearch, setUserSearch,
+  showUserDropdown, setShowUserDropdown,
+  filteredUsers,
+  selectedUserId,
+  handleUserSelect,
+  // Channel filter
+  channelSearch, setChannelSearch,
+  showChannelDropdown, setShowChannelDropdown,
+  filteredChannels,
+  selectedChannelId,
+  handleChannelSelect,
+  // Category filter
+  categorySearch, setCategorySearch,
+  showCategoryDropdown, setShowCategoryDropdown,
+  filteredCategories,
+  selectedCategoryId,
+  handleCategorySelect,
+}) => (
+  <div className="filters-section">
+    <div className="filter-row">
+      <label>View:</label>
+      <select value={selectedView} onChange={(e) => setSelectedView(e.target.value)} className="modern-select">
+        <option value="server">Server</option>
+        <option value="user">User</option>
+        <option value="channel">Channel</option>
+        <option value="category">Category</option>
+      </select>
+    </div>
+
+    <div className="filter-row">
+      <label>Time Period:</label>
+      <select value={timePeriod} onChange={(e) => setTimePeriod(e.target.value)} className="modern-select">
+        {timePeriodOptions.map(option => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </div>
+
+    {timePeriod === 'custom-lookback' && (
+      <div className="custom-lookback">
+        <input type="number" placeholder="Days to look back" value={customDaysBack} onChange={(e) => setCustomDaysBack(e.target.value)} min="1" />
+      </div>
+    )}
+
+    {timePeriod === 'custom-range' && (
+      <div className="custom-date-range">
+        <div className="date-input">
+          <label>From:</label>
+          <input type="date" value={customStartDate} onChange={(e) => setCustomStartDate(e.target.value)} className="modern-date-input" />
+        </div>
+        <div className="date-input">
+          <label>To:</label>
+          <input type="date" value={customEndDate} onChange={(e) => setCustomEndDate(e.target.value)} className="modern-date-input" />
+        </div>
+      </div>
+    )}
+
+    {showRoleFilter && (
+      <div className="filter-row entity-filter">
+        <label>Role Filter:</label>
+        <div className="entity-selector">
+          <input
+            type="text"
+            placeholder="Search role to filter all data..."
+            value={tempRoleSearch}
+            onChange={(e) => setTempRoleSearch(e.target.value)}
+            onFocus={() => setShowRoleDropdown(true)}
+            onBlur={() => setTimeout(() => setShowRoleDropdown(false), 200)}
+            className="modern-entity-search"
+          />
+          {showRoleDropdown && filteredRoles.length > 0 && (
+            <div className="entity-dropdown">
+              <div className="entity-option" onMouseDown={() => { clearRoleFilter(); setShowRoleDropdown(false); }}>
+                <div className="entity-info"><span className="entity-name">Clear Role Filter</span></div>
+                <span className="entity-id">✕</span>
+              </div>
+              {filteredRoles.slice(0, 20).map(role => (
+                <div key={role.id} className={`entity-option ${tempRoleId === role.id ? 'selected' : ''}`} onMouseDown={() => handleTempRoleSelect(role)}>
+                  <div className="entity-info">
+                    <span className="entity-color-dot" style={{ backgroundColor: role.color || '#99aab5' }}></span>
+                    <span className="entity-name">{role.name}</span>
+                  </div>
+                  <span className="entity-id">ID: {role.id}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {showApplyButton && (
+            <div className="apply-button-container">
+              <button className="apply-button" onClick={applyRoleFilter}>Apply Role Filter</button>
+              <button className="clear-button" onClick={clearRoleFilter}>Clear</button>
+            </div>
+          )}
+          {selectedRoleId && !showApplyButton && (
+            <div className="active-role-filter">
+              <span>Active filter: {getRoleName(selectedRoleId)}</span>
+              <button onClick={clearRoleFilter}>✕</button>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    {selectedView === 'user' && (
+      <div className="filter-row entity-filter">
+        <label>Select User:</label>
+        <div className="entity-selector">
+          <input
+            type="text"
+            placeholder="Search by name or ID..."
+            value={userSearch}
+            onChange={(e) => setUserSearch(e.target.value)}
+            onFocus={() => setShowUserDropdown(true)}
+            onBlur={() => setTimeout(() => setShowUserDropdown(false), 200)}
+            className="modern-entity-search"
+          />
+          {showUserDropdown && filteredUsers.length > 0 && (
+            <div className="entity-dropdown">
+              {filteredUsers.slice(0, 20).map(user => (
+                <div key={user.id} className={`entity-option ${selectedUserId === user.id ? 'selected' : ''}`} onMouseDown={() => handleUserSelect(user)}>
+                  <div className="entity-info"><span className="entity-name">{user.global_name || user.username || user.name || `User ${user.id}`}</span></div>
+                  <span className="entity-id">ID: {user.id}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    {selectedView === 'channel' && (
+      <div className="filter-row entity-filter">
+        <label>Channel:</label>
+        <div className="entity-selector">
+          <input
+            type="text"
+            placeholder="Search by name or ID..."
+            value={channelSearch}
+            onChange={(e) => setChannelSearch(e.target.value)}
+            onFocus={() => setShowChannelDropdown(true)}
+            onBlur={() => setTimeout(() => setShowChannelDropdown(false), 200)}
+            className="modern-entity-search"
+          />
+          {showChannelDropdown && filteredChannels.length > 0 && (
+            <div className="entity-dropdown">
+              {filteredChannels.slice(0, 20).map(channel => (
+                <div key={channel.id} className={`entity-option ${selectedChannelId === channel.id ? 'selected' : ''}`} onMouseDown={() => handleChannelSelect(channel)}>
+                  <div className="entity-info">
+                    <span className="entity-name">{channel.name}</span>
+                    {channel.type && <span className="entity-id">{channel.type}</span>}
+                  </div>
+                  <span className="entity-id">ID: {channel.id}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    {selectedView === 'category' && (
+      <div className="filter-row entity-filter">
+        <label>Category:</label>
+        <div className="entity-selector">
+          <input
+            type="text"
+            placeholder="Search by name or ID..."
+            value={categorySearch}
+            onChange={(e) => setCategorySearch(e.target.value)}
+            onFocus={() => setShowCategoryDropdown(true)}
+            onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
+            className="modern-entity-search"
+          />
+          {showCategoryDropdown && filteredCategories.length > 0 && (
+            <div className="entity-dropdown">
+              {filteredCategories.slice(0, 20).map(category => (
+                <div key={category.id} className={`entity-option ${selectedCategoryId === category.id ? 'selected' : ''}`} onMouseDown={() => handleCategorySelect(category)}>
+                  <div className="entity-info"><span className="entity-name">{category.name}</span></div>
+                  <span className="entity-id">ID: {category.id}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+  </div>
+);
+
+const ScopeLeaderboards = ({
+  loadingSummaryStats,
+  loadingSent, topSentData,
+  loadingReceived, topReceivedData,
+  loadingRatioHigh, topRatioHighData,
+  loadingRatioLow, topRatioLowData,
+  summaryData, scopeName,
+  formatValue,
+}) => (
+  <>
+    <div className="summary-stats">
+      {loadingSummaryStats ? (
+        <>
+          <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
+          <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
+          <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
+        </>
+      ) : summaryData && (
+        <>
+          <div className="stat-card">
+            <h3>Total Mentions Sent</h3>
+            <p className="stat-value">{(summaryData.totalSent || 0).toLocaleString()}</p>
+          </div>
+          <div className="stat-card">
+            <h3>Total Mentions Received</h3>
+            <p className="stat-value">{(summaryData.totalReceived || 0).toLocaleString()}</p>
+          </div>
+          <div className="stat-card">
+            <h3>Avg Mentions Ratio</h3>
+            <p className="stat-value">{summaryData.avgRatio || 'N/A'}</p>
+          </div>
+          <div className="stat-card">
+            <h3>Active Users</h3>
+            <p className="stat-value">{(summaryData.activeUsers || 0).toLocaleString()}</p>
+          </div>
+        </>
+      )}
+    </div>
+
+    <div className="leaderboards-section">
+      <h2 className="section-title">Leaderboards {scopeName ? `— ${scopeName}` : ''}</h2>
+      <div className="leaderboards-stack">
+        {loadingSent ? <LoadingCard /> : topSentData.length > 0 ? (
+          <div className="leaderboard-wrapper">
+            <Leaderboard data={topSentData} title="Top Mention Senders" valueLabel="Mentions Sent" valueFormatter={formatValue} showProfilePictures={true} itemType="user" nameKey="name" valueKey="value" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
+              getProfilePicture={async (userId) => { const u = topSentData.find(x => x.userId === userId); return u?.avatar || null; }} />
+          </div>
+        ) : <div className="no-data-message">No mention sent data available</div>}
+
+        {loadingReceived ? <LoadingCard /> : topReceivedData.length > 0 ? (
+          <div className="leaderboard-wrapper">
+            <Leaderboard data={topReceivedData} title="Top Mention Receivers" valueLabel="Mentions Received" valueFormatter={formatValue} showProfilePictures={true} itemType="user" nameKey="name" valueKey="value" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
+              getProfilePicture={async (userId) => { const u = topReceivedData.find(x => x.userId === userId); return u?.avatar || null; }} />
+          </div>
+        ) : <div className="no-data-message">No mention received data available</div>}
+
+        {loadingRatioHigh ? <LoadingCard /> : topRatioHighData.length > 0 ? (
+          <div className="leaderboard-wrapper">
+            <Leaderboard data={topRatioHighData} title="Most Popular (High Ratio)" valueLabel="Ratio" valueFormatter={(v, item) => item?.ratioDisplay ? `${item.ratioDisplay}x` : `${v}`} showProfilePictures={true} itemType="user" nameKey="name" valueKey="ratioDisplay" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
+              getProfilePicture={async (userId) => { const u = topRatioHighData.find(x => x.userId === userId); return u?.avatar || null; }} />
+          </div>
+        ) : <div className="no-data-message">No ratio data available</div>}
+
+        {loadingRatioLow ? <LoadingCard /> : topRatioLowData.length > 0 ? (
+          <div className="leaderboard-wrapper">
+            <Leaderboard data={topRatioLowData} title="Most Ignored (Low Ratio)" valueLabel="Ratio" valueFormatter={(v, item) => item?.ratioDisplay ? `${item.ratioDisplay}x` : `${v}`} showProfilePictures={true} itemType="user" nameKey="name" valueKey="ratioDisplay" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
+              getProfilePicture={async (userId) => { const u = topRatioLowData.find(x => x.userId === userId); return u?.avatar || null; }} />
+          </div>
+        ) : <div className="no-data-message">No ratio data available</div>}
+      </div>
+    </div>
+  </>
+);
+
+const MainContent = ({
+  // Filters
+  selectedView, setSelectedView,
+  timePeriod, setTimePeriod,
+  customDaysBack, setCustomDaysBack,
+  customStartDate, setCustomStartDate,
+  customEndDate, setCustomEndDate,
+  timePeriodOptions,
+  tempRoleSearch, setTempRoleSearch,
+  showRoleDropdown, setShowRoleDropdown,
+  filteredRoles, tempRoleId,
+  handleTempRoleSelect, clearRoleFilter,
+  showApplyButton, applyRoleFilter,
+  selectedRoleId, getRoleName,
+  userSearch, setUserSearch,
+  showUserDropdown, setShowUserDropdown,
+  filteredUsers, selectedUserId, handleUserSelect,
+  channelSearch, setChannelSearch,
+  showChannelDropdown, setShowChannelDropdown,
+  filteredChannels, selectedChannelId, handleChannelSelect,
+  categorySearch, setCategorySearch,
+  showCategoryDropdown, setShowCategoryDropdown,
+  filteredCategories, selectedCategoryId, handleCategorySelect,
+  // User sub-scope
+  userSubScope, setUserSubScope,
+  userScopeChannelId, setUserScopeChannelId,
+  userScopeCategoryId, setUserScopeCategoryId,
+  userScopeChannelSearch, setUserScopeChannelSearch,
+  userScopeCategorySearch, setUserScopeCategorySearch,
+  showUserScopeChannelDropdown, setShowUserScopeChannelDropdown,
+  showUserScopeCategoryDropdown, setShowUserScopeCategoryDropdown,
+  // Loading states
+  loadingSummaryStats,
+  loadingTopSent, loadingTopReceived, loadingTopRatioHigh, loadingTopRatioLow,
+  loadingUserMentionsTo, loadingUserMentionsFrom,
+  loadingChannelTopSent, loadingChannelTopReceived, loadingChannelTopRatioHigh, loadingChannelTopRatioLow,
+  loadingCategoryTopSent, loadingCategoryTopReceived, loadingCategoryTopRatioHigh, loadingCategoryTopRatioLow,
+  // Data
+  serverSummary, userSummary, channelSummary, categorySummary,
+  topSent, topReceived, topRatioHigh, topRatioLow,
+  userMentionsTo, userMentionsFrom,
+  channelTopSent, channelTopReceived, channelTopRatioHigh, channelTopRatioLow,
+  categoryTopSent, categoryTopReceived, categoryTopRatioHigh, categoryTopRatioLow,
+  // Helpers
+  formatValue, getChannelName, getCategoryName,
+}) => (
+  <div className="dashboard-content">
+    <FiltersSection
+      selectedView={selectedView} setSelectedView={setSelectedView}
+      timePeriod={timePeriod} setTimePeriod={setTimePeriod}
+      customDaysBack={customDaysBack} setCustomDaysBack={setCustomDaysBack}
+      customStartDate={customStartDate} setCustomStartDate={setCustomStartDate}
+      customEndDate={customEndDate} setCustomEndDate={setCustomEndDate}
+      timePeriodOptions={timePeriodOptions}
+      showRoleFilter={selectedView !== 'user'}
+      tempRoleSearch={tempRoleSearch} setTempRoleSearch={setTempRoleSearch}
+      showRoleDropdown={showRoleDropdown} setShowRoleDropdown={setShowRoleDropdown}
+      filteredRoles={filteredRoles} tempRoleId={tempRoleId}
+      handleTempRoleSelect={handleTempRoleSelect} clearRoleFilter={clearRoleFilter}
+      showApplyButton={showApplyButton} applyRoleFilter={applyRoleFilter}
+      selectedRoleId={selectedRoleId} getRoleName={getRoleName}
+      userSearch={userSearch} setUserSearch={setUserSearch}
+      showUserDropdown={showUserDropdown} setShowUserDropdown={setShowUserDropdown}
+      filteredUsers={filteredUsers} selectedUserId={selectedUserId} handleUserSelect={handleUserSelect}
+      channelSearch={channelSearch} setChannelSearch={setChannelSearch}
+      showChannelDropdown={showChannelDropdown} setShowChannelDropdown={setShowChannelDropdown}
+      filteredChannels={filteredChannels} selectedChannelId={selectedChannelId} handleChannelSelect={handleChannelSelect}
+      categorySearch={categorySearch} setCategorySearch={setCategorySearch}
+      showCategoryDropdown={showCategoryDropdown} setShowCategoryDropdown={setShowCategoryDropdown}
+      filteredCategories={filteredCategories} selectedCategoryId={selectedCategoryId} handleCategorySelect={handleCategorySelect}
+    />
+
+    {selectedView === 'server' && (
+      <ScopeLeaderboards
+        loadingSummaryStats={loadingSummaryStats}
+        loadingSent={loadingTopSent} topSentData={topSent}
+        loadingReceived={loadingTopReceived} topReceivedData={topReceived}
+        loadingRatioHigh={loadingTopRatioHigh} topRatioHighData={topRatioHigh}
+        loadingRatioLow={loadingTopRatioLow} topRatioLowData={topRatioLow}
+        summaryData={serverSummary}
+        scopeName=""
+        formatValue={formatValue}
+      />
+    )}
+
+    {selectedView === 'user' && (
+      <>
+        {!selectedUserId ? (
+          <div className="no-selection">
+            <h2>Select a User</h2>
+            <p>Please select a user from the dropdown above to view their mention statistics.</p>
+          </div>
+        ) : (
+          <>
+            {/* Sub-scope selector for user view */}
+            <div className="sub-scope-section">
+              <label>Scope:</label>
+              <select
+                value={userSubScope}
+                onChange={(e) => {
+                  setUserSubScope(e.target.value);
+                  setUserScopeChannelId("");
+                  setUserScopeCategoryId("");
+                  setUserScopeChannelSearch("");
+                  setUserScopeCategorySearch("");
+                }}
+                className="modern-select"
+                style={{ minWidth: '160px' }}
+              >
+                <option value="server">Server</option>
+                <option value="channel">Channel</option>
+                <option value="category">Category</option>
+              </select>
+
+              {userSubScope === 'channel' && (
+                <div style={{ position: 'relative', minWidth: '250px' }}>
+                  <input
+                    type="text"
+                    placeholder="Search channel..."
+                    value={userScopeChannelSearch}
+                    onChange={(e) => setUserScopeChannelSearch(e.target.value)}
+                    onFocus={() => setShowUserScopeChannelDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowUserScopeChannelDropdown(false), 200)}
+                    className="modern-entity-search"
+                  />
+                  {showUserScopeChannelDropdown && filteredChannels.length > 0 && (
+                    <div className="entity-dropdown">
+                      {filteredChannels.slice(0, 20).map(ch => (
+                        <div
+                          key={ch.id}
+                          className={`entity-option ${userScopeChannelId === ch.id ? 'selected' : ''}`}
+                          onMouseDown={() => {
+                            setUserScopeChannelId(ch.id);
+                            setUserScopeChannelSearch(ch.name);
+                            setShowUserScopeChannelDropdown(false);
+                          }}
+                        >
+                          <span className="entity-name">{ch.name}</span>
+                          <span className="entity-id">ID: {ch.id}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {userSubScope === 'category' && (
+                <div style={{ position: 'relative', minWidth: '250px' }}>
+                  <input
+                    type="text"
+                    placeholder="Search category..."
+                    value={userScopeCategorySearch}
+                    onChange={(e) => setUserScopeCategorySearch(e.target.value)}
+                    onFocus={() => setShowUserScopeCategoryDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowUserScopeCategoryDropdown(false), 200)}
+                    className="modern-entity-search"
+                  />
+                  {showUserScopeCategoryDropdown && filteredCategories.length > 0 && (
+                    <div className="entity-dropdown">
+                      {filteredCategories.slice(0, 20).map(cat => (
+                        <div
+                          key={cat.id}
+                          className={`entity-option ${userScopeCategoryId === cat.id ? 'selected' : ''}`}
+                          onMouseDown={() => {
+                            setUserScopeCategoryId(cat.id);
+                            setUserScopeCategorySearch(cat.name);
+                            setShowUserScopeCategoryDropdown(false);
+                          }}
+                        >
+                          <span className="entity-name">{cat.name}</span>
+                          <span className="entity-id">ID: {cat.id}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="summary-stats">
+              {loadingSummaryStats ? (
+                <>
+                  <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
+                  <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
+                  <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
+                </>
+              ) : userSummary && (
+                <>
+                  <div className="stat-card">
+                    <h3>Total Mentions Sent</h3>
+                    <p className="stat-value">{(userSummary.mentionsSent || 0).toLocaleString()}</p>
+                  </div>
+                  <div className="stat-card">
+                    <h3>Total Mentions Received</h3>
+                    <p className="stat-value">{(userSummary.mentionsReceived || 0).toLocaleString()}</p>
+                  </div>
+                  <div className="stat-card">
+                    <h3>Mentions Ratio</h3>
+                    <p className="stat-value">{userSummary.ratio || 'N/A'}</p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="leaderboards-section">
+              <h2 className="section-title">Mention Interactions</h2>
+              <div className="leaderboards-stack">
+                {loadingUserMentionsTo ? <LoadingCard /> : userMentionsTo.length > 0 ? (
+                  <div className="leaderboard-wrapper">
+                    <Leaderboard data={userMentionsTo} title="Users They Mentioned Most" valueLabel="Times Mentioned" valueFormatter={formatValue} showProfilePictures={true} itemType="user" nameKey="name" valueKey="value" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
+                      getProfilePicture={async (userId) => { const u = userMentionsTo.find(x => x.userId === userId); return u?.avatar || null; }} />
+                  </div>
+                ) : <div className="no-data-message">No outgoing mention data available for this user</div>}
+
+                {loadingUserMentionsFrom ? <LoadingCard /> : userMentionsFrom.length > 0 ? (
+                  <div className="leaderboard-wrapper">
+                    <Leaderboard data={userMentionsFrom} title="Users Who Mentioned Them Most" valueLabel="Times Mentioned" valueFormatter={formatValue} showProfilePictures={true} itemType="user" nameKey="name" valueKey="value" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
+                      getProfilePicture={async (userId) => { const u = userMentionsFrom.find(x => x.userId === userId); return u?.avatar || null; }} />
+                  </div>
+                ) : <div className="no-data-message">No incoming mention data available for this user</div>}
+              </div>
+            </div>
+          </>
+        )}
+      </>
+    )}
+
+    {selectedView === 'channel' && (
+      <>
+        {!selectedChannelId ? (
+          <div className="no-selection">
+            <h2>Select a Channel</h2>
+            <p>Please select a channel from the dropdown above to view its mention statistics.</p>
+          </div>
+        ) : (
+          <ScopeLeaderboards
+            loadingSummaryStats={loadingSummaryStats}
+            loadingSent={loadingChannelTopSent} topSentData={channelTopSent}
+            loadingReceived={loadingChannelTopReceived} topReceivedData={channelTopReceived}
+            loadingRatioHigh={loadingChannelTopRatioHigh} topRatioHighData={channelTopRatioHigh}
+            loadingRatioLow={loadingChannelTopRatioLow} topRatioLowData={channelTopRatioLow}
+            summaryData={channelSummary}
+            scopeName={getChannelName(selectedChannelId)}
+            formatValue={formatValue}
+          />
+        )}
+      </>
+    )}
+
+    {selectedView === 'category' && (
+      <>
+        {!selectedCategoryId ? (
+          <div className="no-selection">
+            <h2>Select a Category</h2>
+            <p>Please select a category from the dropdown above to view its mention statistics.</p>
+          </div>
+        ) : (
+          <ScopeLeaderboards
+            loadingSummaryStats={loadingSummaryStats}
+            loadingSent={loadingCategoryTopSent} topSentData={categoryTopSent}
+            loadingReceived={loadingCategoryTopReceived} topReceivedData={categoryTopReceived}
+            loadingRatioHigh={loadingCategoryTopRatioHigh} topRatioHighData={categoryTopRatioHigh}
+            loadingRatioLow={loadingCategoryTopRatioLow} topRatioLowData={categoryTopRatioLow}
+            summaryData={categorySummary}
+            scopeName={getCategoryName(selectedCategoryId)}
+            formatValue={formatValue}
+          />
+        )}
+      </>
+    )}
+  </div>
+);
+
+// ---- Main dashboard component ----
+
 const MentionsDashboard = () => {
   const [selectedView, setSelectedView] = useState("server");
   const [timePeriod, setTimePeriod] = useState("30");
@@ -849,7 +1409,6 @@ const MentionsDashboard = () => {
     return { startDate, endDate };
   };
 
-  // Helper to format leaderboard items from mentions API responses
   const formatLeaderboardUsers = async (data, valueKey) => {
     if (!Array.isArray(data) || data.length === 0) return [];
     const allUserIds = data.map(item => String(item.user_id));
@@ -922,11 +1481,8 @@ const MentionsDashboard = () => {
     const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
     const creds = isPublic ? 'omit' : 'include';
 
-    // Summary: fetch top sent/received/ratio to get aggregate counts
-    // We compute summary from the leaderboard data
     setLoadingSummaryStats(true);
 
-    // 1. Top mentions sent
     setLoadingTopSent(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/sent/server`, baseParams);
@@ -935,13 +1491,11 @@ const MentionsDashboard = () => {
         const data = await res.json();
         const formatted = await formatLeaderboardUsers(data, 'mention_count');
         setTopSent(formatted);
-        // Compute summary from data
         const totalSent = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
         setServerSummary(prev => ({ ...(prev || {}), totalSent, activeUsers: data.length }));
       }
     } catch (e) { console.error('Error fetching top sent:', e); } finally { setLoadingTopSent(false); }
 
-    // 2. Top mentions received
     setLoadingTopReceived(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/received/server`, baseParams);
@@ -955,7 +1509,6 @@ const MentionsDashboard = () => {
       }
     } catch (e) { console.error('Error fetching top received:', e); } finally { setLoadingTopReceived(false); }
 
-    // 3. Top ratio high (most popular) - high ratio = many received per sent
     setLoadingTopRatioHigh(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/server`, { ...baseParams, min_mentions_sent: 1 });
@@ -964,14 +1517,12 @@ const MentionsDashboard = () => {
         const data = await res.json();
         const formatted = await formatRatioLeaderboard(data);
         setTopRatioHigh(formatted);
-        // Compute avg ratio from data
         const validRatios = data.filter(d => d.ratio !== null && d.ratio !== undefined && !isNaN(d.ratio));
         const avgRatio = validRatios.length > 0 ? (validRatios.reduce((acc, d) => acc + parseFloat(d.ratio), 0) / validRatios.length).toFixed(2) : 'N/A';
         setServerSummary(prev => ({ ...(prev || {}), avgRatio }));
       }
     } catch (e) { console.error('Error fetching ratio high:', e); } finally { setLoadingTopRatioHigh(false); }
 
-    // 4. Top ratio low (most ignored) - reverse the ratio list
     setLoadingTopRatioLow(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/server`, { ...baseParams, min_mentions_sent: 1 });
@@ -997,7 +1548,6 @@ const MentionsDashboard = () => {
     const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
     const creds = isPublic ? 'omit' : 'include';
 
-    // Determine scope suffix and extra param
     let scopeSuffix = 'server';
     let extraParam = {};
     if (userSubScope === 'channel' && userScopeChannelId) {
@@ -1012,7 +1562,6 @@ const MentionsDashboard = () => {
 
     setLoadingSummaryStats(true);
 
-    // Fetch ratio for this user to get summary stats
     try {
       const url = buildUrl(`${prefix}/mentions/ratio/${scopeSuffix}`, { ...baseParams, user_id: selectedUserId });
       const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
@@ -1028,7 +1577,6 @@ const MentionsDashboard = () => {
 
     setLoadingSummaryStats(false);
 
-    // Who this user mentioned (to-user leaderboard)
     setLoadingUserMentionsTo(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/to-user/${scopeSuffix}`, { ...baseParams, source_user_id: selectedUserId });
@@ -1040,7 +1588,6 @@ const MentionsDashboard = () => {
       }
     } catch (e) { console.error('Error fetching user mentions to:', e); } finally { setLoadingUserMentionsTo(false); }
 
-    // Who mentioned this user (target-user leaderboard)
     setLoadingUserMentionsFrom(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/target-user/${scopeSuffix}`, { ...baseParams, target_user_id: selectedUserId });
@@ -1067,7 +1614,6 @@ const MentionsDashboard = () => {
 
     setLoadingSummaryStats(true);
 
-    // Top sent
     setLoadingChannelTopSent(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/sent/channel`, baseParams);
@@ -1081,7 +1627,6 @@ const MentionsDashboard = () => {
       }
     } catch (e) { console.error('Error fetching channel top sent:', e); } finally { setLoadingChannelTopSent(false); }
 
-    // Top received
     setLoadingChannelTopReceived(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/received/channel`, baseParams);
@@ -1095,7 +1640,6 @@ const MentionsDashboard = () => {
       }
     } catch (e) { console.error('Error fetching channel top received:', e); } finally { setLoadingChannelTopReceived(false); }
 
-    // Top ratio high
     setLoadingChannelTopRatioHigh(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/channel`, { ...baseParams, min_mentions_sent: 1 });
@@ -1110,7 +1654,6 @@ const MentionsDashboard = () => {
       }
     } catch (e) { console.error('Error fetching channel ratio high:', e); } finally { setLoadingChannelTopRatioHigh(false); }
 
-    // Top ratio low
     setLoadingChannelTopRatioLow(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/channel`, { ...baseParams, min_mentions_sent: 1 });
@@ -1140,7 +1683,6 @@ const MentionsDashboard = () => {
 
     setLoadingSummaryStats(true);
 
-    // Top sent
     setLoadingCategoryTopSent(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/sent/category`, baseParams);
@@ -1154,7 +1696,6 @@ const MentionsDashboard = () => {
       }
     } catch (e) { console.error('Error fetching category top sent:', e); } finally { setLoadingCategoryTopSent(false); }
 
-    // Top received
     setLoadingCategoryTopReceived(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/received/category`, baseParams);
@@ -1168,7 +1709,6 @@ const MentionsDashboard = () => {
       }
     } catch (e) { console.error('Error fetching category top received:', e); } finally { setLoadingCategoryTopReceived(false); }
 
-    // Top ratio high
     setLoadingCategoryTopRatioHigh(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/category`, { ...baseParams, min_mentions_sent: 1 });
@@ -1183,7 +1723,6 @@ const MentionsDashboard = () => {
       }
     } catch (e) { console.error('Error fetching category ratio high:', e); } finally { setLoadingCategoryTopRatioHigh(false); }
 
-    // Top ratio low
     setLoadingCategoryTopRatioLow(true);
     try {
       const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/category`, { ...baseParams, min_mentions_sent: 1 });
@@ -1224,11 +1763,6 @@ const MentionsDashboard = () => {
   const formatValue = (value) => {
     if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
     if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
-    return value.toString();
-  };
-
-  const formatRatioValue = (value, item) => {
-    if (item && item.ratioDisplay !== undefined) return `${item.ratioDisplay}x`;
     return value.toString();
   };
 
@@ -1405,376 +1939,48 @@ const MentionsDashboard = () => {
     .entity-dropdown::-webkit-scrollbar-thumb:hover { background: #aa00ff; }
   `;
 
-  // ---- Reusable sub-components ----
-
-  const FiltersSection = ({ showRoleFilter = true }) => (
-    <div className="filters-section">
-      <div className="filter-row">
-        <label>View:</label>
-        <select value={selectedView} onChange={(e) => setSelectedView(e.target.value)} className="modern-select">
-          <option value="server">Server</option>
-          <option value="user">User</option>
-          <option value="channel">Channel</option>
-          <option value="category">Category</option>
-        </select>
-      </div>
-
-      <div className="filter-row">
-        <label>Time Period:</label>
-        <select value={timePeriod} onChange={(e) => setTimePeriod(e.target.value)} className="modern-select">
-          {timePeriodOptions.map(option => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-      </div>
-
-      {timePeriod === 'custom-lookback' && (
-        <div className="custom-lookback">
-          <input type="number" placeholder="Days to look back" value={customDaysBack} onChange={(e) => setCustomDaysBack(e.target.value)} min="1" />
-        </div>
-      )}
-
-      {timePeriod === 'custom-range' && (
-        <div className="custom-date-range">
-          <div className="date-input">
-            <label>From:</label>
-            <input type="date" value={customStartDate} onChange={(e) => setCustomStartDate(e.target.value)} className="modern-date-input" />
-          </div>
-          <div className="date-input">
-            <label>To:</label>
-            <input type="date" value={customEndDate} onChange={(e) => setCustomEndDate(e.target.value)} className="modern-date-input" />
-          </div>
-        </div>
-      )}
-
-      {showRoleFilter && (
-        <div className="filter-row entity-filter">
-          <label>Role Filter:</label>
-          <div className="entity-selector">
-            <input type="text" placeholder="Search role to filter all data..." value={tempRoleSearch} onChange={(e) => setTempRoleSearch(e.target.value)} onFocus={() => setShowRoleDropdown(true)} onBlur={() => setTimeout(() => setShowRoleDropdown(false), 200)} className="modern-entity-search" />
-            {showRoleDropdown && filteredRoles.length > 0 && (
-              <div className="entity-dropdown">
-                <div className="entity-option" onMouseDown={() => { clearRoleFilter(); setShowRoleDropdown(false); }}>
-                  <div className="entity-info"><span className="entity-name">Clear Role Filter</span></div>
-                  <span className="entity-id">✕</span>
-                </div>
-                {filteredRoles.slice(0, 20).map(role => (
-                  <div key={role.id} className={`entity-option ${tempRoleId === role.id ? 'selected' : ''}`} onMouseDown={() => handleTempRoleSelect(role)}>
-                    <div className="entity-info">
-                      <span className="entity-color-dot" style={{ backgroundColor: role.color || '#99aab5' }}></span>
-                      <span className="entity-name">{role.name}</span>
-                    </div>
-                    <span className="entity-id">ID: {role.id}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {showApplyButton && (
-              <div className="apply-button-container">
-                <button className="apply-button" onClick={applyRoleFilter}>Apply Role Filter</button>
-                <button className="clear-button" onClick={clearRoleFilter}>Clear</button>
-              </div>
-            )}
-            {selectedRoleId && !showApplyButton && (
-              <div className="active-role-filter">
-                <span>Active filter: {getRoleName(selectedRoleId)}</span>
-                <button onClick={clearRoleFilter}>✕</button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {selectedView === 'user' && (
-        <div className="filter-row entity-filter">
-          <label>Select User:</label>
-          <div className="entity-selector">
-            <input type="text" placeholder="Search by name or ID..." value={userSearch} onChange={(e) => setUserSearch(e.target.value)} onFocus={() => setShowUserDropdown(true)} onBlur={() => setTimeout(() => setShowUserDropdown(false), 200)} className="modern-entity-search" />
-            {showUserDropdown && filteredUsers.length > 0 && (
-              <div className="entity-dropdown">
-                {filteredUsers.slice(0, 20).map(user => (
-                  <div key={user.id} className={`entity-option ${selectedUserId === user.id ? 'selected' : ''}`} onMouseDown={() => handleUserSelect(user)}>
-                    <div className="entity-info"><span className="entity-name">{user.global_name || user.username || user.name || `User ${user.id}`}</span></div>
-                    <span className="entity-id">ID: {user.id}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {selectedView === 'channel' && (
-        <div className="filter-row entity-filter">
-          <label>Channel:</label>
-          <div className="entity-selector">
-            <input type="text" placeholder="Search by name or ID..." value={channelSearch} onChange={(e) => setChannelSearch(e.target.value)} onFocus={() => setShowChannelDropdown(true)} onBlur={() => setTimeout(() => setShowChannelDropdown(false), 200)} className="modern-entity-search" />
-            {showChannelDropdown && filteredChannels.length > 0 && (
-              <div className="entity-dropdown">
-                {filteredChannels.slice(0, 20).map(channel => (
-                  <div key={channel.id} className={`entity-option ${selectedChannelId === channel.id ? 'selected' : ''}`} onMouseDown={() => handleChannelSelect(channel)}>
-                    <div className="entity-info">
-                      <span className="entity-name">{channel.name}</span>
-                      {channel.type && <span className="entity-id">{channel.type}</span>}
-                    </div>
-                    <span className="entity-id">ID: {channel.id}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {selectedView === 'category' && (
-        <div className="filter-row entity-filter">
-          <label>Category:</label>
-          <div className="entity-selector">
-            <input type="text" placeholder="Search by name or ID..." value={categorySearch} onChange={(e) => setCategorySearch(e.target.value)} onFocus={() => setShowCategoryDropdown(true)} onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)} className="modern-entity-search" />
-            {showCategoryDropdown && filteredCategories.length > 0 && (
-              <div className="entity-dropdown">
-                {filteredCategories.slice(0, 20).map(category => (
-                  <div key={category.id} className={`entity-option ${selectedCategoryId === category.id ? 'selected' : ''}`} onMouseDown={() => handleCategorySelect(category)}>
-                    <div className="entity-info"><span className="entity-name">{category.name}</span></div>
-                    <span className="entity-id">ID: {category.id}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-  // Server / Channel / Category scope leaderboards block
-  const ScopeLeaderboards = ({
-    loadingSent, topSentData,
-    loadingReceived, topReceivedData,
-    loadingRatioHigh, topRatioHighData,
-    loadingRatioLow, topRatioLowData,
-    summaryData, scopeName
-  }) => (
-    <>
-      <div className="summary-stats">
-        {loadingSummaryStats ? (
-          <>
-            <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
-            <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
-            <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
-          </>
-        ) : summaryData && (
-          <>
-            <div className="stat-card">
-              <h3>Total Mentions Sent</h3>
-              <p className="stat-value">{(summaryData.totalSent || 0).toLocaleString()}</p>
-            </div>
-            <div className="stat-card">
-              <h3>Total Mentions Received</h3>
-              <p className="stat-value">{(summaryData.totalReceived || 0).toLocaleString()}</p>
-            </div>
-            <div className="stat-card">
-              <h3>Avg Mentions Ratio</h3>
-              <p className="stat-value">{summaryData.avgRatio || 'N/A'}</p>
-            </div>
-            <div className="stat-card">
-              <h3>Active Users</h3>
-              <p className="stat-value">{(summaryData.activeUsers || 0).toLocaleString()}</p>
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="leaderboards-section">
-        <h2 className="section-title">Leaderboards {scopeName ? `— ${scopeName}` : ''}</h2>
-        <div className="leaderboards-stack">
-          {loadingSent ? <LoadingCard /> : topSentData.length > 0 ? (
-            <div className="leaderboard-wrapper">
-              <Leaderboard data={topSentData} title="Top Mention Senders" valueLabel="Mentions Sent" valueFormatter={formatValue} showProfilePictures={true} itemType="user" nameKey="name" valueKey="value" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
-                getProfilePicture={async (userId) => { const u = topSentData.find(x => x.userId === userId); return u?.avatar || null; }} />
-            </div>
-          ) : <div className="no-data-message">No mention sent data available</div>}
-
-          {loadingReceived ? <LoadingCard /> : topReceivedData.length > 0 ? (
-            <div className="leaderboard-wrapper">
-              <Leaderboard data={topReceivedData} title="Top Mention Receivers" valueLabel="Mentions Received" valueFormatter={formatValue} showProfilePictures={true} itemType="user" nameKey="name" valueKey="value" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
-                getProfilePicture={async (userId) => { const u = topReceivedData.find(x => x.userId === userId); return u?.avatar || null; }} />
-            </div>
-          ) : <div className="no-data-message">No mention received data available</div>}
-
-          {loadingRatioHigh ? <LoadingCard /> : topRatioHighData.length > 0 ? (
-            <div className="leaderboard-wrapper">
-              <Leaderboard data={topRatioHighData} title="Most Popular (High Ratio)" valueLabel="Ratio" valueFormatter={(v, item) => item?.ratioDisplay ? `${item.ratioDisplay}x` : `${v}`} showProfilePictures={true} itemType="user" nameKey="name" valueKey="ratioDisplay" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
-                getProfilePicture={async (userId) => { const u = topRatioHighData.find(x => x.userId === userId); return u?.avatar || null; }} />
-            </div>
-          ) : <div className="no-data-message">No ratio data available</div>}
-
-          {loadingRatioLow ? <LoadingCard /> : topRatioLowData.length > 0 ? (
-            <div className="leaderboard-wrapper">
-              <Leaderboard data={topRatioLowData} title="Most Ignored (Low Ratio)" valueLabel="Ratio" valueFormatter={(v, item) => item?.ratioDisplay ? `${item.ratioDisplay}x` : `${v}`} showProfilePictures={true} itemType="user" nameKey="name" valueKey="ratioDisplay" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
-                getProfilePicture={async (userId) => { const u = topRatioLowData.find(x => x.userId === userId); return u?.avatar || null; }} />
-            </div>
-          ) : <div className="no-data-message">No ratio data available</div>}
-        </div>
-      </div>
-    </>
-  );
-
-  const MainContent = () => (
-    <div className="dashboard-content">
-      <FiltersSection showRoleFilter={selectedView !== 'user'} />
-
-      {selectedView === 'server' && (
-        <ScopeLeaderboards
-          loadingSent={loadingTopSent} topSentData={topSent}
-          loadingReceived={loadingTopReceived} topReceivedData={topReceived}
-          loadingRatioHigh={loadingTopRatioHigh} topRatioHighData={topRatioHigh}
-          loadingRatioLow={loadingTopRatioLow} topRatioLowData={topRatioLow}
-          summaryData={serverSummary}
-          scopeName=""
-        />
-      )}
-
-      {selectedView === 'user' && (
-        <>
-          {!selectedUserId ? (
-            <div className="no-selection">
-              <h2>Select a User</h2>
-              <p>Please select a user from the dropdown above to view their mention statistics.</p>
-            </div>
-          ) : (
-            <>
-              {/* Sub-scope selector for user view */}
-              <div className="sub-scope-section">
-                <label>Scope:</label>
-                <select value={userSubScope} onChange={(e) => { setUserSubScope(e.target.value); setUserScopeChannelId(""); setUserScopeCategoryId(""); setUserScopeChannelSearch(""); setUserScopeCategorySearch(""); }} className="modern-select" style={{ minWidth: '160px' }}>
-                  <option value="server">Server</option>
-                  <option value="channel">Channel</option>
-                  <option value="category">Category</option>
-                </select>
-
-                {userSubScope === 'channel' && (
-                  <div style={{ position: 'relative', minWidth: '250px' }}>
-                    <input type="text" placeholder="Search channel..." value={userScopeChannelSearch} onChange={(e) => setUserScopeChannelSearch(e.target.value)} onFocus={() => setShowUserScopeChannelDropdown(true)} onBlur={() => setTimeout(() => setShowUserScopeChannelDropdown(false), 200)} className="modern-entity-search" />
-                    {showUserScopeChannelDropdown && filteredChannels.length > 0 && (
-                      <div className="entity-dropdown">
-                        {filteredChannels.slice(0, 20).map(ch => (
-                          <div key={ch.id} className={`entity-option ${userScopeChannelId === ch.id ? 'selected' : ''}`} onMouseDown={() => { setUserScopeChannelId(ch.id); setUserScopeChannelSearch(ch.name); setShowUserScopeChannelDropdown(false); }}>
-                            <span className="entity-name">{ch.name}</span>
-                            <span className="entity-id">ID: {ch.id}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {userSubScope === 'category' && (
-                  <div style={{ position: 'relative', minWidth: '250px' }}>
-                    <input type="text" placeholder="Search category..." value={userScopeCategorySearch} onChange={(e) => setUserScopeCategorySearch(e.target.value)} onFocus={() => setShowUserScopeCategoryDropdown(true)} onBlur={() => setTimeout(() => setShowUserScopeCategoryDropdown(false), 200)} className="modern-entity-search" />
-                    {showUserScopeCategoryDropdown && filteredCategories.length > 0 && (
-                      <div className="entity-dropdown">
-                        {filteredCategories.slice(0, 20).map(cat => (
-                          <div key={cat.id} className={`entity-option ${userScopeCategoryId === cat.id ? 'selected' : ''}`} onMouseDown={() => { setUserScopeCategoryId(cat.id); setUserScopeCategorySearch(cat.name); setShowUserScopeCategoryDropdown(false); }}>
-                            <span className="entity-name">{cat.name}</span>
-                            <span className="entity-id">ID: {cat.id}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="summary-stats">
-                {loadingSummaryStats ? (
-                  <>
-                    <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
-                    <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
-                    <div className="stat-card"><LoadingSpinner size="small" text="" /></div>
-                  </>
-                ) : userSummary && (
-                  <>
-                    <div className="stat-card">
-                      <h3>Total Mentions Sent</h3>
-                      <p className="stat-value">{(userSummary.mentionsSent || 0).toLocaleString()}</p>
-                    </div>
-                    <div className="stat-card">
-                      <h3>Total Mentions Received</h3>
-                      <p className="stat-value">{(userSummary.mentionsReceived || 0).toLocaleString()}</p>
-                    </div>
-                    <div className="stat-card">
-                      <h3>Mentions Ratio</h3>
-                      <p className="stat-value">{userSummary.ratio || 'N/A'}</p>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="leaderboards-section">
-                <h2 className="section-title">Mention Interactions</h2>
-                <div className="leaderboards-stack">
-                  {loadingUserMentionsTo ? <LoadingCard /> : userMentionsTo.length > 0 ? (
-                    <div className="leaderboard-wrapper">
-                      <Leaderboard data={userMentionsTo} title="Users They Mentioned Most" valueLabel="Times Mentioned" valueFormatter={formatValue} showProfilePictures={true} itemType="user" nameKey="name" valueKey="value" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
-                        getProfilePicture={async (userId) => { const u = userMentionsTo.find(x => x.userId === userId); return u?.avatar || null; }} />
-                    </div>
-                  ) : <div className="no-data-message">No outgoing mention data available for this user</div>}
-
-                  {loadingUserMentionsFrom ? <LoadingCard /> : userMentionsFrom.length > 0 ? (
-                    <div className="leaderboard-wrapper">
-                      <Leaderboard data={userMentionsFrom} title="Users Who Mentioned Them Most" valueLabel="Times Mentioned" valueFormatter={formatValue} showProfilePictures={true} itemType="user" nameKey="name" valueKey="value" idKey="userId" backgroundColor="transparent" cardBackground="#1a1a1a" accentColor="#aa00ff"
-                        getProfilePicture={async (userId) => { const u = userMentionsFrom.find(x => x.userId === userId); return u?.avatar || null; }} />
-                    </div>
-                  ) : <div className="no-data-message">No incoming mention data available for this user</div>}
-                </div>
-              </div>
-            </>
-          )}
-        </>
-      )}
-
-      {selectedView === 'channel' && (
-        <>
-          {!selectedChannelId ? (
-            <div className="no-selection">
-              <h2>Select a Channel</h2>
-              <p>Please select a channel from the dropdown above to view its mention statistics.</p>
-            </div>
-          ) : (
-            <ScopeLeaderboards
-              loadingSent={loadingChannelTopSent} topSentData={channelTopSent}
-              loadingReceived={loadingChannelTopReceived} topReceivedData={channelTopReceived}
-              loadingRatioHigh={loadingChannelTopRatioHigh} topRatioHighData={channelTopRatioHigh}
-              loadingRatioLow={loadingChannelTopRatioLow} topRatioLowData={channelTopRatioLow}
-              summaryData={channelSummary}
-              scopeName={getChannelName(selectedChannelId)}
-            />
-          )}
-        </>
-      )}
-
-      {selectedView === 'category' && (
-        <>
-          {!selectedCategoryId ? (
-            <div className="no-selection">
-              <h2>Select a Category</h2>
-              <p>Please select a category from the dropdown above to view its mention statistics.</p>
-            </div>
-          ) : (
-            <ScopeLeaderboards
-              loadingSent={loadingCategoryTopSent} topSentData={categoryTopSent}
-              loadingReceived={loadingCategoryTopReceived} topReceivedData={categoryTopReceived}
-              loadingRatioHigh={loadingCategoryTopRatioHigh} topRatioHighData={categoryTopRatioHigh}
-              loadingRatioLow={loadingCategoryTopRatioLow} topRatioLowData={categoryTopRatioLow}
-              summaryData={categorySummary}
-              scopeName={getCategoryName(selectedCategoryId)}
-            />
-          )}
-        </>
-      )}
-    </div>
-  );
+  // Assemble all props for MainContent
+  const mainContentProps = {
+    selectedView, setSelectedView,
+    timePeriod, setTimePeriod,
+    customDaysBack, setCustomDaysBack,
+    customStartDate, setCustomStartDate,
+    customEndDate, setCustomEndDate,
+    timePeriodOptions,
+    tempRoleSearch, setTempRoleSearch,
+    showRoleDropdown, setShowRoleDropdown,
+    filteredRoles, tempRoleId,
+    handleTempRoleSelect, clearRoleFilter,
+    showApplyButton, applyRoleFilter,
+    selectedRoleId, getRoleName,
+    userSearch, setUserSearch,
+    showUserDropdown, setShowUserDropdown,
+    filteredUsers, selectedUserId, handleUserSelect,
+    channelSearch, setChannelSearch,
+    showChannelDropdown, setShowChannelDropdown,
+    filteredChannels, selectedChannelId, handleChannelSelect,
+    categorySearch, setCategorySearch,
+    showCategoryDropdown, setShowCategoryDropdown,
+    filteredCategories, selectedCategoryId, handleCategorySelect,
+    userSubScope, setUserSubScope,
+    userScopeChannelId, setUserScopeChannelId,
+    userScopeCategoryId, setUserScopeCategoryId,
+    userScopeChannelSearch, setUserScopeChannelSearch,
+    userScopeCategorySearch, setUserScopeCategorySearch,
+    showUserScopeChannelDropdown, setShowUserScopeChannelDropdown,
+    showUserScopeCategoryDropdown, setShowUserScopeCategoryDropdown,
+    loadingSummaryStats,
+    loadingTopSent, loadingTopReceived, loadingTopRatioHigh, loadingTopRatioLow,
+    loadingUserMentionsTo, loadingUserMentionsFrom,
+    loadingChannelTopSent, loadingChannelTopReceived, loadingChannelTopRatioHigh, loadingChannelTopRatioLow,
+    loadingCategoryTopSent, loadingCategoryTopReceived, loadingCategoryTopRatioHigh, loadingCategoryTopRatioLow,
+    serverSummary, userSummary, channelSummary, categorySummary,
+    topSent, topReceived, topRatioHigh, topRatioLow,
+    userMentionsTo, userMentionsFrom,
+    channelTopSent, channelTopReceived, channelTopRatioHigh, channelTopRatioLow,
+    categoryTopSent, categoryTopReceived, categoryTopRatioHigh, categoryTopRatioLow,
+    formatValue, getChannelName, getCategoryName,
+  };
 
   // ---- Render states ----
 
@@ -1825,7 +2031,7 @@ const MentionsDashboard = () => {
               <div className="public-banner">
                 <p>Viewing statistics from the <strong>StatsHQ</strong> support server — <a href={`${API_BASE_URL}/api/auth/discord`}>Login</a> to see your own server stats</p>
               </div>
-              <MainContent />
+              <MainContent {...mainContentProps} />
             </div>
             <Footer />
           </main>
@@ -1859,7 +2065,7 @@ const MentionsDashboard = () => {
       <div className="dashboard-page">
         <DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} isPublicMode={false} />
         <main className="dashboard-main">
-          <MainContent />
+          <MainContent {...mainContentProps} />
           <Footer />
         </main>
       </div>
