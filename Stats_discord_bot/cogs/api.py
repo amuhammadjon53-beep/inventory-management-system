@@ -13533,6 +13533,2300 @@ class DatabaseStatsAPI:
         except Exception as e:
             logger.error(f"Failed to fetch category mentions received leaderboard: {e}")
             return []
+        
+    # Add these methods to the DatabaseStatsAPI class (around line 5000+ where other query methods are)
+
+    # ======================================================================
+    # SERVER DISTRIBUTION QUERIES
+    # ======================================================================
+
+    async def q_server_distribution_messages(self, guild_id: str,
+                                            role_filter_ids: Optional[List[str]] = None,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get message distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(message_count), 0) as message_count
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [int(guild_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'message_tracking_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['message_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server message distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    async def q_server_distribution_voice(self, guild_id: str,
+                                        role_filter_ids: Optional[List[str]] = None,
+                                        start_time: Optional[datetime] = None,
+                                        end_time: Optional[datetime] = None,
+                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get voice distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            state_flags_filter = await self._get_voice_state_filter_value(guild_id)
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(total_seconds), 0) as total_seconds
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [int(guild_id)]
+                
+                if state_flags_filter is not None:
+                    query += f" AND state_flags = ${len(params) + 1}"
+                    params.append(state_flags_filter)
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_voice_state_filter(query, params, guild_id, 'state_flags')
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'voice_session_history_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total_seconds = 0
+                peak_hour = -1
+                peak_seconds = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    seconds = row['total_seconds'] or 0
+                    result[f'hour_{hour}'] = seconds
+                    total_seconds += seconds
+                    if seconds > peak_seconds:
+                        peak_seconds = seconds
+                        peak_hour = hour
+                
+                result['total_seconds'] = total_seconds
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server voice distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    async def q_server_distribution_activity(self, guild_id: str,
+                                            role_filter_ids: Optional[List[str]] = None,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get activity distribution by hour for a server using activity_sessions_hourly table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(session_count), 0) as activity_count
+                    FROM activity_sessions_hourly ash
+                    WHERE ash.guild_id = $1
+                '''
+                params = [int(guild_id)]
+                
+                if start_time:
+                    query += f" AND ash.hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND ash.hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND ash.user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'activity_sessions_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['activity_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server activity distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    async def q_server_distribution_joins(self, guild_id: str,
+                                        start_time: Optional[datetime] = None,
+                                        end_time: Optional[datetime] = None,
+                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get join distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(join_count), 0) as join_count
+                    FROM member_joins_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [int(guild_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'member_joins_hourly')
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'member_joins_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['join_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server joins distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    async def q_server_distribution_leaves(self, guild_id: int,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get leave distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(leave_count), 0) as leave_count
+                    FROM member_leaves_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [int(guild_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'member_leaves_hourly')
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'member_leaves_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['leave_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server leaves distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    async def q_server_distribution_invites(self, guild_id: str,
+                                            role_filter_ids: Optional[List[str]] = None,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get invite distribution by hour for a server using invite_tracking table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COUNT(*) as invite_count
+                    FROM invite_tracking
+                    WHERE guild_id = $1
+                    AND invite_type IN ('valid', 'suspicious')
+                '''
+                params = [int(guild_id)]
+                
+                if start_time:
+                    query += f" AND created_at >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND created_at <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+                
+                if role_filter_ids:
+                    inviter_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if inviter_ids:
+                        query += f" AND inviter_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(inviter_ids)
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'invite_tracking',
+                    include_users=True, include_channels=False
+                )
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['invite_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server invites distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    async def q_server_distribution_mentions_sent(self, guild_id: str,
+                                                    role_filter_ids: Optional[List[str]] = None,
+                                                    start_time: Optional[datetime] = None,
+                                                    end_time: Optional[datetime] = None,
+                                                    timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions sent distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [int(guild_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server mentions sent distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    async def q_server_distribution_mentions_received(self, guild_id: int,
+                                                        role_filter_ids: Optional[List[str]] = None,
+                                                        start_time: Optional[datetime] = None,
+                                                        end_time: Optional[datetime] = None,
+                                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions received distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [int(guild_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server mentions received distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    async def q_server_distribution_emoji_usage(self, guild_id: str,
+                                                role_filter_ids: Optional[List[str]] = None,
+                                                start_time: Optional[datetime] = None,
+                                                end_time: Optional[datetime] = None,
+                                                usage_type: Optional[str] = None,
+                                                timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get emoji usage distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(usage_count), 0) as usage_count
+                    FROM emoji_usage_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [int(guild_id)]
+                
+                if usage_type:
+                    query += f" AND usage_type = ${len(params) + 1}"
+                    params.append(usage_type)
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'emoji_usage_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'emoji_usage_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['usage_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server emoji usage distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    # ======================================================================
+    # CHANNEL DISTRIBUTION QUERIES
+    # ======================================================================
+
+    async def q_channel_distribution_messages(self, guild_id: str, channel_id: str,
+                                            role_filter_ids: Optional[List[str]] = None,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get message distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(message_count), 0) as message_count
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [int(guild_id), int(channel_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'message_tracking_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=str(channel_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['message_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel message distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+
+    async def q_channel_distribution_voice(self, guild_id: str, channel_id: str,
+                                        role_filter_ids: Optional[List[str]] = None,
+                                        start_time: Optional[datetime] = None,
+                                        end_time: Optional[datetime] = None,
+                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get voice distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            state_flags_filter = await self._get_voice_state_filter_value(guild_id)
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(total_seconds), 0) as total_seconds
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [int(guild_id), int(channel_id)]
+                
+                if state_flags_filter is not None:
+                    query += f" AND state_flags = ${len(params) + 1}"
+                    params.append(state_flags_filter)
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_voice_state_filter(query, params, guild_id, 'state_flags')
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'voice_session_history_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=str(channel_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total_seconds = 0
+                peak_hour = -1
+                peak_seconds = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    seconds = row['total_seconds'] or 0
+                    result[f'hour_{hour}'] = seconds
+                    total_seconds += seconds
+                    if seconds > peak_seconds:
+                        peak_seconds = seconds
+                        peak_hour = hour
+                
+                result['total_seconds'] = total_seconds
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel voice distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+
+    async def q_channel_distribution_mentions_sent(self, guild_id: str, channel_id: str,
+                                                    role_filter_ids: Optional[List[str]] = None,
+                                                    start_time: Optional[datetime] = None,
+                                                    end_time: Optional[datetime] = None,
+                                                    timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions sent distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [int(guild_id), int(channel_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=str(channel_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel mentions sent distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+
+    async def q_channel_distribution_mentions_received(self, guild_id: str, channel_id: int,
+                                                        role_filter_ids: Optional[List[str]] = None,
+                                                        start_time: Optional[datetime] = None,
+                                                        end_time: Optional[datetime] = None,
+                                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions received distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [int(guild_id), int(channel_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=str(channel_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel mentions received distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+
+    async def q_channel_distribution_emoji_usage(self, guild_id: str, channel_id: int,
+                                                role_filter_ids: Optional[List[str]] = None,
+                                                start_time: Optional[datetime] = None,
+                                                end_time: Optional[datetime] = None,
+                                                usage_type: Optional[str] = None,
+                                                timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get emoji usage distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(usage_count), 0) as usage_count
+                    FROM emoji_usage_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [int(guild_id), int(channel_id)]
+                
+                if usage_type:
+                    query += f" AND usage_type = ${len(params) + 1}"
+                    params.append(usage_type)
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'emoji_usage_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'emoji_usage_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=str(channel_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['usage_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel emoji usage distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+
+    # ======================================================================
+    # CATEGORY DISTRIBUTION QUERIES
+    # ======================================================================
+
+    async def q_category_distribution_messages(self, guild_id: str, category_id: str,
+                                            role_filter_ids: Optional[List[str]] = None,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get message distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(message_count), 0) as message_count
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [int(guild_id), int(category_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'message_tracking_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=str(category_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['message_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category message distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+
+    async def q_category_distribution_voice(self, guild_id: str, category_id: int,
+                                            role_filter_ids: Optional[List[str]] = None,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get voice distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            state_flags_filter = await self._get_voice_state_filter_value(guild_id)
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(total_seconds), 0) as total_seconds
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [int(guild_id), int(category_id)]
+                
+                if state_flags_filter is not None:
+                    query += f" AND state_flags = ${len(params) + 1}"
+                    params.append(state_flags_filter)
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_voice_state_filter(query, params, guild_id, 'state_flags')
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'voice_session_history_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=str(category_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total_seconds = 0
+                peak_hour = -1
+                peak_seconds = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    seconds = row['total_seconds'] or 0
+                    result[f'hour_{hour}'] = seconds
+                    total_seconds += seconds
+                    if seconds > peak_seconds:
+                        peak_seconds = seconds
+                        peak_hour = hour
+                
+                result['total_seconds'] = total_seconds
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category voice distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+
+    async def q_category_distribution_mentions_sent(self, guild_id: str, category_id: int,
+                                                    role_filter_ids: Optional[List[str]] = None,
+                                                    start_time: Optional[datetime] = None,
+                                                    end_time: Optional[datetime] = None,
+                                                    timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions sent distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [int(guild_id), int(category_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=str(category_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category mentions sent distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+
+    async def q_category_distribution_mentions_received(self, guild_id: str, category_id: int,
+                                                        role_filter_ids: Optional[List[str]] = None,
+                                                        start_time: Optional[datetime] = None,
+                                                        end_time: Optional[datetime] = None,
+                                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions received distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [int(guild_id), int(category_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=str(category_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category mentions received distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+
+    async def q_category_distribution_emoji_usage(self, guild_id: str, category_id: int,
+                                                role_filter_ids: Optional[List[str]] = None,
+                                                start_time: Optional[datetime] = None,
+                                                end_time: Optional[datetime] = None,
+                                                usage_type: Optional[str] = None,
+                                                timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get emoji usage distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(usage_count), 0) as usage_count
+                    FROM emoji_usage_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [int(guild_id), int(category_id)]
+                
+                if usage_type:
+                    query += f" AND usage_type = ${len(params) + 1}"
+                    params.append(usage_type)
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'emoji_usage_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'emoji_usage_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=str(category_id)
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['usage_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category emoji usage distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+
+    # ======================================================================
+    # USER DISTRIBUTION QUERIES
+    # ======================================================================
+
+    async def q_user_distribution_messages(self, guild_id: str, user_id: str,
+                                        role_filter_ids: Optional[List[str]] = None,
+                                        start_time: Optional[datetime] = None,
+                                        end_time: Optional[datetime] = None,
+                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get message distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(message_count), 0) as message_count
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1 AND user_id = $2
+                '''
+                params = [int(guild_id), int(user_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and int(user_id) not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'message_tracking_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['message_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user message distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+
+    async def q_user_distribution_voice(self, guild_id: str, user_id: str,
+                                        role_filter_ids: Optional[List[str]] = None,
+                                        start_time: Optional[datetime] = None,
+                                        end_time: Optional[datetime] = None,
+                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get voice distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            state_flags_filter = await self._get_voice_state_filter_value(guild_id)
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(total_seconds), 0) as total_seconds
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1 AND user_id = $2
+                '''
+                params = [int(guild_id), int(user_id)]
+                
+                if state_flags_filter is not None:
+                    query += f" AND state_flags = ${len(params) + 1}"
+                    params.append(state_flags_filter)
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_voice_state_filter(query, params, guild_id, 'state_flags')
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and int(user_id) not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'voice_session_history_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total_seconds = 0
+                peak_hour = -1
+                peak_seconds = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    seconds = row['total_seconds'] or 0
+                    result[f'hour_{hour}'] = seconds
+                    total_seconds += seconds
+                    if seconds > peak_seconds:
+                        peak_seconds = seconds
+                        peak_hour = hour
+                
+                result['total_seconds'] = total_seconds
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user voice distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+
+    async def q_user_distribution_activity(self, guild_id: str, user_id: int,
+                                        role_filter_ids: Optional[List[str]] = None,
+                                        start_time: Optional[datetime] = None,
+                                        end_time: Optional[datetime] = None,
+                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get activity distribution by hour for a user using activity_sessions_hourly table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(session_count), 0) as activity_count
+                    FROM activity_sessions_hourly ash
+                    WHERE ash.guild_id = $1 AND ash.user_id = $2
+                '''
+                params = [int(guild_id), int(user_id)]
+                
+                if start_time:
+                    query += f" AND ash.hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND ash.hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and int(user_id) not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'activity_sessions_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['activity_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user activity distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+
+    async def q_user_distribution_invites_sent(self, guild_id: str, user_id: int,
+                                                role_filter_ids: Optional[List[str]] = None,
+                                                start_time: Optional[datetime] = None,
+                                                end_time: Optional[datetime] = None,
+                                                timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get invite distribution by hour for a user (invites they sent)."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COUNT(*) as invite_count
+                    FROM invite_tracking
+                    WHERE guild_id = $1 
+                    AND inviter_id = $2
+                    AND invite_type IN ('valid', 'suspicious')
+                '''
+                params = [int(guild_id), int(user_id)]
+                
+                if start_time:
+                    query += f" AND created_at >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND created_at <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and int(user_id) not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'invite_tracking',
+                    include_users=True, include_channels=False
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['invite_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user invites sent distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+
+    async def q_user_distribution_mentions_sent(self, guild_id: str, user_id: int,
+                                                role_filter_ids: Optional[List[str]] = None,
+                                                start_time: Optional[datetime] = None,
+                                                end_time: Optional[datetime] = None,
+                                                timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions sent distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioner_user_id = $2
+                '''
+                params = [int(guild_id), int(user_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and int(user_id) not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user mentions sent distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+
+    async def q_user_distribution_mentions_received(self, guild_id: str, user_id: int,
+                                                    role_filter_ids: Optional[List[str]] = None,
+                                                    start_time: Optional[datetime] = None,
+                                                    end_time: Optional[datetime] = None,
+                                                    timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions received distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioned_user_id = $2
+                '''
+                params = [int(guild_id), int(user_id)]
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and int(user_id) not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user mentions received distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+
+    async def q_user_distribution_emoji_usage(self, guild_id: str, user_id: int,
+                                            role_filter_ids: Optional[List[str]] = None,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            usage_type: Optional[str] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get emoji usage distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(usage_count), 0) as usage_count
+                    FROM emoji_usage_hourly
+                    WHERE guild_id = $1 AND user_id = $2
+                '''
+                params = [int(guild_id), int(user_id)]
+                
+                if usage_type:
+                    query += f" AND usage_type = ${len(params) + 1}"
+                    params.append(usage_type)
+                
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'emoji_usage_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and int(user_id) not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'emoji_usage_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['usage_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user emoji usage distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+            
+    async def q_server_distribution_activity_sessions(self, guild_id: str,
+                                                   role_filter_ids: Optional[List[str]] = None,
+                                                   start_time: Optional[datetime] = None,
+                                                   end_time: Optional[datetime] = None,
+                                                   timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get activity session count distribution by hour for a server using activity_sessions_hourly table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(session_count), 0) as session_count
+                    FROM activity_sessions_hourly ash
+                    WHERE ash.guild_id = $1
+                '''
+                params = [int(guild_id)]
+                
+                if start_time:
+                    query += f" AND ash.hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND ash.hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND ash.user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'activity_sessions_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['session_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server activity session distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+
+    async def q_user_distribution_activity_sessions(self, guild_id: str, user_id: str,
+                                                    role_filter_ids: Optional[List[str]] = None,
+                                                    start_time: Optional[datetime] = None,
+                                                    end_time: Optional[datetime] = None,
+                                                    timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get activity session count distribution by hour for a user using activity_sessions_hourly table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        try:
+            start_time = ensure_aware(start_time) if start_time else None
+            end_time = ensure_aware(end_time) if end_time else None
+            
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(session_count), 0) as session_count
+                    FROM activity_sessions_hourly ash
+                    WHERE ash.guild_id = $1 AND ash.user_id = $2
+                '''
+                params = [int(guild_id), int(user_id)]
+                
+                if start_time:
+                    query += f" AND ash.hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND ash.hour <= ${len(params) + 1}"
+                    params.append(end_time)
+                
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
+                
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and int(user_id) not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'activity_sessions_hourly',
+                    include_users=True, include_channels=True
+                )
+                
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+                
+                rows = await conn.fetch(query, *params)
+                
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+                
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['session_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+                
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+        
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user activity session distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
 
 
 fernet_key = os.getenv('FERNET_KEY')
@@ -25515,7 +27809,1656 @@ async def category_top_channels_voice(
         logger.error(f"Error in category_top_channels_voice: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+    
+# Add these endpoints to your FastAPI app (around line 25000+ where other endpoints are)
 
+# ======================================================================
+# SERVER DISTRIBUTION ENDPOINTS
+# ======================================================================
+
+@app.post("/api/server/distribution/messages")
+async def server_distribution_messages(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server message distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        # Convert dates
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        # Check if this is a public request (unauthenticated + StatsHQ guild)
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+
+        # For non-public guilds, require authentication
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required for non-public guilds")
+
+        # Verify user has access if authenticated
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        # Convert role_filter_ids to list if provided
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_messages(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/server/distribution/voice")
+async def server_distribution_voice(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server voice distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_voice(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/server/distribution/activity")
+async def server_distribution_activity(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server activity distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_activity(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/server/distribution/joins")
+async def server_distribution_joins(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server join distribution by hour.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        result = await db_stats.q_server_distribution_joins(
+            guild_id=guild_id,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_joins: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_joins: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/server/distribution/leaves")
+async def server_distribution_leaves(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server leave distribution by hour.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        result = await db_stats.q_server_distribution_leaves(
+            guild_id=guild_id,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_leaves: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_leaves: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/server/distribution/invites")
+async def server_distribution_invites(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server invite distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_invites(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_invites: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_invites: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/server/distribution/mentions-sent")
+async def server_distribution_mentions_sent(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server mentions sent distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_mentions_sent(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_mentions_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_mentions_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/server/distribution/mentions-received")
+async def server_distribution_mentions_received(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server mentions received distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_mentions_received(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_mentions_received: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_mentions_received: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/server/distribution/emoji-usage")
+async def server_distribution_emoji_usage(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server emoji usage distribution by hour with role filtering.
+    Can filter by usage_type: 'message', 'reaction', or None for both.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        usage_type = body.get('usage_type')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_emoji_usage(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            usage_type=usage_type,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_emoji_usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_emoji_usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ======================================================================
+# CHANNEL DISTRIBUTION ENDPOINTS
+# ======================================================================
+
+@app.post("/api/channel/distribution/messages")
+async def channel_distribution_messages(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get channel message distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not channel_id:
+            raise HTTPException(status_code=400, detail="guild_id and channel_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_messages(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in channel_distribution_messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in channel_distribution_messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/channel/distribution/voice")
+async def channel_distribution_voice(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get channel voice distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not channel_id:
+            raise HTTPException(status_code=400, detail="guild_id and channel_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_voice(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in channel_distribution_voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in channel_distribution_voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/channel/distribution/mentions-sent")
+async def channel_distribution_mentions_sent(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get channel mentions sent distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not channel_id:
+            raise HTTPException(status_code=400, detail="guild_id and channel_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_mentions_sent(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in channel_distribution_mentions_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in channel_distribution_mentions_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/channel/distribution/mentions-received")
+async def channel_distribution_mentions_received(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get channel mentions received distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not channel_id:
+            raise HTTPException(status_code=400, detail="guild_id and channel_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_mentions_received(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in channel_distribution_mentions_received: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in channel_distribution_mentions_received: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/channel/distribution/emoji-usage")
+async def channel_distribution_emoji_usage(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get channel emoji usage distribution by hour with role filtering.
+    Can filter by usage_type: 'message', 'reaction', or None for both.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        usage_type = body.get('usage_type')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not channel_id:
+            raise HTTPException(status_code=400, detail="guild_id and channel_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_emoji_usage(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            usage_type=usage_type,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in channel_distribution_emoji_usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in channel_distribution_emoji_usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ======================================================================
+# CATEGORY DISTRIBUTION ENDPOINTS
+# ======================================================================
+
+@app.post("/api/category/distribution/messages")
+async def category_distribution_messages(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get category message distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not category_id:
+            raise HTTPException(status_code=400, detail="guild_id and category_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_messages(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in category_distribution_messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in category_distribution_messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/category/distribution/voice")
+async def category_distribution_voice(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get category voice distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not category_id:
+            raise HTTPException(status_code=400, detail="guild_id and category_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_voice(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in category_distribution_voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in category_distribution_voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/category/distribution/mentions-sent")
+async def category_distribution_mentions_sent(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get category mentions sent distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not category_id:
+            raise HTTPException(status_code=400, detail="guild_id and category_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_mentions_sent(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in category_distribution_mentions_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in category_distribution_mentions_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/category/distribution/mentions-received")
+async def category_distribution_mentions_received(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get category mentions received distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not category_id:
+            raise HTTPException(status_code=400, detail="guild_id and category_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_mentions_received(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in category_distribution_mentions_received: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in category_distribution_mentions_received: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/category/distribution/emoji-usage")
+async def category_distribution_emoji_usage(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get category emoji usage distribution by hour with role filtering.
+    Can filter by usage_type: 'message', 'reaction', or None for both.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        usage_type = body.get('usage_type')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not category_id:
+            raise HTTPException(status_code=400, detail="guild_id and category_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_emoji_usage(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            usage_type=usage_type,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in category_distribution_emoji_usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in category_distribution_emoji_usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ======================================================================
+# USER DISTRIBUTION ENDPOINTS
+# ======================================================================
+
+@app.post("/api/user/distribution/messages")
+async def user_distribution_messages(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get user message distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not user_id:
+            raise HTTPException(status_code=400, detail="guild_id and user_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_messages(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in user_distribution_messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in user_distribution_messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/user/distribution/voice")
+async def user_distribution_voice(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get user voice distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not user_id:
+            raise HTTPException(status_code=400, detail="guild_id and user_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_voice(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in user_distribution_voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in user_distribution_voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/user/distribution/activity")
+async def user_distribution_activity(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get user activity distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not user_id:
+            raise HTTPException(status_code=400, detail="guild_id and user_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_activity(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in user_distribution_activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in user_distribution_activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/user/distribution/invites-sent")
+async def user_distribution_invites_sent(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get user invite distribution by hour (invites they sent) with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not user_id:
+            raise HTTPException(status_code=400, detail="guild_id and user_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_invites_sent(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in user_distribution_invites_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in user_distribution_invites_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/user/distribution/mentions-sent")
+async def user_distribution_mentions_sent(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get user mentions sent distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not user_id:
+            raise HTTPException(status_code=400, detail="guild_id and user_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_mentions_sent(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in user_distribution_mentions_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in user_distribution_mentions_sent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/user/distribution/mentions-received")
+async def user_distribution_mentions_received(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get user mentions received distribution by hour with role filtering.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not user_id:
+            raise HTTPException(status_code=400, detail="guild_id and user_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_mentions_received(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in user_distribution_mentions_received: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in user_distribution_mentions_received: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/user/distribution/emoji-usage")
+async def user_distribution_emoji_usage(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get user emoji usage distribution by hour with role filtering.
+    Can filter by usage_type: 'message', 'reaction', or None for both.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        usage_type = body.get('usage_type')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not user_id:
+            raise HTTPException(status_code=400, detail="guild_id and user_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_emoji_usage(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            usage_type=usage_type,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in user_distribution_emoji_usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in user_distribution_emoji_usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/server/distribution/activity-sessions")
+async def server_distribution_activity_sessions(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get server activity session count distribution by hour with role filtering.
+    Returns the number of activity SESSIONS (not duration) per hour.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id:
+            raise HTTPException(status_code=400, detail="guild_id is required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_activity_sessions(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in server_distribution_activity_sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in server_distribution_activity_sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/user/distribution/activity-sessions")
+async def user_distribution_activity_sessions(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get user activity session count distribution by hour with role filtering.
+    Returns the number of activity SESSIONS (not duration) per hour.
+    Requires authentication.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if not guild_id or not user_id:
+            raise HTTPException(status_code=400, detail="guild_id and user_id are required")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        is_public_request = not user and guild_id == STATSHQ_GUILD_ID
+        if not is_public_request and not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if user and not is_public_request:
+            user_servers = await auth_db.get_user_servers(user['discord_id'])
+            if not any(str(s['guild_id']) == guild_id for s in user_servers):
+                raise HTTPException(status_code=403, detail="You are not a member of this guild")
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_activity_sessions(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(f"Database error in user_distribution_activity_sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in user_distribution_activity_sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 logger = logging.getLogger(__name__)
 
@@ -42855,6 +46798,1222 @@ async def public_server_real_roles(
     except Exception as e:
         logger.error(f"Error in public_server_real_roles: {e}", exc_info=True)
         return []
+
+# ======================================================================
+# PUBLIC (NO AUTH) SERVER DISTRIBUTION ENDPOINTS FOR STATSHQ
+# ======================================================================
+
+@app.post("/api/public/server/distribution/messages")
+async def public_server_distribution_messages(request: Request):
+    """
+    Public endpoint for server message distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_messages(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_messages: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/server/distribution/voice")
+async def public_server_distribution_voice(request: Request):
+    """
+    Public endpoint for server voice distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_voice(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_voice: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/server/distribution/activity")
+async def public_server_distribution_activity(request: Request):
+    """
+    Public endpoint for server activity distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_activity(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_activity: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/server/distribution/joins")
+async def public_server_distribution_joins(request: Request):
+    """
+    Public endpoint for server join distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        result = await db_stats.q_server_distribution_joins(
+            guild_id=guild_id,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_joins: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/server/distribution/leaves")
+async def public_server_distribution_leaves(request: Request):
+    """
+    Public endpoint for server leave distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        result = await db_stats.q_server_distribution_leaves(
+            guild_id=guild_id,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_leaves: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/server/distribution/invites")
+async def public_server_distribution_invites(request: Request):
+    """
+    Public endpoint for server invite distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_invites(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_invites: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/server/distribution/mentions-sent")
+async def public_server_distribution_mentions_sent(request: Request):
+    """
+    Public endpoint for server mentions sent distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_mentions_sent(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_mentions_sent: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/server/distribution/mentions-received")
+async def public_server_distribution_mentions_received(request: Request):
+    """
+    Public endpoint for server mentions received distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_mentions_received(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_mentions_received: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/server/distribution/emoji-usage")
+async def public_server_distribution_emoji_usage(request: Request):
+    """
+    Public endpoint for server emoji usage distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        usage_type = body.get('usage_type')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_emoji_usage(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            usage_type=usage_type,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_emoji_usage: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+# ======================================================================
+# PUBLIC CHANNEL DISTRIBUTION ENDPOINTS FOR STATSHQ
+# ======================================================================
+
+@app.post("/api/public/channel/distribution/messages")
+async def public_channel_distribution_messages(request: Request):
+    """
+    Public endpoint for channel message distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_messages(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_channel_distribution_messages: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/channel/distribution/voice")
+async def public_channel_distribution_voice(request: Request):
+    """
+    Public endpoint for channel voice distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_voice(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_channel_distribution_voice: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/channel/distribution/mentions-sent")
+async def public_channel_distribution_mentions_sent(request: Request):
+    """
+    Public endpoint for channel mentions sent distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_mentions_sent(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_channel_distribution_mentions_sent: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/channel/distribution/mentions-received")
+async def public_channel_distribution_mentions_received(request: Request):
+    """
+    Public endpoint for channel mentions received distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_mentions_received(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_channel_distribution_mentions_received: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/channel/distribution/emoji-usage")
+async def public_channel_distribution_emoji_usage(request: Request):
+    """
+    Public endpoint for channel emoji usage distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        channel_id = body.get('channel_id')
+        role_filter_ids = body.get('role_filter_ids')
+        usage_type = body.get('usage_type')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_channel_distribution_emoji_usage(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            usage_type=usage_type,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_channel_distribution_emoji_usage: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+# ======================================================================
+# PUBLIC CATEGORY DISTRIBUTION ENDPOINTS FOR STATSHQ
+# ======================================================================
+
+@app.post("/api/public/category/distribution/messages")
+async def public_category_distribution_messages(request: Request):
+    """
+    Public endpoint for category message distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_messages(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_category_distribution_messages: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/category/distribution/voice")
+async def public_category_distribution_voice(request: Request):
+    """
+    Public endpoint for category voice distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_voice(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_category_distribution_voice: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/category/distribution/mentions-sent")
+async def public_category_distribution_mentions_sent(request: Request):
+    """
+    Public endpoint for category mentions sent distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_mentions_sent(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_category_distribution_mentions_sent: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/category/distribution/mentions-received")
+async def public_category_distribution_mentions_received(request: Request):
+    """
+    Public endpoint for category mentions received distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_mentions_received(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_category_distribution_mentions_received: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/category/distribution/emoji-usage")
+async def public_category_distribution_emoji_usage(request: Request):
+    """
+    Public endpoint for category emoji usage distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        category_id = body.get('category_id')
+        role_filter_ids = body.get('role_filter_ids')
+        usage_type = body.get('usage_type')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_category_distribution_emoji_usage(
+            guild_id=guild_id,
+            category_id=category_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            usage_type=usage_type,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_category_distribution_emoji_usage: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+# ======================================================================
+# PUBLIC USER DISTRIBUTION ENDPOINTS FOR STATSHQ
+# ======================================================================
+
+@app.post("/api/public/user/distribution/messages")
+async def public_user_distribution_messages(request: Request):
+    """
+    Public endpoint for user message distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_messages(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_user_distribution_messages: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/user/distribution/voice")
+async def public_user_distribution_voice(request: Request):
+    """
+    Public endpoint for user voice distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_voice(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_user_distribution_voice: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/user/distribution/activity")
+async def public_user_distribution_activity(request: Request):
+    """
+    Public endpoint for user activity distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_activity(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_user_distribution_activity: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/user/distribution/invites-sent")
+async def public_user_distribution_invites_sent(request: Request):
+    """
+    Public endpoint for user invite distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_invites_sent(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_user_distribution_invites_sent: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/user/distribution/mentions-sent")
+async def public_user_distribution_mentions_sent(request: Request):
+    """
+    Public endpoint for user mentions sent distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_mentions_sent(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_user_distribution_mentions_sent: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/user/distribution/mentions-received")
+async def public_user_distribution_mentions_received(request: Request):
+    """
+    Public endpoint for user mentions received distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_mentions_received(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_user_distribution_mentions_received: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/user/distribution/emoji-usage")
+async def public_user_distribution_emoji_usage(request: Request):
+    """
+    Public endpoint for user emoji usage distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        usage_type = body.get('usage_type')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_emoji_usage(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            usage_type=usage_type,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_user_distribution_emoji_usage: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+    
+@app.post("/api/public/server/distribution/activity-sessions")
+async def public_server_distribution_activity_sessions(request: Request):
+    """
+    Public endpoint for server activity session count distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_server_distribution_activity_sessions(
+            guild_id=guild_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_server_distribution_activity_sessions: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
+
+
+@app.post("/api/public/user/distribution/activity-sessions")
+async def public_user_distribution_activity_sessions(request: Request):
+    """
+    Public endpoint for user activity session count distribution - only works for StatsHQ guild.
+    """
+    try:
+        body = await request.json()
+        guild_id = body.get('guild_id')
+        user_id = body.get('user_id')
+        role_filter_ids = body.get('role_filter_ids')
+        start_time_str = body.get('start_time')
+        end_time_str = body.get('end_time')
+        timezone_str = body.get('timezone_str', 'UTC')
+
+        if guild_id != STATSHQ_GUILD_ID:
+            raise HTTPException(status_code=403, detail="Access denied. This endpoint is only for public StatsHQ statistics.")
+
+        start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')) if start_time_str else None
+        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00')) if end_time_str else None
+
+        role_filter_list = None
+        if role_filter_ids:
+            if isinstance(role_filter_ids, str):
+                role_filter_list = [rid.strip() for rid in role_filter_ids.split(',') if rid.strip()]
+            else:
+                role_filter_list = role_filter_ids
+
+        result = await db_stats.q_user_distribution_activity_sessions(
+            guild_id=guild_id,
+            user_id=user_id,
+            role_filter_ids=role_filter_list,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str
+        )
+
+        result['public'] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in public_user_distribution_activity_sessions: {e}")
+        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1, 'public': True, 'error': str(e)}
 
 
 # ============================================

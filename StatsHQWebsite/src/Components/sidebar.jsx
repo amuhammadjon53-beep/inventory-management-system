@@ -395,6 +395,7 @@ const DashboardSidebar = ({
     if (path.includes('/Dashboard/Messages')) setCurrentPage('messages');
     else if (path.includes('/Dashboard/Voice Activity')) setCurrentPage('voice-activity');
     else if (path.includes('/Dashboard/Activity')) setCurrentPage('activity');
+    else if (path.includes('/Dashboard/Distribution')) setCurrentPage('distribution');
     else if (path.includes('/Dashboard/Emoji Tracking')) setCurrentPage('emojis');
     else if (path.includes('/Dashboard/Invite Tracking')) setCurrentPage('invites');
     else if (path.includes('/Dashboard/Mentions')) setCurrentPage('mentions');
@@ -561,6 +562,9 @@ const DashboardSidebar = ({
           </a>
           <a href="/Dashboard/Activity/" className={`nav-item ${currentPage === 'activity' ? 'active' : ''}`}>
             <span className="nav-icon">🎮</span>Status Activity
+          </a>
+          <a href="/Dashboard/Distribution/" className={`nav-item ${currentPage === 'distribution' ? 'active' : ''}`}>
+            <span className="nav-icon">📊</span>Distribution
           </a>
           <a href="/Dashboard/Emoji Tracking/" className={`nav-item ${currentPage === 'emojis' ? 'active' : ''}`}>
             <span className="nav-icon">😊</span>Emojis

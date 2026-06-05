@@ -14042,6 +14042,2411 @@ class DatabaseStats(commands.Cog):
             raise
 
     # ======================================================================
+    # SERVER DISTRIBUTION QUERIES
+    # ======================================================================
+
+    async def q_server_distribution_messages(self, guild_id: int,
+                                             role_filter_ids: Optional[List[int]] = None,
+                                             start_time: Optional[datetime] = None,
+                                             end_time: Optional[datetime] = None,
+                                             timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get message distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(message_count), 0) as message_count
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'message_tracking_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['message_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server message distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_server_distribution_voice(self, guild_id: int,
+                                          role_filter_ids: Optional[List[int]] = None,
+                                          start_time: Optional[datetime] = None,
+                                          end_time: Optional[datetime] = None,
+                                          timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get voice distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+            state_flags_filter = await self._get_voice_state_filter_value(guild_id)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(total_seconds), 0) as total_seconds
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+
+                if state_flags_filter is not None:
+                    query += f" AND state_flags = ${len(params) + 1}"
+                    params.append(state_flags_filter)
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_voice_state_filter(query, params, guild_id, 'state_flags')
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'voice_session_history_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total_seconds = 0
+                peak_hour = -1
+                peak_seconds = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    seconds = row['total_seconds'] or 0
+                    result[f'hour_{hour}'] = seconds
+                    total_seconds += seconds
+                    if seconds > peak_seconds:
+                        peak_seconds = seconds
+                        peak_hour = hour
+
+                result['total_seconds'] = total_seconds
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server voice distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_server_distribution_activity(self, guild_id: int,
+                                             role_filter_ids: Optional[List[int]] = None,
+                                             start_time: Optional[datetime] = None,
+                                             end_time: Optional[datetime] = None,
+                                             timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get activity distribution by hour for a server using activity_sessions_hourly table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM ash.hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(ash.session_count), 0) as activity_count
+                    FROM activity_sessions_hourly ash
+                    WHERE ash.guild_id = $1
+                '''
+                params = [guild_id]
+
+                if start_time:
+                    query += f" AND ash.hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND ash.hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND ash.user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'activity_sessions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['activity_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server activity distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_server_distribution_joins(self, guild_id: int,
+                                          start_time: Optional[datetime] = None,
+                                          end_time: Optional[datetime] = None,
+                                          timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get join distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(join_count), 0) as join_count
+                    FROM member_joins_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'member_joins_hourly')
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'member_joins_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['join_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server joins distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_server_distribution_leaves(self, guild_id: int,
+                                           start_time: Optional[datetime] = None,
+                                           end_time: Optional[datetime] = None,
+                                           timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get leave distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(leave_count), 0) as leave_count
+                    FROM member_leaves_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'member_leaves_hourly')
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'member_leaves_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['leave_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server leaves distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_server_distribution_invites(self, guild_id: int,
+                                            role_filter_ids: Optional[List[int]] = None,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get invite distribution by hour for a server using invite_tracking table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COUNT(*) as invite_count
+                    FROM invite_tracking
+                    WHERE guild_id = $1
+                    AND invite_type IN ('valid', 'suspicious')
+                '''
+                params = [guild_id]
+
+                if start_time:
+                    query += f" AND created_at >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND created_at <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+
+                if role_filter_ids:
+                    inviter_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if inviter_ids:
+                        query += f" AND inviter_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(inviter_ids)
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'invite_tracking',
+                    include_users=True, include_channels=False
+                )
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['invite_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server invites distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_server_distribution_mentions_sent(self, guild_id: int,
+                                                  role_filter_ids: Optional[List[int]] = None,
+                                                  start_time: Optional[datetime] = None,
+                                                  end_time: Optional[datetime] = None,
+                                                  timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions sent distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server mentions sent distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_server_distribution_mentions_received(self, guild_id: int,
+                                                      role_filter_ids: Optional[List[int]] = None,
+                                                      start_time: Optional[datetime] = None,
+                                                      end_time: Optional[datetime] = None,
+                                                      timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions received distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server mentions received distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    async def q_server_distribution_emoji_usage(self, guild_id: int,
+                                                role_filter_ids: Optional[List[int]] = None,
+                                                start_time: Optional[datetime] = None,
+                                                end_time: Optional[datetime] = None,
+                                                usage_type: Optional[str] = None,
+                                                timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get emoji usage distribution by hour for a server using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(usage_count), 0) as usage_count
+                    FROM emoji_usage_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+
+                if usage_type:
+                    query += f" AND usage_type = ${len(params) + 1}"
+                    params.append(usage_type)
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'emoji_usage_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'emoji_usage_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['usage_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch server emoji usage distribution",
+                context={'guild_id': guild_id},
+                original=e
+            )
+
+    # ======================================================================
+    # CHANNEL DISTRIBUTION QUERIES
+    # ======================================================================
+
+    async def q_channel_distribution_messages(self, guild_id: int, channel_id: int,
+                                              role_filter_ids: Optional[List[int]] = None,
+                                              start_time: Optional[datetime] = None,
+                                              end_time: Optional[datetime] = None,
+                                              timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get message distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(message_count), 0) as message_count
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [guild_id, channel_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'message_tracking_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=channel_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['message_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel message distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+    async def q_channel_distribution_voice(self, guild_id: int, channel_id: int,
+                                           role_filter_ids: Optional[List[int]] = None,
+                                           start_time: Optional[datetime] = None,
+                                           end_time: Optional[datetime] = None,
+                                           timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get voice distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+            state_flags_filter = await self._get_voice_state_filter_value(guild_id)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(total_seconds), 0) as total_seconds
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [guild_id, channel_id]
+
+                if state_flags_filter is not None:
+                    query += f" AND state_flags = ${len(params) + 1}"
+                    params.append(state_flags_filter)
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_voice_state_filter(query, params, guild_id, 'state_flags')
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'voice_session_history_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=channel_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total_seconds = 0
+                peak_hour = -1
+                peak_seconds = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    seconds = row['total_seconds'] or 0
+                    result[f'hour_{hour}'] = seconds
+                    total_seconds += seconds
+                    if seconds > peak_seconds:
+                        peak_seconds = seconds
+                        peak_hour = hour
+
+                result['total_seconds'] = total_seconds
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel voice distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+    async def q_channel_distribution_mentions_sent(self, guild_id: int, channel_id: int,
+                                                   role_filter_ids: Optional[List[int]] = None,
+                                                   start_time: Optional[datetime] = None,
+                                                   end_time: Optional[datetime] = None,
+                                                   timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions sent distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [guild_id, channel_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=channel_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel mentions sent distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+    async def q_channel_distribution_mentions_received(self, guild_id: int, channel_id: int,
+                                                       role_filter_ids: Optional[List[int]] = None,
+                                                       start_time: Optional[datetime] = None,
+                                                       end_time: Optional[datetime] = None,
+                                                       timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions received distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [guild_id, channel_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=channel_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel mentions received distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+    async def q_channel_distribution_emoji_usage(self, guild_id: int, channel_id: int,
+                                                 role_filter_ids: Optional[List[int]] = None,
+                                                 start_time: Optional[datetime] = None,
+                                                 end_time: Optional[datetime] = None,
+                                                 usage_type: Optional[str] = None,
+                                                 timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get emoji usage distribution by hour for a channel using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(usage_count), 0) as usage_count
+                    FROM emoji_usage_hourly
+                    WHERE guild_id = $1 AND channel_id = $2
+                '''
+                params = [guild_id, channel_id]
+
+                if usage_type:
+                    query += f" AND usage_type = ${len(params) + 1}"
+                    params.append(usage_type)
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'emoji_usage_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'emoji_usage_hourly',
+                    include_users=True, include_channels=False,
+                    specific_channel_id=channel_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['usage_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channel emoji usage distribution",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            )
+
+    # ======================================================================
+    # CATEGORY DISTRIBUTION QUERIES
+    # ======================================================================
+
+    async def q_category_distribution_messages(self, guild_id: int, category_id: int,
+                                               role_filter_ids: Optional[List[int]] = None,
+                                               start_time: Optional[datetime] = None,
+                                               end_time: Optional[datetime] = None,
+                                               timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get message distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(message_count), 0) as message_count
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [guild_id, category_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'message_tracking_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=category_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['message_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category message distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+    async def q_category_distribution_voice(self, guild_id: int, category_id: int,
+                                            role_filter_ids: Optional[List[int]] = None,
+                                            start_time: Optional[datetime] = None,
+                                            end_time: Optional[datetime] = None,
+                                            timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get voice distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+            state_flags_filter = await self._get_voice_state_filter_value(guild_id)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(total_seconds), 0) as total_seconds
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [guild_id, category_id]
+
+                if state_flags_filter is not None:
+                    query += f" AND state_flags = ${len(params) + 1}"
+                    params.append(state_flags_filter)
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_voice_state_filter(query, params, guild_id, 'state_flags')
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'voice_session_history_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=category_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total_seconds = 0
+                peak_hour = -1
+                peak_seconds = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    seconds = row['total_seconds'] or 0
+                    result[f'hour_{hour}'] = seconds
+                    total_seconds += seconds
+                    if seconds > peak_seconds:
+                        peak_seconds = seconds
+                        peak_hour = hour
+
+                result['total_seconds'] = total_seconds
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category voice distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+    async def q_category_distribution_mentions_sent(self, guild_id: int, category_id: int,
+                                                    role_filter_ids: Optional[List[int]] = None,
+                                                    start_time: Optional[datetime] = None,
+                                                    end_time: Optional[datetime] = None,
+                                                    timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions sent distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [guild_id, category_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioner_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=category_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category mentions sent distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+    async def q_category_distribution_mentions_received(self, guild_id: int, category_id: int,
+                                                        role_filter_ids: Optional[List[int]] = None,
+                                                        start_time: Optional[datetime] = None,
+                                                        end_time: Optional[datetime] = None,
+                                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions received distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [guild_id, category_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND mentioned_user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=category_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category mentions received distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+    async def q_category_distribution_emoji_usage(self, guild_id: int, category_id: int,
+                                                  role_filter_ids: Optional[List[int]] = None,
+                                                  start_time: Optional[datetime] = None,
+                                                  end_time: Optional[datetime] = None,
+                                                  usage_type: Optional[str] = None,
+                                                  timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get emoji usage distribution by hour for a category using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(usage_count), 0) as usage_count
+                    FROM emoji_usage_hourly
+                    WHERE guild_id = $1 AND category_id = $2
+                '''
+                params = [guild_id, category_id]
+
+                if usage_type:
+                    query += f" AND usage_type = ${len(params) + 1}"
+                    params.append(usage_type)
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'emoji_usage_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'emoji_usage_hourly',
+                    include_users=True, include_channels=False,
+                    specific_category_id=category_id
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['usage_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch category emoji usage distribution",
+                context={'guild_id': guild_id, 'category_id': category_id},
+                original=e
+            )
+
+    # ======================================================================
+    # USER DISTRIBUTION QUERIES
+    # ======================================================================
+
+    async def q_user_distribution_messages(self, guild_id: int, user_id: int,
+                                           role_filter_ids: Optional[List[int]] = None,
+                                           start_time: Optional[datetime] = None,
+                                           end_time: Optional[datetime] = None,
+                                           timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get message distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(message_count), 0) as message_count
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1 AND user_id = $2
+                '''
+                params = [guild_id, user_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'message_tracking_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['message_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user message distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+    async def q_user_distribution_voice(self, guild_id: int, user_id: int,
+                                        role_filter_ids: Optional[List[int]] = None,
+                                        start_time: Optional[datetime] = None,
+                                        end_time: Optional[datetime] = None,
+                                        timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get voice distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+            state_flags_filter = await self._get_voice_state_filter_value(guild_id)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(total_seconds), 0) as total_seconds
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1 AND user_id = $2
+                '''
+                params = [guild_id, user_id]
+
+                if state_flags_filter is not None:
+                    query += f" AND state_flags = ${len(params) + 1}"
+                    params.append(state_flags_filter)
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_voice_state_filter(query, params, guild_id, 'state_flags')
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'voice_session_history_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total_seconds': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total_seconds = 0
+                peak_hour = -1
+                peak_seconds = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    seconds = row['total_seconds'] or 0
+                    result[f'hour_{hour}'] = seconds
+                    total_seconds += seconds
+                    if seconds > peak_seconds:
+                        peak_seconds = seconds
+                        peak_hour = hour
+
+                result['total_seconds'] = total_seconds
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user voice distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+    async def q_user_distribution_activity(self, guild_id: int, user_id: int,
+                                           role_filter_ids: Optional[List[int]] = None,
+                                           start_time: Optional[datetime] = None,
+                                           end_time: Optional[datetime] = None,
+                                           timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get activity distribution by hour for a user using activity_sessions_hourly table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM ash.hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(ash.session_count), 0) as activity_count
+                    FROM activity_sessions_hourly ash
+                    WHERE ash.guild_id = $1 AND ash.user_id = $2
+                '''
+                params = [guild_id, user_id]
+
+                if start_time:
+                    query += f" AND ash.hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND ash.hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'activity_sessions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['activity_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user activity distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+    async def q_user_distribution_mentions_sent(self, guild_id: int, user_id: int,
+                                                role_filter_ids: Optional[List[int]] = None,
+                                                start_time: Optional[datetime] = None,
+                                                end_time: Optional[datetime] = None,
+                                                timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions sent distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioner_user_id = $2
+                '''
+                params = [guild_id, user_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user mentions sent distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+    async def q_user_distribution_mentions_received(self, guild_id: int, user_id: int,
+                                                    role_filter_ids: Optional[List[int]] = None,
+                                                    start_time: Optional[datetime] = None,
+                                                    end_time: Optional[datetime] = None,
+                                                    timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get mentions received distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(mention_count), 0) as mention_count
+                    FROM user_mentions_hourly
+                    WHERE guild_id = $1 AND mentioned_user_id = $2
+                '''
+                params = [guild_id, user_id]
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'user_mentions_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'user_mentions_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['mention_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user mentions received distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+    async def q_user_distribution_emoji_usage(self, guild_id: int, user_id: int,
+                                              role_filter_ids: Optional[List[int]] = None,
+                                              start_time: Optional[datetime] = None,
+                                              end_time: Optional[datetime] = None,
+                                              usage_type: Optional[str] = None,
+                                              timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """Get emoji usage distribution by hour for a user using hourly aggregated table."""
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM hour AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COALESCE(SUM(usage_count), 0) as usage_count
+                    FROM emoji_usage_hourly
+                    WHERE guild_id = $1 AND user_id = $2
+                '''
+                params = [guild_id, user_id]
+
+                if usage_type:
+                    query += f" AND usage_type = ${len(params) + 1}"
+                    params.append(usage_type)
+
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'emoji_usage_hourly')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'emoji_usage_hourly',
+                    include_users=True, include_channels=True
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['usage_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user emoji usage distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+    # ======================================================================
+    # USER INVITE DISTRIBUTION (Invites SENT by the user)
+    # ======================================================================
+
+    async def q_user_distribution_invites_sent(self, guild_id: int, user_id: int,
+                                               role_filter_ids: Optional[List[int]] = None,
+                                               start_time: Optional[datetime] = None,
+                                               end_time: Optional[datetime] = None,
+                                               timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """
+        Get invite distribution by hour for a user (invites they SENT).
+        Shows when the user's invites were used to bring people into the server.
+        """
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COUNT(*) as invite_count
+                    FROM invite_tracking
+                    WHERE guild_id = $1 
+                    AND inviter_id = $2
+                    AND invite_type IN ('valid', 'suspicious')
+                '''
+                params = [guild_id, user_id]
+
+                if start_time:
+                    query += f" AND created_at >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND created_at <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                # Invite tracking doesn't have channel/category columns, so skip those filters
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'invite_tracking',
+                    include_users=True, include_channels=False
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['invite_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user invites sent distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+    # ======================================================================
+    # USER INVITE RECEIVED DISTRIBUTION (User JOINED via invite)
+    # ======================================================================
+
+    async def q_user_distribution_invites_received(self, guild_id: int, user_id: int,
+                                                   role_filter_ids: Optional[List[int]] = None,
+                                                   start_time: Optional[datetime] = None,
+                                                   end_time: Optional[datetime] = None,
+                                                   timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """
+        Get invite distribution by hour for a user (invites they RECEIVED - i.e., when they joined).
+        Shows what time of day this user typically joins the server.
+        """
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                query = f'''
+                    SELECT 
+                        EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                        COUNT(*) as invite_count
+                    FROM invite_tracking
+                    WHERE guild_id = $1 
+                    AND invitee_id = $2
+                    AND invite_type IN ('valid', 'suspicious')
+                '''
+                params = [guild_id, user_id]
+
+                if start_time:
+                    query += f" AND created_at >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND created_at <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'invite_tracking',
+                    include_users=True, include_channels=False
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['invite_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user invites received distribution",
+                context={'guild_id': guild_id, 'user_id': user_id},
+                original=e
+            )
+
+    # ======================================================================
+    # USER INVITE VALIDITY DISTRIBUTION (Valid vs Suspicious invites SENT)
+    # ======================================================================
+
+    async def q_user_distribution_invites_by_type(self, guild_id: int, user_id: int,
+                                                  invite_type_filter: str = 'valid',
+                                                  role_filter_ids: Optional[List[int]] = None,
+                                                  start_time: Optional[datetime] = None,
+                                                  end_time: Optional[datetime] = None,
+                                                  timezone_str: str = 'UTC') -> Dict[str, Any]:
+        """
+        Get invite distribution by hour for a user filtered by invite type.
+        invite_type_filter can be: 'valid', 'suspicious', 'left', or 'all'
+        """
+        if not self.pool:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+
+            async with self.pool.acquire() as conn:
+                if invite_type_filter == 'all':
+                    query = f'''
+                        SELECT 
+                            EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                            COUNT(*) as invite_count
+                        FROM invite_tracking
+                        WHERE guild_id = $1 
+                        AND inviter_id = $2
+                        AND invite_type IN ('valid', 'suspicious')
+                    '''
+                    params = [guild_id, user_id]
+                else:
+                    query = f'''
+                        SELECT 
+                            EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+                            COUNT(*) as invite_count
+                        FROM invite_tracking
+                        WHERE guild_id = $1 
+                        AND inviter_id = $2
+                        AND invite_type = ${3}
+                    '''
+                    params = [guild_id, user_id, invite_type_filter]
+
+                if start_time:
+                    query += f" AND created_at >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND created_at <= ${len(params) + 1}"
+                    params.append(end_time)
+
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids and user_id not in user_ids:
+                        return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'invite_tracking',
+                    include_users=True, include_channels=False
+                )
+
+                if query is None:
+                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+                query += '''
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                '''
+
+                rows = await conn.fetch(query, *params)
+
+                result = {f'hour_{i}': 0 for i in range(24)}
+                total = 0
+                peak_hour = -1
+                peak_count = 0
+
+                for row in rows:
+                    hour = int(row['hour_of_day'])
+                    count = row['invite_count'] or 0
+                    result[f'hour_{hour}'] = count
+                    total += count
+                    if count > peak_count:
+                        peak_count = count
+                        peak_hour = hour
+
+                result['total'] = total
+                result['peak_hour'] = peak_hour
+                return result
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch user invites by type distribution",
+                context={'guild_id': guild_id, 'user_id': user_id,
+                         'invite_type': invite_type_filter},
+                original=e
+            )
+    # ======================================================================
     # SLASH COMMAND QUERIES - FIXED EXCEPTION HANDLING
     # ======================================================================
 

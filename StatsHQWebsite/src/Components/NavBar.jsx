@@ -259,6 +259,9 @@ const NavBar = () => {
         <a href="/Dashboard/Activity/" className={`mobile-nav-link ${isDashboardPageActive('Activity') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">🎮</span>Status Activity
         </a>
+        <a href="/Dashboard/Distribution/" className={`mobile-nav-link ${isDashboardPageActive('Distribution') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+          <span className="mobile-nav-icon">📊</span>Distribution
+        </a>
         <a href="/Dashboard/Emoji Tracking/" className={`mobile-nav-link ${isDashboardPageActive('Emoji Tracking') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">😊</span>Emojis
         </a>
