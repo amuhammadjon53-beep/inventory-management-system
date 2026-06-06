@@ -696,6 +696,24 @@ class ActivityDatabase:
                 ''')
                 print("✅ activity_streaks table ready")
 
+                # Create activity_streaks_by_name table for per-activity streaks
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS activity_streaks_by_name (
+                        id SERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        activity_type TEXT NOT NULL,
+                        display_name TEXT NOT NULL,
+                        current_streak_days INTEGER DEFAULT 0,
+                        best_streak_days INTEGER DEFAULT 0,
+                        streak_start_date DATE,
+                        last_activity_date DATE,
+                        updated_at TIMESTAMPTZ DEFAULT NOW(),
+                        UNIQUE(guild_id, user_id, activity_type, display_name)
+                    )
+                ''')
+                print("✅ activity_streaks_by_name table ready")
+
                 # Create indexes
                 await conn.execute('''
                     CREATE INDEX IF NOT EXISTS idx_activity_hourly_guild_hour
@@ -733,6 +751,14 @@ class ActivityDatabase:
                     CREATE INDEX IF NOT EXISTS idx_activity_streaks_best
                     ON activity_streaks(guild_id, best_streak_days DESC)
                 ''')
+                await conn.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_activity_streaks_by_name_guild
+                    ON activity_streaks_by_name(guild_id, activity_type, best_streak_days DESC)
+                ''')
+                await conn.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_activity_streaks_by_name_user
+                    ON activity_streaks_by_name(guild_id, user_id, activity_type)
+                ''')
                 print("✅ All activity indexes created")
 
                 # Create hypertable
@@ -766,7 +792,6 @@ class ActivityDatabase:
         if not self.pool:
             raise DatabaseConnectionError("No database pool available")
 
-        # Handle All Time (days == 999999)
         if days == 999999:
             time_condition = ""
             time_params = []
@@ -820,7 +845,6 @@ class ActivityDatabase:
         if not self.pool:
             raise DatabaseConnectionError("No database pool available")
 
-        # Handle All Time (days == 999999)
         if days == 999999:
             time_condition = ""
             time_params = []
@@ -878,7 +902,6 @@ class ActivityDatabase:
         if not self.pool:
             return 0
 
-        # Handle All Time (days == 999999)
         if days == 999999:
             time_condition = ""
             time_params = []
@@ -908,7 +931,6 @@ class ActivityDatabase:
         if not self.pool:
             return 0
 
-        # Handle All Time (days == 999999)
         if days == 999999:
             time_condition = ""
             time_params = []
@@ -936,7 +958,6 @@ class ActivityDatabase:
         if not self.pool:
             raise DatabaseConnectionError("No database pool available")
 
-        # Handle All Time (days == 999999)
         if days == 999999:
             time_condition = ""
             time_params = []
@@ -995,12 +1016,202 @@ class ActivityDatabase:
                 raise DatabaseQueryError(
                     "Failed to fetch leaderboard stats", original=e)
 
+    async def get_user_leaderboard_stats(self, guild_id: int, user_id: int, category: str,
+                                         days: int, sort_by: str = "time") -> List[Dict]:
+        """
+        Get leaderboard-style stats for a specific user (top activities per category,
+        sorted by time/sessions, for use in the per-user leaderboard view).
+        """
+        if not self.pool:
+            raise DatabaseConnectionError("No database pool available")
+
+        if days == 999999:
+            time_condition = ""
+            time_params = []
+        else:
+            time_condition = "AND hour >= NOW() - INTERVAL '1 day' * $3"
+            time_params = [days]
+
+        async with self.pool.acquire() as conn:
+            query = f'''
+                SELECT
+                    display_name,
+                    activity_type,
+                    SUM(session_count) as session_count,
+                    SUM(total_duration_seconds) as total_duration_seconds
+                FROM activity_sessions_hourly
+                WHERE guild_id = $1
+                AND user_id = $2
+                {time_condition}
+            '''
+
+            params = [guild_id, user_id] + time_params
+            param_counter = len(params) + 1
+
+            if category != "all":
+                query += f" AND activity_type = ${param_counter}"
+                params.append(category)
+                param_counter += 1
+
+            query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
+            query += " GROUP BY display_name, activity_type"
+
+            try:
+                results = await conn.fetch(query, *params)
+                stats = [dict(row) for row in results]
+
+                if sort_by == "sessions":
+                    stats.sort(key=lambda x: x['session_count'], reverse=True)
+                else:
+                    stats.sort(
+                        key=lambda x: x['total_duration_seconds'] or 0, reverse=True)
+
+                return stats
+            except Exception as e:
+                print(f"[ERROR] Error in get_user_leaderboard_stats: {e}")
+                traceback.print_exc()
+                raise DatabaseQueryError(
+                    "Failed to fetch user leaderboard stats", original=e)
+
+    async def get_activity_streak_stats(self, guild_id: int, role_id: int = None) -> List[Dict]:
+        """
+        Get the top activity by best streak per activity_type across the whole server.
+        Returns one row per activity_type: the display_name with the highest best_streak_days.
+        """
+        if not self.pool:
+            raise DatabaseConnectionError("No database pool available")
+
+        async with self.pool.acquire() as conn:
+            try:
+                # Build role filter subquery if needed
+                role_filter = ""
+                params = [guild_id]
+                param_counter = 2
+
+                if role_id:
+                    role_filter = f''' AND user_id IN (
+                        SELECT user_id FROM current_role_members
+                        WHERE guild_id = $1 AND role_id = ${param_counter}
+                    )'''
+                    params.append(role_id)
+                    param_counter += 1
+
+                query = f'''
+                    SELECT DISTINCT ON (activity_type)
+                        activity_type,
+                        display_name,
+                        best_streak_days
+                    FROM activity_streaks_by_name
+                    WHERE guild_id = $1
+                    {role_filter}
+                    AND best_streak_days > 0
+                    ORDER BY activity_type, best_streak_days DESC, display_name
+                '''
+
+                results = await conn.fetch(query, *params)
+                return [dict(row) for row in results]
+            except Exception as e:
+                print(f"[ERROR] Error in get_activity_streak_stats: {e}")
+                traceback.print_exc()
+                raise DatabaseQueryError(
+                    "Failed to fetch activity streak stats", original=e)
+
+    async def get_user_activity_streak_stats(self, guild_id: int, user_id: int) -> List[Dict]:
+        """
+        Get the top activity by best streak per activity_type for a specific user.
+        Returns one row per activity_type: the display_name with the highest best_streak_days.
+        """
+        if not self.pool:
+            raise DatabaseConnectionError("No database pool available")
+
+        async with self.pool.acquire() as conn:
+            try:
+                query = '''
+                    SELECT DISTINCT ON (activity_type)
+                        activity_type,
+                        display_name,
+                        best_streak_days
+                    FROM activity_streaks_by_name
+                    WHERE guild_id = $1
+                    AND user_id = $2
+                    AND best_streak_days > 0
+                    ORDER BY activity_type, best_streak_days DESC, display_name
+                '''
+                results = await conn.fetch(query, guild_id, user_id)
+                return [dict(row) for row in results]
+            except Exception as e:
+                print(f"[ERROR] Error in get_user_activity_streak_stats: {e}")
+                traceback.print_exc()
+                raise DatabaseQueryError(
+                    "Failed to fetch user activity streak stats", original=e)
+
+    async def upsert_activity_streak_by_name(self, guild_id: int, user_id: int,
+                                             activity_type: str, display_name: str,
+                                             activity_date: date):
+        """
+        Called whenever a session ends to keep per-activity streaks up to date.
+        Maintains current_streak_days and best_streak_days in activity_streaks_by_name.
+        """
+        if not self.pool:
+            return
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                record = await conn.fetchrow('''
+                    SELECT * FROM activity_streaks_by_name
+                    WHERE guild_id = $1 AND user_id = $2
+                    AND activity_type = $3 AND display_name = $4
+                    FOR UPDATE
+                ''', guild_id, user_id, activity_type, display_name)
+
+                if not record:
+                    await conn.execute('''
+                        INSERT INTO activity_streaks_by_name
+                        (guild_id, user_id, activity_type, display_name,
+                         current_streak_days, best_streak_days,
+                         streak_start_date, last_activity_date)
+                        VALUES ($1, $2, $3, $4, 1, 1, $5, $5)
+                        ON CONFLICT (guild_id, user_id, activity_type, display_name) DO NOTHING
+                    ''', guild_id, user_id, activity_type, display_name, activity_date)
+                    return
+
+                last = record['last_activity_date']
+                current_streak = record['current_streak_days']
+                best_streak = record['best_streak_days']
+
+                if last is None:
+                    new_streak = 1
+                    streak_start = activity_date
+                elif (activity_date - last).days == 0:
+                    # Same day — no change
+                    return
+                elif (activity_date - last).days == 1:
+                    new_streak = current_streak + 1
+                    streak_start = record['streak_start_date']
+                else:
+                    new_streak = 1
+                    streak_start = activity_date
+
+                new_best = max(best_streak, new_streak)
+
+                await conn.execute('''
+                    UPDATE activity_streaks_by_name
+                    SET current_streak_days = $3,
+                        best_streak_days = $4,
+                        streak_start_date = $5,
+                        last_activity_date = $6,
+                        updated_at = NOW()
+                    WHERE guild_id = $1 AND user_id = $2
+                    AND activity_type = $7 AND display_name = $8
+                ''', guild_id, user_id, new_streak, new_best,
+                                   streak_start, activity_date,
+                                   activity_type, display_name)
+
     async def get_user_activity_days_and_streak(self, guild_id: int, user_id: int, activity_name: str,
                                                 activity_type: str, days: int) -> Dict:
         if not self.pool:
             raise DatabaseConnectionError("No database pool available")
 
-        # Handle All Time (days == 999999)
         if days == 999999:
             time_condition = ""
             time_params = []
@@ -1282,26 +1493,21 @@ class ActivityDatabase:
 
 
 # =========================================================
-# IMAGE GENERATION FUNCTIONS
+# IMAGE GENERATION HELPERS
 # =========================================================
 
+async def _draw_name_and_avatar_on_image(image, draw, name: str, avatar_url: Optional[str]):
+    """
+    Shared helper: draws avatar (60x60 circle at 7,10) and name text
+    into either a guild-style or user-style header slot.
+    """
+    avatar_x, avatar_y = 7, 10
+    avatar_size = (60, 60)
 
-async def generate_user_activity_image(guild: discord.Guild, user: discord.Member, days_back, activity_data: list, streak_stats: dict, sort_by: str = "time"):
-    try:
-        template_path = BASE_DIR / "assets" / "images" / "activity user final png.png"
-        image = Image.open(template_path)
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-        draw = ImageDraw.Draw(image)
-
-        font_small, font_medium, font_large, font_larger, font_huge, font_giant = get_fonts()
-
-        avatar_x, avatar_y = 7, 10
-        avatar_size = (60, 60)
-
+    if avatar_url:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(user.display_avatar.url) as response:
+                async with session.get(avatar_url) as response:
                     avatar_data = await response.read()
 
             avatar_image = Image.open(io.BytesIO(avatar_data))
@@ -1323,89 +1529,224 @@ async def generate_user_activity_image(guild: discord.Guild, user: discord.Membe
             avatar_area.paste(avatar_with_bg, (0, 0), avatar_with_bg)
             image.paste(avatar_area.convert('RGB'), (avatar_x, avatar_y))
             avatar_image.close()
-            del avatar_image
-            del avatar_data
-
+            del avatar_image, avatar_data
         except Exception as e:
             print(f"[WARNING] Could not add avatar: {e}")
 
-        username = user.name
-        text_start_x, text_start_y = 85, 30
-        username_rect_center = (150, 30)
-        username_rect_width, username_rect_height = 183, 35
+    # Draw the name text
+    text_start_x, text_start_y = 85, 30
+    rect_center = (150, 30)
+    rect_width, rect_height = 183, 35
 
-        def fit_text_to_username_rect(text, start_x, start_y, rect_center_x, rect_center_y, rect_width, rect_height):
-            font_sizes = [40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16]
+    font_sizes = [40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16]
+    chosen_text = name
+    chosen_font = ImageFont.load_default()
+    chosen_pos = (text_start_x, text_start_y)
 
-            for font_size in font_sizes:
-                try:
-                    font = ImageFont.truetype(
-                        BASE_DIR / "assets" / "fonts" / "HorndonD.ttf", font_size)
-                except:
-                    font = ImageFont.load_default()
-
-                bbox = draw.textbbox((0, 0), text, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
-
-                text_x = start_x
-                text_y = start_y - (text_height // 2)
-
-                vertical_offset = 0
-                if font_size <= 40:
-                    vertical_offset += 1
-                if font_size <= 30:
-                    vertical_offset += 1
-                if font_size <= 20:
-                    vertical_offset += 1
-                if font_size <= 16:
-                    vertical_offset += 1
-                text_y += vertical_offset
-
-                rect_left = rect_center_x - (rect_width // 2)
-                rect_right = rect_center_x + (rect_width // 2)
-                rect_top = rect_center_y - (rect_height // 2)
-                rect_bottom = rect_center_y + (rect_height // 2)
-
-                fits_h = (text_x >= rect_left - 1) and (text_x +
-                                                        text_width <= rect_right + 1)
-                fits_v = (text_y >= rect_top - 1) and (text_y +
-                                                       text_height <= rect_bottom + 1)
-
-                if fits_h and fits_v:
-                    return text, font, (text_x, text_y)
-
+    for font_size in font_sizes:
+        try:
+            font = ImageFont.truetype(
+                BASE_DIR / "assets" / "fonts" / "HorndonD.ttf", font_size)
+        except:
             font = ImageFont.load_default()
-            current_text = text
-            rect_right = rect_center_x + (rect_width // 2)
-            while len(current_text) > 3:
-                current_text = current_text[:-4] + "..."
-                bbox = draw.textbbox((0, 0), current_text, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_x = start_x
-                if text_x + text_width <= rect_right:
-                    return current_text, font, (text_x, start_y)
-            return text[:3] + "...", font, (start_x, start_y)
 
-        fitted_username, username_font, username_pos = fit_text_to_username_rect(
-            username, text_start_x, text_start_y,
-            username_rect_center[0], username_rect_center[1],
-            username_rect_width, username_rect_height
+        bbox = draw.textbbox((0, 0), name, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+
+        text_x = text_start_x
+        text_y = text_start_y - (text_height // 2)
+
+        v_offset = 0
+        if font_size <= 40:
+            v_offset += 1
+        if font_size <= 30:
+            v_offset += 1
+        if font_size <= 20:
+            v_offset += 1
+        if font_size <= 16:
+            v_offset += 1
+        text_y += v_offset
+
+        rect_left = rect_center[0] - (rect_width // 2)
+        rect_right = rect_center[0] + (rect_width // 2)
+        rect_top = rect_center[1] - (rect_height // 2)
+        rect_bottom = rect_center[1] + (rect_height // 2)
+
+        fits_h = (text_x >= rect_left - 1) and (text_x +
+                                                text_width <= rect_right + 1)
+        fits_v = (text_y >= rect_top - 1) and (text_y +
+                                               text_height <= rect_bottom + 1)
+
+        if fits_h and fits_v:
+            chosen_font = font
+            chosen_pos = (text_x, text_y)
+            break
+    else:
+        # Truncate fallback
+        font = ImageFont.load_default()
+        current_text = name
+        rect_right = rect_center[0] + (rect_width // 2)
+        while len(current_text) > 3:
+            current_text = current_text[:-4] + "..."
+            bbox = draw.textbbox((0, 0), current_text, font=font)
+            if text_start_x + (bbox[2] - bbox[0]) <= rect_right:
+                chosen_text = current_text
+                break
+        chosen_font = font
+        chosen_pos = (text_start_x, text_start_y)
+
+    stroke_width = 1
+    for dx in [-stroke_width, 0, stroke_width]:
+        for dy in [-stroke_width, 0, stroke_width]:
+            if dx != 0 or dy != 0:
+                draw.text((chosen_pos[0] + dx, chosen_pos[1] + dy),
+                          chosen_text, font=chosen_font, fill="black")
+    draw.text(chosen_pos, chosen_text, font=chosen_font, fill="white")
+
+
+def _fit_text_to_activity_rect(draw, text, target_x, target_y,
+                               rect_center_x, rect_center_y, rect_width, rect_height,
+                               is_left_aligned=True):
+    """Fit activity name/value text into a bounded rectangle, shrinking font as needed."""
+    font_sizes = [24, 22, 20, 18, 16, 14, 12, 10, 8]
+
+    for font_size in font_sizes:
+        try:
+            font = ImageFont.truetype(
+                BASE_DIR / "assets" / "fonts" / "HorndonD.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+
+        text_x = target_x if is_left_aligned else target_x - (text_width // 2)
+        text_y = target_y - (text_height // 2)
+
+        rect_left = rect_center_x - (rect_width // 2)
+        rect_right = rect_center_x + (rect_width // 2)
+        rect_top = rect_center_y - (rect_height // 2)
+        rect_bottom = rect_center_y + (rect_height // 2)
+
+        if (text_x >= rect_left - 1) and (text_x + text_width <= rect_right + 1) \
+                and (text_y >= rect_top - 1) and (text_y + text_height <= rect_bottom + 1):
+            return text, font, (text_x, text_y)
+
+    # Truncate fallback
+    font = ImageFont.load_default()
+    current_text = text
+    rect_right = rect_center_x + (rect_width // 2)
+    while len(current_text) > 3:
+        current_text = current_text[:-4] + "..."
+        bbox = draw.textbbox((0, 0), current_text, font=font)
+        text_x = target_x if is_left_aligned else target_x - \
+            (bbox[2] - bbox[0]) // 2
+        if text_x + (bbox[2] - bbox[0]) <= rect_right:
+            return current_text, font, (text_x, target_y)
+    return text[:3] + "...", font, (target_x, target_y)
+
+
+def _draw_activity_grid(draw, activity_data: list, value_getter, type_positions: dict,
+                        invisible_rectangles: list):
+    """
+    Generic helper to draw the 6-slot activity grid (playing/streaming/listening/
+    watching/competing/custom) onto an already-opened image draw context.
+
+    value_getter(activity_dict) -> str  — returns the value string to display.
+    """
+    activities_by_type: Dict[str, list] = {}
+    for activity in activity_data:
+        atype = activity.get('activity_type', 'unknown')
+        if atype not in activities_by_type:
+            activities_by_type[atype] = []
+        activities_by_type[atype].append(activity)
+
+    for activity_type, positions in type_positions.items():
+        if activity_type not in activities_by_type or not activities_by_type[activity_type]:
+            continue
+
+        top = activities_by_type[activity_type][0]
+        display_name = top['display_name'][:20]
+        name_x, name_y = positions['name']
+        value = value_getter(top)
+        value_x, value_y = positions['value']
+
+        rect_index = list(type_positions.keys()).index(activity_type) * 2
+        name_rect_center, name_rect_width, name_rect_height = invisible_rectangles[rect_index]
+        value_rect_center, value_rect_width, value_rect_height = invisible_rectangles[
+            rect_index + 1]
+
+        fitted_name, name_font, name_pos = _fit_text_to_activity_rect(
+            draw, display_name, name_x, name_y,
+            name_rect_center[0], name_rect_center[1],
+            name_rect_width, name_rect_height, is_left_aligned=True
+        )
+        fitted_value, value_font, value_pos = _fit_text_to_activity_rect(
+            draw, value, value_x, value_y,
+            value_rect_center[0], value_rect_center[1],
+            value_rect_width, value_rect_height, is_left_aligned=True
         )
 
         stroke_width = 1
         for dx in [-stroke_width, 0, stroke_width]:
             for dy in [-stroke_width, 0, stroke_width]:
                 if dx != 0 or dy != 0:
-                    draw.text((username_pos[0] + dx, username_pos[1] + dy),
-                              fitted_username, font=username_font, fill="black")
-        draw.text(username_pos, fitted_username,
-                  font=username_font, fill="white")
+                    draw.text((name_pos[0] + dx, name_pos[1] + dy),
+                              fitted_name, font=name_font, fill="black")
+        draw.text(name_pos, fitted_name, font=name_font, fill="white")
+
+        for dx in [-stroke_width, 0, stroke_width]:
+            for dy in [-stroke_width, 0, stroke_width]:
+                if dx != 0 or dy != 0:
+                    draw.text((value_pos[0] + dx, value_pos[1] + dy),
+                              fitted_value, font=value_font, fill="black")
+        draw.text(value_pos, fitted_value, font=value_font, fill="white")
+
+
+# Shared layout constants used by server/streak images
+_TYPE_POSITIONS = {
+    'playing':   {'name': (20, 135),  'value': (20, 180)},
+    'streaming': {'name': (20, 330),  'value': (20, 360)},
+    'listening': {'name': (265, 135), 'value': (265, 180)},
+    'watching':  {'name': (265, 330), 'value': (265, 360)},
+    'competing': {'name': (512, 135), 'value': (512, 180)},
+    'custom':    {'name': (512, 330), 'value': (512, 360)}
+}
+
+_INVISIBLE_RECTS = [
+    ((130, 135), 220, 32), ((130, 180), 220, 32),
+    ((130, 330), 220, 32), ((130, 360), 220, 32),
+    ((370, 135), 220, 32), ((370, 180), 220, 32),
+    ((370, 330), 220, 32), ((370, 360), 220, 32),
+    ((620, 135), 220, 32), ((620, 180), 220, 32),
+    ((620, 330), 220, 32), ((620, 360), 220, 32)
+]
+
+
+# =========================================================
+# IMAGE GENERATION FUNCTIONS
+# =========================================================
+
+
+async def generate_user_activity_image(guild: discord.Guild, user: discord.Member, days_back,
+                                       activity_data: list, streak_stats: dict, sort_by: str = "time"):
+    try:
+        template_path = BASE_DIR / "assets" / "images" / "activity user final png.png"
+        image = Image.open(template_path)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        draw = ImageDraw.Draw(image)
+
+        font_small, font_medium, font_large, font_larger, font_huge, font_giant = get_fonts()
+
+        await _draw_name_and_avatar_on_image(image, draw, user.name, user.display_avatar.url)
 
         time_period_text = days_back if isinstance(
             days_back, str) else f"{days_back} days"
-        draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
-            "%B %d, %Y"), font_small, "white", "black", 1)
+        draw_text_with_stroke(draw, (550, 38), datetime.now().strftime("%B %d, %Y"),
+                              font_small, "white", "black", 1)
         draw_text_with_stroke(
             draw, (630, 457), time_period_text, font_small, "white", "black", 1)
 
@@ -1428,117 +1769,48 @@ async def generate_user_activity_image(guild: discord.Guild, user: discord.Membe
                     activities_by_type[activity_type].sort(
                         key=lambda x: x.get('total_duration_seconds', 0), reverse=True)
 
-            type_positions = {
-                'playing':   {'name': (20, 135),  'value': (20, 180)},
-                'streaming': {'name': (20, 330),  'value': (20, 360)},
-                'listening': {'name': (265, 135), 'value': (265, 180)},
-                'watching':  {'name': (265, 330), 'value': (265, 360)},
-                'competing': {'name': (512, 135), 'value': (512, 180)},
-                'custom':    {'name': (512, 330), 'value': (512, 360)}
-            }
+            for activity_type, positions in _TYPE_POSITIONS.items():
+                if activity_type not in activities_by_type or not activities_by_type[activity_type]:
+                    continue
 
-            invisible_rectangles = [
-                ((130, 135), 220, 32), ((130, 180), 220, 32),
-                ((130, 330), 220, 32), ((130, 360), 220, 32),
-                ((370, 135), 220, 32), ((370, 180), 220, 32),
-                ((370, 330), 220, 32), ((370, 360), 220, 32),
-                ((620, 135), 220, 32), ((620, 180), 220, 32),
-                ((620, 330), 220, 32), ((620, 360), 220, 32)
-            ]
+                top_activity = activities_by_type[activity_type][0]
+                display_name = top_activity['display_name'][:20]
+                name_x, name_y = positions['name']
 
-            for activity_type, positions in type_positions.items():
-                if activity_type in activities_by_type and activities_by_type[activity_type]:
-                    top_activity = activities_by_type[activity_type][0]
-                    display_name = top_activity['display_name'][:20]
-                    name_x, name_y = positions['name']
+                if sort_by == "sessions":
+                    value = f"{top_activity.get('session_count', 0)}"
+                else:
+                    value = format_duration(
+                        top_activity.get('total_duration_seconds', 0))
 
-                    if sort_by == "sessions":
-                        value = f"{top_activity.get('session_count', 0)}"
-                    else:
-                        value = format_duration(
-                            top_activity.get('total_duration_seconds', 0))
+                value_x, value_y = positions['value']
+                rect_index = list(_TYPE_POSITIONS.keys()
+                                  ).index(activity_type) * 2
+                name_rect_center, name_rect_w, name_rect_h = _INVISIBLE_RECTS[rect_index]
+                value_rect_center, value_rect_w, value_rect_h = _INVISIBLE_RECTS[rect_index + 1]
 
-                    value_x, value_y = positions['value']
+                fitted_name, name_font, name_pos = _fit_text_to_activity_rect(
+                    draw, display_name, name_x, name_y,
+                    name_rect_center[0], name_rect_center[1], name_rect_w, name_rect_h)
+                fitted_value, value_font, value_pos = _fit_text_to_activity_rect(
+                    draw, value, value_x, value_y,
+                    value_rect_center[0], value_rect_center[1], value_rect_w, value_rect_h)
 
-                    def fit_text_to_rect(text, target_x, target_y, rect_center_x, rect_center_y, rect_width, rect_height, is_left_aligned=True):
-                        font_sizes = [24, 22, 20, 18, 16, 14, 12, 10, 8]
+                stroke_width = 1
+                for dx in [-stroke_width, 0, stroke_width]:
+                    for dy in [-stroke_width, 0, stroke_width]:
+                        if dx != 0 or dy != 0:
+                            draw.text((name_pos[0] + dx, name_pos[1] + dy),
+                                      fitted_name, font=name_font, fill="black")
+                draw.text(name_pos, fitted_name, font=name_font, fill="white")
 
-                        for font_size in font_sizes:
-                            try:
-                                font = ImageFont.truetype(
-                                    BASE_DIR / "assets" / "fonts" / "HorndonD.ttf", font_size)
-                            except:
-                                font = ImageFont.load_default()
-
-                            bbox = draw.textbbox((0, 0), text, font=font)
-                            text_width = bbox[2] - bbox[0]
-                            text_height = bbox[3] - bbox[1]
-
-                            text_x = target_x if is_left_aligned else target_x - \
-                                (text_width // 2)
-                            text_y = target_y - (text_height // 2)
-
-                            rect_left = rect_center_x - (rect_width // 2)
-                            rect_right = rect_center_x + (rect_width // 2)
-                            rect_top = rect_center_y - (rect_height // 2)
-                            rect_bottom = rect_center_y + (rect_height // 2)
-
-                            fits_h = (
-                                text_x >= rect_left - 1) and (text_x + text_width <= rect_right + 1)
-                            fits_v = (text_y >= rect_top - 1) and (text_y +
-                                                                   text_height <= rect_bottom + 1)
-
-                            if fits_h and fits_v:
-                                return text, font, (text_x, text_y)
-
-                        font = ImageFont.load_default()
-                        current_text = text
-                        rect_right = rect_center_x + (rect_width // 2)
-                        while len(current_text) > 3:
-                            current_text = current_text[:-4] + "..."
-                            bbox = draw.textbbox(
-                                (0, 0), current_text, font=font)
-                            text_width = bbox[2] - bbox[0]
-                            text_x = target_x if is_left_aligned else target_x - \
-                                (text_width // 2)
-                            if text_x + text_width <= rect_right:
-                                return current_text, font, (text_x, target_y)
-                        return text[:3] + "...", font, (target_x, target_y)
-
-                    rect_index = list(type_positions.keys()
-                                      ).index(activity_type) * 2
-                    name_rect_center, name_rect_width, name_rect_height = invisible_rectangles[
-                        rect_index]
-                    value_rect_center, value_rect_width, value_rect_height = invisible_rectangles[
-                        rect_index + 1]
-
-                    fitted_name, name_font, name_pos = fit_text_to_rect(
-                        display_name, name_x, name_y,
-                        name_rect_center[0], name_rect_center[1],
-                        name_rect_width, name_rect_height, is_left_aligned=True
-                    )
-                    fitted_value, value_font, value_pos = fit_text_to_rect(
-                        value, value_x, value_y,
-                        value_rect_center[0], value_rect_center[1],
-                        value_rect_width, value_rect_height, is_left_aligned=True
-                    )
-
-                    stroke_width = 1
-                    for dx in [-stroke_width, 0, stroke_width]:
-                        for dy in [-stroke_width, 0, stroke_width]:
-                            if dx != 0 or dy != 0:
-                                draw.text((name_pos[0] + dx, name_pos[1] + dy),
-                                          fitted_name, font=name_font, fill="black")
-                    draw.text(name_pos, fitted_name,
-                              font=name_font, fill="white")
-
-                    for dx in [-stroke_width, 0, stroke_width]:
-                        for dy in [-stroke_width, 0, stroke_width]:
-                            if dx != 0 or dy != 0:
-                                draw.text((value_pos[0] + dx, value_pos[1] + dy),
-                                          fitted_value, font=value_font, fill="black")
-                    draw.text(value_pos, fitted_value,
-                              font=value_font, fill="white")
+                for dx in [-stroke_width, 0, stroke_width]:
+                    for dy in [-stroke_width, 0, stroke_width]:
+                        if dx != 0 or dy != 0:
+                            draw.text((value_pos[0] + dx, value_pos[1] + dy),
+                                      fitted_value, font=value_font, fill="black")
+                draw.text(value_pos, fitted_value,
+                          font=value_font, fill="white")
 
         img_bytes = io.BytesIO()
         image.save(img_bytes, format='PNG')
@@ -1552,8 +1824,8 @@ async def generate_user_activity_image(guild: discord.Guild, user: discord.Membe
         image = Image.new('RGB', (800, 600), color='#2F3136')
         draw = ImageDraw.Draw(image)
         font_small, font_medium, font_large, font_larger, font_huge, font_giant = get_fonts()
-        draw_text_with_stroke(
-            draw, (200, 250), "ERROR GENERATING IMAGE", font_larger, "white", "black", 2)
+        draw_text_with_stroke(draw, (200, 250), "ERROR GENERATING IMAGE",
+                              font_larger, "white", "black", 2)
         img_bytes = io.BytesIO()
         image.save(img_bytes, format='PNG')
         img_bytes.seek(0)
@@ -1571,113 +1843,8 @@ async def generate_server_activity_image(guild: discord.Guild, days_back, activi
 
         font_small, font_medium, font_large, font_larger, font_huge, font_giant = get_fonts()
 
-        avatar_x, avatar_y = 7, 10
-        avatar_size = (60, 60)
-
-        try:
-            if guild.icon:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(guild.icon.url) as response:
-                        avatar_data = await response.read()
-
-                avatar_image = Image.open(io.BytesIO(avatar_data))
-                avatar_image = avatar_image.resize(
-                    avatar_size, Image.Resampling.LANCZOS).convert('RGBA')
-
-                mask = Image.new('L', avatar_size, 0)
-                mask_draw = ImageDraw.Draw(mask)
-                mask_draw.ellipse(
-                    (0, 0, avatar_size[0], avatar_size[1]), fill=255)
-                avatar_image.putalpha(mask)
-
-                avatar_area = image.crop(
-                    (avatar_x, avatar_y, avatar_x +
-                     avatar_size[0], avatar_y + avatar_size[1])
-                ).convert('RGBA')
-
-                avatar_with_bg = Image.new('RGBA', avatar_size, (0, 0, 0, 0))
-                avatar_with_bg.paste(avatar_image, (0, 0), avatar_image)
-                avatar_area.paste(avatar_with_bg, (0, 0), avatar_with_bg)
-                image.paste(avatar_area.convert('RGB'), (avatar_x, avatar_y))
-                avatar_image.close()
-                del avatar_image
-                del avatar_data
-
-        except Exception:
-            pass
-
-        server_name = guild.name
-        text_start_x, text_start_y = 85, 30
-        servername_rect_center = (150, 30)
-        servername_rect_width, servername_rect_height = 183, 35
-
-        def fit_text_to_servername_rect(text, start_x, start_y, rect_center_x, rect_center_y, rect_width, rect_height):
-            font_sizes = [40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16]
-
-            for font_size in font_sizes:
-                try:
-                    font = ImageFont.truetype(
-                        BASE_DIR / "assets" / "fonts" / "HorndonD.ttf", font_size)
-                except:
-                    font = ImageFont.load_default()
-
-                bbox = draw.textbbox((0, 0), text, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
-
-                text_x = start_x
-                text_y = start_y - (text_height // 2)
-
-                vertical_offset = 0
-                if font_size <= 40:
-                    vertical_offset += 1
-                if font_size <= 30:
-                    vertical_offset += 1
-                if font_size <= 20:
-                    vertical_offset += 1
-                if font_size <= 16:
-                    vertical_offset += 1
-                text_y += vertical_offset
-
-                rect_left = rect_center_x - (rect_width // 2)
-                rect_right = rect_center_x + (rect_width // 2)
-                rect_top = rect_center_y - (rect_height // 2)
-                rect_bottom = rect_center_y + (rect_height // 2)
-
-                fits_h = (text_x >= rect_left - 1) and (text_x +
-                                                        text_width <= rect_right + 1)
-                fits_v = (text_y >= rect_top - 1) and (text_y +
-                                                       text_height <= rect_bottom + 1)
-
-                if fits_h and fits_v:
-                    return text, font, (text_x, text_y)
-
-            font = ImageFont.load_default()
-            current_text = server_name
-            rect_right = rect_center_x + (rect_width // 2)
-            while len(current_text) > 3:
-                current_text = current_text[:-4] + "..."
-                bbox = draw.textbbox((0, 0), current_text, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_x = text_start_x
-                if text_x + text_width <= rect_right:
-                    return current_text, font, (text_x, text_start_y)
-            return server_name[:3] + "...", font, (text_start_x, text_start_y)
-
-        fitted_servername, servername_font, servername_pos = fit_text_to_servername_rect(
-            server_name, text_start_x, text_start_y,
-            servername_rect_center[0], servername_rect_center[1],
-            servername_rect_width, servername_rect_height
-        )
-
-        stroke_width = 1
-        for dx in [-stroke_width, 0, stroke_width]:
-            for dy in [-stroke_width, 0, stroke_width]:
-                if dx != 0 or dy != 0:
-                    draw.text((servername_pos[0] + dx, servername_pos[1] + dy),
-                              fitted_servername, font=servername_font, fill="black")
-        draw.text(servername_pos, fitted_servername,
-                  font=servername_font, fill="white")
+        icon_url = guild.icon.url if guild.icon else None
+        await _draw_name_and_avatar_on_image(image, draw, guild.name, icon_url)
 
         role_text = "No Filter"
         if role_id and role_id != "none":
@@ -1699,8 +1866,8 @@ async def generate_server_activity_image(guild: discord.Guild, days_back, activi
 
         draw_text_with_stroke(draw, (65, 459), role_text,
                               font_small, "white", "black", 1)
-        draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
-            "%B %d, %Y"), font_small, "white", "black", 1)
+        draw_text_with_stroke(draw, (550, 38), datetime.now().strftime("%B %d, %Y"),
+                              font_small, "white", "black", 1)
 
         time_period_text = days_back if isinstance(
             days_back, str) else f"{days_back} days"
@@ -1708,137 +1875,37 @@ async def generate_server_activity_image(guild: discord.Guild, days_back, activi
             draw, (630, 457), time_period_text, font_small, "white", "black", 1)
 
         if activity_data:
-            activities_by_type = {}
+            activities_by_type: Dict[str, list] = {}
             for activity in activity_data:
-                activity_type = activity.get('activity_type', 'unknown')
-                if activity_type not in activities_by_type:
-                    activities_by_type[activity_type] = []
-                activities_by_type[activity_type].append(activity)
+                atype = activity.get('activity_type', 'unknown')
+                if atype not in activities_by_type:
+                    activities_by_type[atype] = []
+                activities_by_type[atype].append(activity)
 
-            for activity_type in activities_by_type:
+            for atype in activities_by_type:
                 if sort_by == "users":
-                    activities_by_type[activity_type].sort(
+                    activities_by_type[atype].sort(
                         key=lambda x: x.get('user_count', 0), reverse=True)
                 elif sort_by == "sessions":
-                    activities_by_type[activity_type].sort(
+                    activities_by_type[atype].sort(
                         key=lambda x: x.get('session_count', 0), reverse=True)
                 else:
-                    activities_by_type[activity_type].sort(
+                    activities_by_type[atype].sort(
                         key=lambda x: x.get('total_duration_seconds', 0), reverse=True)
 
-            activity_positions = {
-                'playing':   {'name': (20, 135),  'value': (20, 180)},
-                'streaming': {'name': (20, 330),  'value': (20, 360)},
-                'listening': {'name': (265, 135), 'value': (265, 180)},
-                'watching':  {'name': (265, 330), 'value': (265, 360)},
-                'competing': {'name': (512, 135), 'value': (512, 180)},
-                'custom':    {'name': (512, 330), 'value': (512, 360)}
-            }
+            def value_getter(top):
+                if sort_by == "users":
+                    return f"{top.get('user_count', 0)}"
+                elif sort_by == "sessions":
+                    return f"{top.get('session_count', 0)}"
+                else:
+                    return format_duration(top.get('total_duration_seconds', 0))
 
-            invisible_rectangles = [
-                ((130, 135), 220, 32), ((130, 180), 220, 32),
-                ((130, 330), 220, 32), ((130, 360), 220, 32),
-                ((370, 135), 220, 32), ((370, 180), 220, 32),
-                ((370, 330), 220, 32), ((370, 360), 220, 32),
-                ((620, 135), 220, 32), ((620, 180), 220, 32),
-                ((620, 330), 220, 32), ((620, 360), 220, 32)
-            ]
-
-            for activity_type, positions in activity_positions.items():
-                if activity_type in activities_by_type and activities_by_type[activity_type]:
-                    top_activity = activities_by_type[activity_type][0]
-                    display_name = top_activity['display_name'][:20]
-                    name_x, name_y = positions['name']
-
-                    if sort_by == "users":
-                        value = f"{top_activity.get('user_count', 0)}"
-                    elif sort_by == "sessions":
-                        value = f"{top_activity.get('session_count', 0)}"
-                    else:
-                        value = format_duration(
-                            top_activity.get('total_duration_seconds', 0))
-
-                    value_x, value_y = positions['value']
-
-                    def fit_text_to_rect(text, target_x, target_y, rect_center_x, rect_center_y, rect_width, rect_height, is_left_aligned=True):
-                        font_sizes = [24, 22, 20, 18, 16, 14, 12, 10, 8]
-
-                        for font_size in font_sizes:
-                            try:
-                                font = ImageFont.truetype(
-                                    BASE_DIR / "assets" / "fonts" / "HorndonD.ttf", font_size)
-                            except:
-                                font = ImageFont.load_default()
-
-                            bbox = draw.textbbox((0, 0), text, font=font)
-                            text_width = bbox[2] - bbox[0]
-                            text_height = bbox[3] - bbox[1]
-
-                            text_x = target_x if is_left_aligned else target_x - \
-                                (text_width // 2)
-                            text_y = target_y - (text_height // 2)
-
-                            rect_left = rect_center_x - (rect_width // 2)
-                            rect_right = rect_center_x + (rect_width // 2)
-                            rect_top = rect_center_y - (rect_height // 2)
-                            rect_bottom = rect_center_y + (rect_height // 2)
-
-                            fits_h = (
-                                text_x >= rect_left - 1) and (text_x + text_width <= rect_right + 1)
-                            fits_v = (text_y >= rect_top - 1) and (text_y +
-                                                                   text_height <= rect_bottom + 1)
-
-                            if fits_h and fits_v:
-                                return text, font, (text_x, text_y)
-
-                        font = ImageFont.load_default()
-                        current_text = text
-                        rect_right = rect_center_x + (rect_width // 2)
-                        while len(current_text) > 3:
-                            current_text = current_text[:-4] + "..."
-                            bbox = draw.textbbox(
-                                (0, 0), current_text, font=font)
-                            text_width = bbox[2] - bbox[0]
-                            text_x = target_x if is_left_aligned else target_x - \
-                                (text_width // 2)
-                            if text_x + text_width <= rect_right:
-                                return current_text, font, (text_x, target_y)
-                        return text[:3] + "...", font, (target_x, target_y)
-
-                    rect_index = list(activity_positions.keys()
-                                      ).index(activity_type) * 2
-                    name_rect_center, name_rect_width, name_rect_height = invisible_rectangles[
-                        rect_index]
-                    value_rect_center, value_rect_width, value_rect_height = invisible_rectangles[
-                        rect_index + 1]
-
-                    fitted_name, name_font, name_pos = fit_text_to_rect(
-                        display_name, name_x, name_y,
-                        name_rect_center[0], name_rect_center[1],
-                        name_rect_width, name_rect_height, is_left_aligned=True
-                    )
-                    fitted_value, value_font, value_pos = fit_text_to_rect(
-                        value, value_x, value_y,
-                        value_rect_center[0], value_rect_center[1],
-                        value_rect_width, value_rect_height, is_left_aligned=True
-                    )
-
-                    stroke_width = 1
-                    for dx in [-stroke_width, 0, stroke_width]:
-                        for dy in [-stroke_width, 0, stroke_width]:
-                            if dx != 0 or dy != 0:
-                                draw.text((name_pos[0] + dx, name_pos[1] + dy),
-                                          fitted_name, font=name_font, fill="black")
-                    draw.text(name_pos, fitted_name,
-                              font=name_font, fill="white")
-
-                    for dx in [-stroke_width, 0, stroke_width]:
-                        for dy in [-stroke_width, 0, stroke_width]:
-                            if dx != 0 or dy != 0:
-                                draw.text((value_pos[0] + dx, value_pos[1] + dy),
-                                          fitted_value, font=value_font, fill="black")
-                    draw.text(value_pos, fitted_value,
-                              font=value_font, fill="white")
+            # Repack into flat list with pre-sorted top entries
+            flat = [activities_by_type[t][0]
+                    for t in activities_by_type if activities_by_type[t]]
+            _draw_activity_grid(draw, flat, value_getter,
+                                _TYPE_POSITIONS, _INVISIBLE_RECTS)
 
         img_bytes = io.BytesIO()
         image.save(img_bytes, format='PNG')
@@ -1854,7 +1921,12 @@ async def generate_server_activity_image(guild: discord.Guild, days_back, activi
 
 async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_data: list,
                                               category: str, days_back, role_id: str = None,
-                                              sort_by: str = "users", page: int = 0, db_pool=None):
+                                              sort_by: str = "users", page: int = 0, db_pool=None,
+                                              target_user: discord.Member = None):
+    """
+    Generate the activity leaderboard image.
+    If target_user is provided, the header shows that user's name and avatar instead of the guild's.
+    """
     try:
         template_path = BASE_DIR / "assets" / "images" / "leaderboards final png.png"
         try:
@@ -1869,113 +1941,15 @@ async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_
         draw = ImageDraw.Draw(image)
         font_small, font_medium, font_large, font_larger, font_huge, font_giant = get_fonts()
 
-        avatar_x, avatar_y = 7, 10
-        avatar_size = (60, 60)
+        # Header: show user or guild depending on context
+        if target_user is not None:
+            header_name = target_user.name
+            header_avatar_url = target_user.display_avatar.url
+        else:
+            header_name = guild.name
+            header_avatar_url = guild.icon.url if guild.icon else None
 
-        try:
-            if guild.icon:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(guild.icon.url) as response:
-                        avatar_data = await response.read()
-
-                avatar_image = Image.open(io.BytesIO(avatar_data))
-                avatar_image = avatar_image.resize(
-                    avatar_size, Image.Resampling.LANCZOS).convert('RGBA')
-
-                mask = Image.new('L', avatar_size, 0)
-                mask_draw = ImageDraw.Draw(mask)
-                mask_draw.ellipse(
-                    (0, 0, avatar_size[0], avatar_size[1]), fill=255)
-                avatar_image.putalpha(mask)
-
-                avatar_area = image.crop(
-                    (avatar_x, avatar_y, avatar_x +
-                     avatar_size[0], avatar_y + avatar_size[1])
-                ).convert('RGBA')
-
-                avatar_with_bg = Image.new('RGBA', avatar_size, (0, 0, 0, 0))
-                avatar_with_bg.paste(avatar_image, (0, 0), avatar_image)
-                avatar_area.paste(avatar_with_bg, (0, 0), avatar_with_bg)
-                image.paste(avatar_area.convert('RGB'), (avatar_x, avatar_y))
-                avatar_image.close()
-                del avatar_image
-                del avatar_data
-
-        except Exception:
-            pass
-
-        server_name = guild.name
-        text_start_x, text_start_y = 85, 30
-        servername_rect_center = (150, 30)
-        servername_rect_width, servername_rect_height = 183, 35
-
-        def fit_text_to_servername_rect(text, start_x, start_y, rect_center_x, rect_center_y, rect_width, rect_height):
-            font_sizes = [40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16]
-
-            for font_size in font_sizes:
-                try:
-                    font = ImageFont.truetype(
-                        BASE_DIR / "assets" / "fonts" / "HorndonD.ttf", font_size)
-                except:
-                    font = ImageFont.load_default()
-
-                bbox = draw.textbbox((0, 0), text, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
-
-                text_x = start_x
-                text_y = start_y - (text_height // 2)
-
-                vertical_offset = 0
-                if font_size <= 40:
-                    vertical_offset += 1
-                if font_size <= 30:
-                    vertical_offset += 1
-                if font_size <= 20:
-                    vertical_offset += 1
-                if font_size <= 16:
-                    vertical_offset += 1
-                text_y += vertical_offset
-
-                rect_left = rect_center_x - (rect_width // 2)
-                rect_right = rect_center_x + (rect_width // 2)
-                rect_top = rect_center_y - (rect_height // 2)
-                rect_bottom = rect_center_y + (rect_height // 2)
-
-                fits_h = (text_x >= rect_left - 1) and (text_x +
-                                                        text_width <= rect_right + 1)
-                fits_v = (text_y >= rect_top - 1) and (text_y +
-                                                       text_height <= rect_bottom + 1)
-
-                if fits_h and fits_v:
-                    return text, font, (text_x, text_y)
-
-            font = ImageFont.load_default()
-            current_text = server_name
-            rect_right = rect_center_x + (rect_width // 2)
-            while len(current_text) > 3:
-                current_text = current_text[:-4] + "..."
-                bbox = draw.textbbox((0, 0), current_text, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_x = text_start_x
-                if text_x + text_width <= rect_right:
-                    return current_text, font, (text_x, text_start_y)
-            return server_name[:3] + "...", font, (text_start_x, text_start_y)
-
-        fitted_servername, servername_font, servername_pos = fit_text_to_servername_rect(
-            server_name, text_start_x, text_start_y,
-            servername_rect_center[0], servername_rect_center[1],
-            servername_rect_width, servername_rect_height
-        )
-
-        stroke_width = 1
-        for dx in [-stroke_width, 0, stroke_width]:
-            for dy in [-stroke_width, 0, stroke_width]:
-                if dx != 0 or dy != 0:
-                    draw.text((servername_pos[0] + dx, servername_pos[1] + dy),
-                              fitted_servername, font=servername_font, fill="black")
-        draw.text(servername_pos, fitted_servername,
-                  font=servername_font, fill="white")
+        await _draw_name_and_avatar_on_image(image, draw, header_name, header_avatar_url)
 
         role_text = "No Filter"
         if role_id and role_id != "none":
@@ -2002,8 +1976,8 @@ async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_
             days_back, str) else f"{days_back} days"
         draw_text_with_stroke(
             draw, (630, 422), time_period_text, font_small, "white", "black", 1)
-        draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
-            "%B %d, %Y"), font_small, "white", "black", 1)
+        draw_text_with_stroke(draw, (550, 38), datetime.now().strftime("%B %d, %Y"),
+                              font_small, "white", "black", 1)
 
         total_items = len(leaderboard_data)
         total_pages = max(
@@ -2039,7 +2013,7 @@ async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_
                     for i in range(len(page_data))
                 ]
 
-            for i, (activity_data_item, (box_x, box_y)) in enumerate(zip(page_data, positions)):
+            for i, (activity_item, (box_x, box_y)) in enumerate(zip(page_data, positions)):
                 global_rank = start_idx + i + 1
 
                 draw_rounded_rectangle(draw, [box_x, box_y, box_x + box_width, box_y + box_height],
@@ -2059,15 +2033,25 @@ async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_
                 draw_rounded_rectangle(draw, [box_x, box_y, box_x + placement_width, box_y + box_height],
                                        radius=8, fill=placement_color, outline=None)
 
-                display_name = activity_data_item['display_name']
+                display_name = activity_item['display_name']
 
-                if sort_by == "users":
-                    value_text = f"{format_user_count(activity_data_item['user_count'])} users"
-                elif sort_by == "sessions":
-                    value_text = f"{format_user_count(activity_data_item['session_count'])} sessions"
+                if target_user is not None:
+                    # User leaderboard: sort by time or sessions (no user_count)
+                    if sort_by == "sessions":
+                        value_text = f"{format_user_count(activity_item.get('session_count', 0))} sessions"
+                    else:
+                        total_seconds = activity_item.get(
+                            'total_duration_seconds', 0) or 0
+                        value_text = format_duration(total_seconds)
                 else:
-                    total_seconds = activity_data_item['total_duration_seconds'] or 0
-                    value_text = format_duration(total_seconds)
+                    if sort_by == "users":
+                        value_text = f"{format_user_count(activity_item['user_count'])} users"
+                    elif sort_by == "sessions":
+                        value_text = f"{format_user_count(activity_item['session_count'])} sessions"
+                    else:
+                        total_seconds = activity_item.get(
+                            'total_duration_seconds', 0) or 0
+                        value_text = format_duration(total_seconds)
 
                 rank_text = f"#{global_rank}"
                 rank_bbox = draw.textbbox((0, 0), rank_text, font=font_medium)
@@ -2098,18 +2082,14 @@ async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_
                                 display_name = display_name[:-4] + "..."
                                 truncated_bbox = draw.textbbox(
                                     (0, 0), display_name, font=name_font)
-                                truncated_width = truncated_bbox[2] - \
-                                    truncated_bbox[0]
-                                if truncated_width <= available_name_width:
+                                if (truncated_bbox[2] - truncated_bbox[0]) <= available_name_width:
                                     break
                     except:
                         while len(display_name) > 3:
                             display_name = display_name[:-4] + "..."
                             truncated_bbox = draw.textbbox(
                                 (0, 0), display_name, font=name_font)
-                            truncated_width = truncated_bbox[2] - \
-                                truncated_bbox[0]
-                            if truncated_width <= available_name_width:
+                            if (truncated_bbox[2] - truncated_bbox[0]) <= available_name_width:
                                 break
 
                 rank_height = rank_bbox[3] - rank_bbox[1]
@@ -2122,16 +2102,16 @@ async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_
                 value_y = box_y + (box_height - value_height) // 2
 
                 rank_x = box_x + (placement_width - rank_width) // 2
-                draw_text_with_stroke(
-                    draw, (rank_x, rank_y), rank_text, font_medium, "white", "black", 1)
+                draw_text_with_stroke(draw, (rank_x, rank_y), rank_text,
+                                      font_medium, "white", "black", 1)
 
                 name_x = box_x + placement_width + 8
-                draw_text_with_stroke(
-                    draw, (name_x, name_y), display_name, name_font, "white", "black", 1)
+                draw_text_with_stroke(draw, (name_x, name_y), display_name,
+                                      name_font, "white", "black", 1)
 
                 value_x = box_x + box_width - value_width - 8
-                draw_text_with_stroke(
-                    draw, (value_x, value_y), value_text, font_medium, "white", "black", 1)
+                draw_text_with_stroke(draw, (value_x, value_y), value_text,
+                                      font_medium, "white", "black", 1)
         else:
             cx, cy = image.size[0] // 2, image.size[1] // 2
             draw_text_centered_with_stroke(
@@ -2149,6 +2129,77 @@ async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_
         raise
 
 
+async def generate_activity_streak_image(guild: discord.Guild, streak_data: list,
+                                         role_id: str = None, db_pool=None,
+                                         target_user: discord.Member = None):
+    """
+    Generate the activity streak image using the server activity template.
+    Shows the top activity per category with its best streak (in days) instead of
+    time/sessions/users.  If target_user is provided the header shows that user.
+    """
+    try:
+        template_path = BASE_DIR / "assets" / "images" / "activity server final png.png"
+        image = Image.open(template_path)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        draw = ImageDraw.Draw(image)
+
+        font_small, font_medium, font_large, font_larger, font_huge, font_giant = get_fonts()
+
+        # Header
+        if target_user is not None:
+            header_name = target_user.name
+            header_avatar_url = target_user.display_avatar.url
+        else:
+            header_name = guild.name
+            header_avatar_url = guild.icon.url if guild.icon else None
+
+        await _draw_name_and_avatar_on_image(image, draw, header_name, header_avatar_url)
+
+        # Role filter label
+        role_text = "No Filter"
+        if role_id and role_id != "none":
+            try:
+                role_id_int = int(role_id)
+                role_name = None
+                if db_pool:
+                    async with db_pool.acquire() as conn:
+                        row = await conn.fetchrow("""
+                            SELECT role_name FROM current_role_members
+                            WHERE role_id = $1 AND guild_id = $2
+                            LIMIT 1
+                        """, role_id_int, guild.id)
+                        if row:
+                            role_name = row['role_name']
+                role_text = role_name if role_name else "Invalid Role"
+            except:
+                role_text = "Invalid Role"
+
+        draw_text_with_stroke(draw, (65, 459), role_text,
+                              font_small, "white", "black", 1)
+        draw_text_with_stroke(draw, (550, 38), datetime.now().strftime("%B %d, %Y"),
+                              font_small, "white", "black", 1)
+
+        if streak_data:
+            def streak_value_getter(row):
+                days = row.get('best_streak_days', 0) or 0
+                return f"{days} days"
+
+            _draw_activity_grid(draw, streak_data, streak_value_getter,
+                                _TYPE_POSITIONS, _INVISIBLE_RECTS)
+
+        img_bytes = io.BytesIO()
+        image.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        gc.collect()
+        return discord.File(img_bytes, filename="activity_streak.png")
+
+    except Exception as e:
+        print(f"[ERROR] Failed to generate activity streak image: {e}")
+        traceback.print_exc()
+        raise
+
+
 # =========================================================
 # UI COMPONENTS
 # =========================================================
@@ -2159,18 +2210,32 @@ class SortBySelect(discord.ui.Select):
         if command_type == "user":
             options = [
                 discord.SelectOption(label="By Sessions", value="sessions",
-                                     description="Sort by session count", default=current_value == "sessions"),
+                                     description="Sort by session count",
+                                     default=current_value == "sessions"),
                 discord.SelectOption(label="By Time", value="time",
-                                     description="Sort by total time spent", default=current_value == "time")
+                                     description="Sort by total time spent",
+                                     default=current_value == "time")
+            ]
+        elif command_type == "user_leaderboard":
+            options = [
+                discord.SelectOption(label="By Sessions", value="sessions",
+                                     description="Sort by session count",
+                                     default=current_value == "sessions"),
+                discord.SelectOption(label="By Time", value="time",
+                                     description="Sort by total time spent",
+                                     default=current_value == "time")
             ]
         else:
             options = [
                 discord.SelectOption(label="By Users", value="users",
-                                     description="Sort by number of users", default=current_value == "users"),
+                                     description="Sort by number of users",
+                                     default=current_value == "users"),
                 discord.SelectOption(label="By Sessions", value="sessions",
-                                     description="Sort by session count", default=current_value == "sessions"),
+                                     description="Sort by session count",
+                                     default=current_value == "sessions"),
                 discord.SelectOption(label="By Time", value="time",
-                                     description="Sort by total time spent", default=current_value == "time")
+                                     description="Sort by total time spent",
+                                     default=current_value == "time")
             ]
         super().__init__(placeholder="Sort by...",
                          options=options, custom_id="sort_by_select")
@@ -2315,18 +2380,27 @@ class PageNumberButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
-
-        # Get total pages from current data
         total_items = len(view.last_stats) if hasattr(
             view, 'last_stats') else 0
         total_pages = max(
             1, (total_items + USERS_PER_PAGE - 1) // USERS_PER_PAGE)
-
         modal = PageJumpModal(view, total_pages)
         await interaction.response.send_modal(modal)
 
 
 class ActivityView(discord.ui.View):
+    """
+    Unified view for user, server, leaderboard, user_leaderboard, streak, and user_streak commands.
+
+    command_type values:
+      - "user"             : per-user activity stats (existing)
+      - "server"           : server-wide activity stats (existing)
+      - "leaderboard"      : server-wide ranked list (existing)
+      - "user_leaderboard" : per-user ranked list (new)
+      - "streak"           : server-wide streak per category (new)
+      - "user_streak"      : per-user streak per category (new)
+    """
+
     def __init__(self, cog, guild: discord.Guild, command_type: str,
                  initial_days: int = 14, initial_role: str = "none",
                  target_user: discord.Member = None, initial_category: str = "all",
@@ -2349,13 +2423,16 @@ class ActivityView(discord.ui.View):
     def _update_components(self):
         self.clear_items()
 
-        if self.command_type == "leaderboard":
+        # Category filter: leaderboard types only
+        if self.command_type in ("leaderboard", "user_leaderboard"):
             self.add_item(CategorySelect(self.guild, self.category))
 
-        if self.command_type in ["user", "server", "leaderboard"]:
+        # Sort-by: everything except pure streak views
+        if self.command_type in ("user", "server", "leaderboard", "user_leaderboard"):
             self.add_item(SortBySelect(self.command_type, self.sort_by))
 
-        if self.command_type == "leaderboard":
+        # Pagination: leaderboard types only
+        if self.command_type in ("leaderboard", "user_leaderboard"):
             self.add_item(PrevButton())
             total_items = len(self.last_stats) if hasattr(
                 self, 'last_stats') else 0
@@ -2364,7 +2441,8 @@ class ActivityView(discord.ui.View):
             self.add_item(PageNumberButton(self.page, total_pages))
             self.add_item(NextButton())
 
-        if self.command_type in ["server", "leaderboard"]:
+        # Role filter: server, leaderboard, streak (not user-specific commands)
+        if self.command_type in ("server", "leaderboard", "streak"):
             role_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary,
                 label="Input Role Id",
@@ -2373,6 +2451,7 @@ class ActivityView(discord.ui.View):
             role_button.callback = self.role_button_callback
             self.add_item(role_button)
 
+        # Refresh button: always
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
             label="🔄 Refresh",
@@ -2381,39 +2460,41 @@ class ActivityView(discord.ui.View):
         refresh_button.callback = self.refresh_callback
         self.add_item(refresh_button)
 
-        time_settings_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
-            custom_id="time_settings"
-        )
-        time_settings_button.callback = self.time_settings_callback
-        self.add_item(time_settings_button)
-
-        if self.show_time_buttons:
-            all_time_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.days == 999999 else discord.ButtonStyle.secondary,
-                label="All Time",
-                custom_id="all_time"
+        # Time settings: all except pure streak (streaks are not time-windowed)
+        if self.command_type not in ("streak", "user_streak"):
+            time_settings_button = discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="⏰ Time Settings",
+                custom_id="time_settings"
             )
-            all_time_button.callback = self.all_time_callback
-            self.add_item(all_time_button)
+            time_settings_button.callback = self.time_settings_callback
+            self.add_item(time_settings_button)
 
-            for days in TIME_PERIODS:
-                days_button = discord.ui.Button(
-                    style=discord.ButtonStyle.primary if self.days == days else discord.ButtonStyle.secondary,
-                    label=f"{days} Days",
-                    custom_id=f"days_{days}"
+            if self.show_time_buttons:
+                all_time_button = discord.ui.Button(
+                    style=discord.ButtonStyle.primary if self.days == 999999 else discord.ButtonStyle.secondary,
+                    label="All Time",
+                    custom_id="all_time"
                 )
-                days_button.callback = self.create_days_callback(days)
-                self.add_item(days_button)
+                all_time_button.callback = self.all_time_callback
+                self.add_item(all_time_button)
 
-            custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success,
-                label=f"Custom ({self.days}d)" if self.days not in TIME_PERIODS and self.days != 999999 else "Custom",
-                custom_id="custom_days"
-            )
-            custom_button.callback = self.custom_days_callback
-            self.add_item(custom_button)
+                for days in TIME_PERIODS:
+                    days_button = discord.ui.Button(
+                        style=discord.ButtonStyle.primary if self.days == days else discord.ButtonStyle.secondary,
+                        label=f"{days} Days",
+                        custom_id=f"days_{days}"
+                    )
+                    days_button.callback = self.create_days_callback(days)
+                    self.add_item(days_button)
+
+                custom_button = discord.ui.Button(
+                    style=discord.ButtonStyle.success,
+                    label=f"Custom ({self.days}d)" if self.days not in TIME_PERIODS and self.days != 999999 else "Custom",
+                    custom_id="custom_days"
+                )
+                custom_button.callback = self.custom_days_callback
+                self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
@@ -2467,8 +2548,10 @@ class ActivityView(discord.ui.View):
 
                 stats = await self.cog.db.get_user_activity_stats(
                     self.guild.id, self.target_user.id, self.days, role_id_param, self.sort_by)
-                streak_stats = await self.cog.db.get_user_streak_stats(self.guild.id, self.target_user.id)
-                file = await generate_user_activity_image(self.guild, self.target_user, display_days, stats, streak_stats, self.sort_by)
+                streak_stats = await self.cog.db.get_user_streak_stats(
+                    self.guild.id, self.target_user.id)
+                file = await generate_user_activity_image(
+                    self.guild, self.target_user, display_days, stats, streak_stats, self.sort_by)
                 self._update_components()
                 await interaction.edit_original_response(attachments=[file], view=self)
 
@@ -2480,8 +2563,10 @@ class ActivityView(discord.ui.View):
                     except ValueError:
                         pass
 
-                stats = await self.cog.db.get_server_activity_stats(self.guild.id, self.days, role_id_param, self.sort_by)
-                file = await generate_server_activity_image(self.guild, display_days, stats, self.role_id, self.sort_by)
+                stats = await self.cog.db.get_server_activity_stats(
+                    self.guild.id, self.days, role_id_param, self.sort_by)
+                file = await generate_server_activity_image(
+                    self.guild, display_days, stats, self.role_id, self.sort_by)
                 self._update_components()
                 await interaction.edit_original_response(attachments=[file], view=self)
 
@@ -2497,14 +2582,57 @@ class ActivityView(discord.ui.View):
                     self.guild.id, self.category, self.days, role_id_param, self.sort_by)
                 self.last_stats = stats
 
-                total_items = len(stats)
                 total_pages = max(
-                    1, (total_items + USERS_PER_PAGE - 1) // USERS_PER_PAGE)
+                    1, (len(stats) + USERS_PER_PAGE - 1) // USERS_PER_PAGE)
                 if self.page >= total_pages:
                     self.page = max(0, total_pages - 1)
 
                 file = await generate_activity_leaderboard_image(
-                    self.guild, stats, self.category, display_days, self.role_id, self.sort_by, self.page)
+                    self.guild, stats, self.category, display_days,
+                    self.role_id, self.sort_by, self.page)
+                self._update_components()
+                await interaction.edit_original_response(attachments=[file], view=self)
+
+            elif self.command_type == "user_leaderboard":
+                stats = await self.cog.db.get_user_leaderboard_stats(
+                    self.guild.id, self.target_user.id, self.category, self.days, self.sort_by)
+                self.last_stats = stats
+
+                total_pages = max(
+                    1, (len(stats) + USERS_PER_PAGE - 1) // USERS_PER_PAGE)
+                if self.page >= total_pages:
+                    self.page = max(0, total_pages - 1)
+
+                file = await generate_activity_leaderboard_image(
+                    self.guild, stats, self.category, display_days,
+                    "none", self.sort_by, self.page,
+                    target_user=self.target_user)
+                self._update_components()
+                await interaction.edit_original_response(attachments=[file], view=self)
+
+            elif self.command_type == "streak":
+                role_id_param = None
+                if self.role_id != "none":
+                    try:
+                        role_id_param = int(self.role_id)
+                    except ValueError:
+                        pass
+
+                stats = await self.cog.db.get_activity_streak_stats(
+                    self.guild.id, role_id_param)
+                file = await generate_activity_streak_image(
+                    self.guild, stats, self.role_id,
+                    db_pool=self.cog.db.pool)
+                self._update_components()
+                await interaction.edit_original_response(attachments=[file], view=self)
+
+            elif self.command_type == "user_streak":
+                stats = await self.cog.db.get_user_activity_streak_stats(
+                    self.guild.id, self.target_user.id)
+                file = await generate_activity_streak_image(
+                    self.guild, stats, "none",
+                    db_pool=self.cog.db.pool,
+                    target_user=self.target_user)
                 self._update_components()
                 await interaction.edit_original_response(attachments=[file], view=self)
 
@@ -2724,10 +2852,8 @@ class ActivityTracker(commands.Cog):
         if not self.bot.intents.members:
             print("[WARNING] Members intent is disabled! This may cause issues.")
 
-        # Set the cog reference in the database instance
         self.db.cog = self
 
-        # Set the cog reference in the session manager
         if self.db.session_manager:
             self.db.session_manager.cog = self
 
@@ -2772,7 +2898,6 @@ class ActivityTracker(commands.Cog):
                     activity_type = self.get_activity_type(activity)
                     display_name = self.get_activity_name(activity)
 
-                    # get_activity_name returns None for custom statuses - skip them
                     if not display_name or display_name == "Unknown":
                         continue
 
@@ -2798,7 +2923,8 @@ class ActivityTracker(commands.Cog):
             await asyncio.sleep(0.5)
 
         print(
-            f"✅ Startup scan complete: {sessions_found} active sessions now being tracked across {len(self.active_sessions)} users")
+            f"✅ Startup scan complete: {sessions_found} active sessions now being tracked "
+            f"across {len(self.active_sessions)} users")
 
     def cog_unload(self):
         if self.startup_scan_task and not self.startup_scan_task.done():
@@ -2903,7 +3029,6 @@ class ActivityTracker(commands.Cog):
                 return None
             return (act.type, name)
 
-        # Build dictionaries using the actual Member objects (before and after)
         before_activities = {}
         for a in before.activities:
             key = activity_key(a)
@@ -2916,12 +3041,10 @@ class ActivityTracker(commands.Cog):
             if key is not None:
                 after_activities[key] = a
 
-        # Activities that disappeared → end session (USE 'before' DIRECTLY)
         for key, activity in before_activities.items():
             if key not in after_activities:
                 await self.end_activity_session(before, activity, current_time)
 
-        # Activities that appeared → start session (USE 'after' DIRECTLY)
         for key, activity in after_activities.items():
             if key not in before_activities:
                 await self.start_activity_session(after, activity, current_time)
@@ -2936,14 +3059,12 @@ class ActivityTracker(commands.Cog):
         activity_type = self.get_activity_type(activity)
         display_name = self.get_activity_name(activity)
 
-        # get_activity_name returns None for custom statuses - skip them
         if not display_name or display_name == "Unknown":
             return
 
         session_key = f"{guild_id}:{activity_type}:{display_name}"
 
         if user_id in self.active_sessions and session_key in self.active_sessions[user_id]:
-            # Session already tracked — refresh last_updated and role_ids
             self.active_sessions[user_id][session_key]['last_updated'] = start_time
             self.active_sessions[user_id][session_key]['role_ids'] = [
                 role.id for role in member.roles]
@@ -2972,7 +3093,6 @@ class ActivityTracker(commands.Cog):
         activity_type = self.get_activity_type(activity)
         display_name = self.get_activity_name(activity)
 
-        # get_activity_name returns None for custom statuses - skip them
         if not display_name:
             return
 
@@ -3006,6 +3126,16 @@ class ActivityTracker(commands.Cog):
             except Exception as e:
                 print(f"[ERROR] Error saving ended session: {e}")
 
+            # Update per-activity streak
+            try:
+                activity_date = end_time.date() if end_time.tzinfo else end_time.replace(
+                    tzinfo=timezone.utc).date()
+                await self.db.upsert_activity_streak_by_name(
+                    guild_id, user_id, activity_type, display_name, activity_date)
+            except Exception as e:
+                print(
+                    f"[WARNING] Failed to update activity streak by name: {e}")
+
     def get_activity_type(self, activity) -> str:
         if activity.type == discord.ActivityType.playing:
             return "playing"
@@ -3025,15 +3155,11 @@ class ActivityTracker(commands.Cog):
     def get_activity_name(self, activity) -> Optional[str]:
         """
         Returns the display name for an activity, or None if it should be skipped.
-
-        CRITICAL FIX: Skip ALL custom statuses - these are just user notes,
-        not real activities like games or music.
+        Skips ALL custom statuses — these are just user notes, not real activities.
         """
-        # ✅ Skip ALL custom statuses completely - these are just user notes
         if activity.type == discord.ActivityType.custom:
             return None
 
-        # Normal activities (games, watching, streaming, etc.)
         if hasattr(activity, 'name') and activity.name:
             return activity.name
         elif hasattr(activity, 'details') and activity.details:
@@ -3072,7 +3198,6 @@ class ActivityTracker(commands.Cog):
                 activity_type = self.get_activity_type(activity)
                 display_name = self.get_activity_name(activity)
 
-                # get_activity_name returns None for custom statuses - skip them
                 if not display_name or display_name == "Unknown":
                     continue
 
@@ -3139,7 +3264,7 @@ class ActivityTracker(commands.Cog):
             return (14, "14 days")
 
     # =========================================================
-    # COMMANDS
+    # SHARED COMMAND HANDLER
     # =========================================================
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
@@ -3168,34 +3293,72 @@ class ActivityTracker(commands.Cog):
                     await send_method(msg, delete_after=5)
                 return
 
-            # Get server default days
             default_days, time_display = await self.get_server_default_days(guild.id)
 
+            # ---- user activity ----
             if command_type == "user":
                 if target_user is None:
                     target_user = user
 
-                view = ActivityView(self, guild, "user", default_days,
-                                    "none", target_user, "all", "time", 0, using_server_default=True)
+                view = ActivityView(self, guild, "user", default_days, "none",
+                                    target_user, "all", "time", 0, using_server_default=True)
                 stats = await self.db.get_user_activity_stats(guild.id, target_user.id, default_days, None, "time")
                 streak_stats = await self.db.get_user_streak_stats(guild.id, target_user.id)
                 file = await generate_user_activity_image(guild, target_user, time_display, stats, streak_stats, "time")
                 await send_method(file=file, view=view)
 
+            # ---- server activity ----
             elif command_type == "server":
-                view = ActivityView(self, guild, "server",
-                                    default_days, "none", None, "all", "users", 0, using_server_default=True)
+                view = ActivityView(self, guild, "server", default_days, "none",
+                                    None, "all", "users", 0, using_server_default=True)
                 stats = await self.db.get_server_activity_stats(guild.id, default_days, None, "users")
                 file = await generate_server_activity_image(guild, time_display, stats, "none", "users")
                 await send_method(file=file, view=view)
 
+            # ---- leaderboard (server or per-user) ----
             elif command_type == "leaderboard":
-                view = ActivityView(self, guild, "leaderboard",
-                                    default_days, "none", None, "all", "users", 0, using_server_default=True)
-                stats = await self.db.get_leaderboard_stats(guild.id, "all", default_days, None, "users")
-                file = await generate_activity_leaderboard_image(guild, stats, "all", time_display, "none", "users", 0)
+                if target_user is not None:
+                    # Per-user leaderboard
+                    view = ActivityView(self, guild, "user_leaderboard", default_days, "none",
+                                        target_user, "all", "time", 0, using_server_default=True)
+                    stats = await self.db.get_user_leaderboard_stats(
+                        guild.id, target_user.id, "all", default_days, "time")
+                    view.last_stats = stats
+                    file = await generate_activity_leaderboard_image(
+                        guild, stats, "all", time_display, "none", "time", 0,
+                        target_user=target_user)
+                else:
+                    # Server leaderboard
+                    view = ActivityView(self, guild, "leaderboard", default_days, "none",
+                                        None, "all", "users", 0, using_server_default=True)
+                    stats = await self.db.get_leaderboard_stats(guild.id, "all", default_days, None, "users")
+                    view.last_stats = stats
+                    file = await generate_activity_leaderboard_image(
+                        guild, stats, "all", time_display, "none", "users", 0)
                 await send_method(file=file, view=view)
 
+            # ---- streak (server or per-user) ----
+            elif command_type == "streak":
+                if target_user is not None:
+                    # Per-user streak
+                    view = ActivityView(self, guild, "user_streak", default_days, "none",
+                                        target_user, "all", "time", 0, using_server_default=True)
+                    stats = await self.db.get_user_activity_streak_stats(guild.id, target_user.id)
+                    file = await generate_activity_streak_image(
+                        guild, stats, "none",
+                        db_pool=self.db.pool,
+                        target_user=target_user)
+                else:
+                    # Server streak
+                    view = ActivityView(self, guild, "streak", default_days, "none",
+                                        None, "all", "users", 0, using_server_default=True)
+                    stats = await self.db.get_activity_streak_stats(guild.id, None)
+                    file = await generate_activity_streak_image(
+                        guild, stats, "none",
+                        db_pool=self.db.pool)
+                await send_method(file=file, view=view)
+
+            # ---- whos ----
             elif command_type == "whos":
                 if not activity_type or not activity_name:
                     if is_interaction:
@@ -3208,12 +3371,12 @@ class ActivityTracker(commands.Cog):
                 current_time = datetime.utcnow()
                 current_sessions = []
 
-                for user_id, sessions in self.active_sessions.items():
+                for uid, sessions in self.active_sessions.items():
                     for session_key, session_data in sessions.items():
                         if (session_data['display_name'].lower() == activity_name.lower() and
                             session_data['activity_type'] == activity_type and
                                 session_data['guild_id'] == guild.id):
-                            member = guild.get_member(user_id)
+                            member = guild.get_member(uid)
                             if member:
                                 duration = current_time - \
                                     session_data['start_time']
@@ -3278,13 +3441,18 @@ class ActivityTracker(commands.Cog):
         await self._handle_activity_command(ctx, "server", is_interaction=False)
 
     @commands.command(name="al")
-    async def activity_leaderboard_shortcut(self, ctx: commands.Context):
-        await self._handle_activity_command(ctx, "leaderboard", is_interaction=False)
+    async def activity_leaderboard_shortcut(self, ctx: commands.Context, user: discord.Member = None):
+        await self._handle_activity_command(ctx, "leaderboard", target_user=user, is_interaction=False)
 
     @commands.command(name="aw")
     async def activity_whos_shortcut(self, ctx: commands.Context, activity_type: str, *, activity_name: str):
         await self._handle_activity_command(ctx, "whos", activity_type=activity_type,
                                             activity_name=activity_name, is_interaction=False)
+
+    @commands.command(name="sas")
+    async def activity_streak_shortcut(self, ctx: commands.Context, user: discord.Member = None):
+        """Shortcut for activity streak. Usage: sas [user]"""
+        await self._handle_activity_command(ctx, "streak", target_user=user, is_interaction=False)
 
     # =========================================================
     # PREFIX COMMAND GROUP
@@ -3296,13 +3464,15 @@ class ActivityTracker(commands.Cog):
             "Available commands:\n"
             "- `status activity user [user]` - Show user activity stats\n"
             "- `status activity server` - Show server activity stats\n"
-            "- `status activity leaderboard` - Show activity leaderboard\n"
-            "- `status activity whos <type> <name>` - See who's doing an activity\n\n"
+            "- `status activity leaderboard [user]` - Show activity leaderboard (server or user)\n"
+            "- `status activity whos <type> <name>` - See who's doing an activity\n"
+            "- `status activity streak [user]` - Show activity streaks (server or user)\n\n"
             "Shortcuts:\n"
             "- `au [user]` - Activity user\n"
             "- `as` - Activity server\n"
-            "- `al` - Activity leaderboard\n"
-            "- `aw <type> <name>` - Activity whos"
+            "- `al [user]` - Activity leaderboard\n"
+            "- `aw <type> <name>` - Activity whos\n"
+            "- `sas [user]` - Activity streak"
         )
 
     @status_group.group(name="activity", invoke_without_command=True)
@@ -3311,13 +3481,15 @@ class ActivityTracker(commands.Cog):
             "Available activity commands:\n"
             "- `status activity user [user]` - Show user activity stats\n"
             "- `status activity server` - Show server activity stats\n"
-            "- `status activity leaderboard` - Show activity leaderboard\n"
-            "- `status activity whos <type> <name>` - See who's doing an activity\n\n"
+            "- `status activity leaderboard [user]` - Show activity leaderboard (server or user)\n"
+            "- `status activity whos <type> <name>` - See who's doing an activity\n"
+            "- `status activity streak [user]` - Show activity streaks (server or user)\n\n"
             "Shortcuts:\n"
             "- `au [user]` - Activity user\n"
             "- `as` - Activity server\n"
-            "- `al` - Activity leaderboard\n"
-            "- `aw <type> <name>` - Activity whos"
+            "- `al [user]` - Activity leaderboard\n"
+            "- `aw <type> <name>` - Activity whos\n"
+            "- `sas [user]` - Activity streak"
         )
 
     @status_activity_group.command(name="user")
@@ -3329,13 +3501,19 @@ class ActivityTracker(commands.Cog):
         await self._handle_activity_command(ctx, "server", is_interaction=False)
 
     @status_activity_group.command(name="leaderboard")
-    async def status_activity_leaderboard_prefix(self, ctx: commands.Context):
-        await self._handle_activity_command(ctx, "leaderboard", is_interaction=False)
+    async def status_activity_leaderboard_prefix(self, ctx: commands.Context, user: discord.Member = None):
+        """Show activity leaderboard. If a user is provided, shows that user's top activities."""
+        await self._handle_activity_command(ctx, "leaderboard", target_user=user, is_interaction=False)
 
     @status_activity_group.command(name="whos")
     async def status_activity_whos_prefix(self, ctx: commands.Context, activity_type: str, *, activity_name: str):
         await self._handle_activity_command(ctx, "whos", activity_type=activity_type,
                                             activity_name=activity_name, is_interaction=False)
+
+    @status_activity_group.command(name="streak")
+    async def status_activity_streak_prefix(self, ctx: commands.Context, user: discord.Member = None):
+        """Show activity streaks per category. If a user is provided, shows that user's streaks."""
+        await self._handle_activity_command(ctx, "streak", target_user=user, is_interaction=False)
 
     # =========================================================
     # SLASH COMMAND GROUP
@@ -3356,9 +3534,13 @@ class ActivityTracker(commands.Cog):
     async def status_activity_server(self, interaction: discord.Interaction):
         await self._handle_activity_command(interaction, "server", is_interaction=True)
 
-    @activity_subgroup.command(name="leaderboard", description="Show activity leaderboards")
-    async def status_activity_leaderboard(self, interaction: discord.Interaction):
-        await self._handle_activity_command(interaction, "leaderboard", is_interaction=True)
+    @activity_subgroup.command(
+        name="leaderboard",
+        description="Show activity leaderboard for the server, or top activities for a specific user")
+    @app_commands.describe(user="Optional: show leaderboard for this user instead of the server")
+    async def status_activity_leaderboard(self, interaction: discord.Interaction,
+                                          user: Optional[discord.Member] = None):
+        await self._handle_activity_command(interaction, "leaderboard", target_user=user, is_interaction=True)
 
     @activity_subgroup.command(name="whos", description="See who's currently doing an activity")
     @app_commands.describe(activity_type="Type of activity", activity_name="Name of the activity")
@@ -3374,6 +3556,14 @@ class ActivityTracker(commands.Cog):
                                    activity_type: str, activity_name: str):
         await self._handle_activity_command(interaction, "whos", activity_type=activity_type,
                                             activity_name=activity_name, is_interaction=True)
+
+    @activity_subgroup.command(
+        name="streak",
+        description="Show top activity streaks per category for the server or a specific user")
+    @app_commands.describe(user="Optional: show streaks for this user instead of the server")
+    async def status_activity_streak(self, interaction: discord.Interaction,
+                                     user: Optional[discord.Member] = None):
+        await self._handle_activity_command(interaction, "streak", target_user=user, is_interaction=True)
 
 
 # =========================================================

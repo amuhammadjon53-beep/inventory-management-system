@@ -49,7 +49,6 @@ const serverDataCache = new ServerDataCache(30, 5 * 60 * 1000);
 const getCacheKey = (type, id, params) => `${type}:${id}:${JSON.stringify(params)}`;
 
 // ─── Duration formatter ───────────────────────────────────────────────────────
-// Formats seconds into SS / MM:SS / HH:MM:SS / D:HH:MM:SS
 
 const formatDuration = (totalSeconds) => {
   const s = Math.round(totalSeconds);
@@ -64,46 +63,43 @@ const formatDuration = (totalSeconds) => {
 };
 
 // ─── Stat type registry ───────────────────────────────────────────────────────
-// format: 'count' | 'duration'
-// dataKey: the field name in the hourly response (hour_0..hour_23 key base — always hour_N)
-// totalKey: which key holds the total in the response
 
 const STAT_TYPES = {
   server: [
-    { value: 'messages',             label: 'Messages',                  endpoint: 'messages',            hasRoleFilter: true,  format: 'count'    },
-    { value: 'voice',                label: 'Voice Activity',            endpoint: 'voice',               hasRoleFilter: true,  format: 'duration' },
-    { value: 'activity',             label: 'Status Activity Time',      endpoint: 'activity',            hasRoleFilter: true,  format: 'duration' },
-    { value: 'activity-sessions',    label: 'Status Activity Sessions',  endpoint: 'activity-sessions',   hasRoleFilter: true,  format: 'count'    },
-    { value: 'invites',              label: 'Invites',                   endpoint: 'invites',             hasRoleFilter: true,  format: 'count'    },
-    { value: 'emoji-usage',          label: 'Emoji Usage',               endpoint: 'emoji-usage',         hasRoleFilter: true,  format: 'count'    },
-    { value: 'mentions-sent',        label: 'Mentions Sent',             endpoint: 'mentions-sent',       hasRoleFilter: true,  format: 'count'    },
-    { value: 'mentions-received',    label: 'Mentions Received',         endpoint: 'mentions-received',   hasRoleFilter: true,  format: 'count'    },
-    { value: 'joins',                label: 'Joins',                     endpoint: 'joins',               hasRoleFilter: false, format: 'count'    },
-    { value: 'leaves',               label: 'Leaves',                    endpoint: 'leaves',              hasRoleFilter: false, format: 'count'    },
+    { value: 'messages',          label: 'Messages',                 endpoint: 'messages',          hasRoleFilter: true,  format: 'count'    },
+    { value: 'voice',             label: 'Voice Activity',           endpoint: 'voice',             hasRoleFilter: true,  format: 'duration' },
+    { value: 'activity',          label: 'Status Activity Time',     endpoint: 'activity',          hasRoleFilter: true,  format: 'duration' },
+    { value: 'activity-sessions', label: 'Status Activity Sessions', endpoint: 'activity-sessions', hasRoleFilter: true,  format: 'count'    },
+    { value: 'invites',           label: 'Invites',                  endpoint: 'invites',           hasRoleFilter: true,  format: 'count'    },
+    { value: 'emoji-usage',       label: 'Emoji Usage',              endpoint: 'emoji-usage',       hasRoleFilter: true,  format: 'count'    },
+    { value: 'mentions-sent',     label: 'Mentions Sent',            endpoint: 'mentions-sent',     hasRoleFilter: true,  format: 'count'    },
+    { value: 'mentions-received', label: 'Mentions Received',        endpoint: 'mentions-received', hasRoleFilter: true,  format: 'count'    },
+    { value: 'joins',             label: 'Joins',                    endpoint: 'joins',             hasRoleFilter: false, format: 'count'    },
+    { value: 'leaves',            label: 'Leaves',                   endpoint: 'leaves',            hasRoleFilter: false, format: 'count'    },
   ],
   user: [
-    { value: 'messages',             label: 'Messages',                  endpoint: 'messages',            hasRoleFilter: true,  format: 'count'    },
-    { value: 'voice',                label: 'Voice Activity',            endpoint: 'voice',               hasRoleFilter: true,  format: 'duration' },
-    { value: 'activity',             label: 'Status Activity Time',      endpoint: 'activity',            hasRoleFilter: true,  format: 'duration' },
-    { value: 'activity-sessions',    label: 'Status Activity Sessions',  endpoint: 'activity-sessions',   hasRoleFilter: true,  format: 'count'    },
-    { value: 'invites-sent',         label: 'Invites Sent',              endpoint: 'invites-sent',        hasRoleFilter: true,  format: 'count'    },
-    { value: 'emoji-usage',          label: 'Emoji Usage',               endpoint: 'emoji-usage',         hasRoleFilter: true,  format: 'count'    },
-    { value: 'mentions-sent',        label: 'Mentions Sent',             endpoint: 'mentions-sent',       hasRoleFilter: true,  format: 'count'    },
-    { value: 'mentions-received',    label: 'Mentions Received',         endpoint: 'mentions-received',   hasRoleFilter: true,  format: 'count'    },
+    { value: 'messages',          label: 'Messages',                 endpoint: 'messages',          hasRoleFilter: true,  format: 'count'    },
+    { value: 'voice',             label: 'Voice Activity',           endpoint: 'voice',             hasRoleFilter: true,  format: 'duration' },
+    { value: 'activity',          label: 'Status Activity Time',     endpoint: 'activity',          hasRoleFilter: true,  format: 'duration' },
+    { value: 'activity-sessions', label: 'Status Activity Sessions', endpoint: 'activity-sessions', hasRoleFilter: true,  format: 'count'    },
+    { value: 'invites-sent',      label: 'Invites Sent',             endpoint: 'invites-sent',      hasRoleFilter: true,  format: 'count'    },
+    { value: 'emoji-usage',       label: 'Emoji Usage',              endpoint: 'emoji-usage',       hasRoleFilter: true,  format: 'count'    },
+    { value: 'mentions-sent',     label: 'Mentions Sent',            endpoint: 'mentions-sent',     hasRoleFilter: true,  format: 'count'    },
+    { value: 'mentions-received', label: 'Mentions Received',        endpoint: 'mentions-received', hasRoleFilter: true,  format: 'count'    },
   ],
   channel: [
-    { value: 'messages',             label: 'Messages',                  endpoint: 'messages',            hasRoleFilter: true,  format: 'count'    },
-    { value: 'voice',                label: 'Voice Activity',            endpoint: 'voice',               hasRoleFilter: true,  format: 'duration' },
-    { value: 'emoji-usage',          label: 'Emoji Usage',               endpoint: 'emoji-usage',         hasRoleFilter: true,  format: 'count'    },
-    { value: 'mentions-sent',        label: 'Mentions Sent',             endpoint: 'mentions-sent',       hasRoleFilter: true,  format: 'count'    },
-    { value: 'mentions-received',    label: 'Mentions Received',         endpoint: 'mentions-received',   hasRoleFilter: true,  format: 'count'    },
+    { value: 'messages',          label: 'Messages',                 endpoint: 'messages',          hasRoleFilter: true,  format: 'count'    },
+    { value: 'voice',             label: 'Voice Activity',           endpoint: 'voice',             hasRoleFilter: true,  format: 'duration' },
+    { value: 'emoji-usage',       label: 'Emoji Usage',              endpoint: 'emoji-usage',       hasRoleFilter: true,  format: 'count'    },
+    { value: 'mentions-sent',     label: 'Mentions Sent',            endpoint: 'mentions-sent',     hasRoleFilter: true,  format: 'count'    },
+    { value: 'mentions-received', label: 'Mentions Received',        endpoint: 'mentions-received', hasRoleFilter: true,  format: 'count'    },
   ],
   category: [
-    { value: 'messages',             label: 'Messages',                  endpoint: 'messages',            hasRoleFilter: true,  format: 'count'    },
-    { value: 'voice',                label: 'Voice Activity',            endpoint: 'voice',               hasRoleFilter: true,  format: 'duration' },
-    { value: 'emoji-usage',          label: 'Emoji Usage',               endpoint: 'emoji-usage',         hasRoleFilter: true,  format: 'count'    },
-    { value: 'mentions-sent',        label: 'Mentions Sent',             endpoint: 'mentions-sent',       hasRoleFilter: true,  format: 'count'    },
-    { value: 'mentions-received',    label: 'Mentions Received',         endpoint: 'mentions-received',   hasRoleFilter: true,  format: 'count'    },
+    { value: 'messages',          label: 'Messages',                 endpoint: 'messages',          hasRoleFilter: true,  format: 'count'    },
+    { value: 'voice',             label: 'Voice Activity',           endpoint: 'voice',             hasRoleFilter: true,  format: 'duration' },
+    { value: 'emoji-usage',       label: 'Emoji Usage',              endpoint: 'emoji-usage',       hasRoleFilter: true,  format: 'count'    },
+    { value: 'mentions-sent',     label: 'Mentions Sent',            endpoint: 'mentions-sent',     hasRoleFilter: true,  format: 'count'    },
+    { value: 'mentions-received', label: 'Mentions Received',        endpoint: 'mentions-received', hasRoleFilter: true,  format: 'count'    },
   ],
 };
 
@@ -150,60 +146,77 @@ const AccessDenied = ({ accessLevel }) => (
 const DistributionDashboard = () => {
 
   // Auth
-  const [isAuthenticated, setIsAuthenticated]       = useState(false);
-  const [isPublicMode, setIsPublicMode]             = useState(false);
-  const [currentServer, setCurrentServer]           = useState(null);
-  const [hasAccess, setHasAccess]                   = useState(null);
+  const [isAuthenticated, setIsAuthenticated]           = useState(false);
+  const [isPublicMode, setIsPublicMode]                 = useState(false);
+  const [currentServer, setCurrentServer]               = useState(null);
+  const [hasAccess, setHasAccess]                       = useState(null);
   const [dashboardAccessLevel, setDashboardAccessLevel] = useState('Member');
-  const [loadingServers, setLoadingServers]         = useState(true);
-  const [serverTimezone, setServerTimezone]         = useState('UTC');
+  const [loadingServers, setLoadingServers]             = useState(true);
+  const [serverTimezone, setServerTimezone]             = useState('UTC');
 
   // Filters
-  const [selectedView, setSelectedView]             = useState('server');
-  const [selectedStatType, setSelectedStatType]     = useState('messages');
-  const [timePeriod, setTimePeriod]                 = useState('30');
-  const [customDaysBack, setCustomDaysBack]         = useState('');
-  const [customStartDate, setCustomStartDate]       = useState('');
-  const [customEndDate, setCustomEndDate]           = useState('');
-  const [selectedUserId, setSelectedUserId]         = useState('');
+  const [selectedView, setSelectedView]         = useState('server');
+  const [selectedStatType, setSelectedStatType] = useState('messages');
+  const [timePeriod, setTimePeriod]             = useState('30');
+  const [customDaysBack, setCustomDaysBack]     = useState('');
+  const [customStartDate, setCustomStartDate]   = useState('');
+  const [customEndDate, setCustomEndDate]       = useState('');
+  const [selectedUserId, setSelectedUserId]     = useState('');
   const [selectedChannelId, setSelectedChannelId]   = useState('');
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
-  const [selectedRoleId, setSelectedRoleId]         = useState('');
+  const [selectedRoleId, setSelectedRoleId]     = useState('');
+
+  // ── Heatmap view — lifted up so we can trigger the right fetch ─────────────
+  // autoHeatmapView: what getHeatmapView() computes (drives AUTO badge)
+  // activeHeatmapView: what the user actually sees (may be overridden)
+  const autoHeatmapView   = getHeatmapView(timePeriod, customDaysBack);
+  const [activeHeatmapView, setActiveHeatmapView] = useState(autoHeatmapView);
+
+  // When filters change auto view, reset active view to match
+  const prevAutoViewRef = useRef(autoHeatmapView);
+  useEffect(() => {
+    if (prevAutoViewRef.current !== autoHeatmapView) {
+      prevAutoViewRef.current = autoHeatmapView;
+      setActiveHeatmapView(autoHeatmapView);
+    }
+  }, [autoHeatmapView]);
 
   // Search & dropdowns
-  const [userSearch, setUserSearch]                 = useState('');
-  const [channelSearch, setChannelSearch]           = useState('');
-  const [categorySearch, setCategorySearch]         = useState('');
-  const [tempRoleSearch, setTempRoleSearch]         = useState('');
-  const [tempRoleId, setTempRoleId]                 = useState('');
-  const [showApplyButton, setShowApplyButton]       = useState(false);
-  const [showUserDropdown, setShowUserDropdown]     = useState(false);
-  const [showChannelDropdown, setShowChannelDropdown] = useState(false);
+  const [userSearch, setUserSearch]           = useState('');
+  const [channelSearch, setChannelSearch]     = useState('');
+  const [categorySearch, setCategorySearch]   = useState('');
+  const [tempRoleSearch, setTempRoleSearch]   = useState('');
+  const [tempRoleId, setTempRoleId]           = useState('');
+  const [showApplyButton, setShowApplyButton] = useState(false);
+  const [showUserDropdown, setShowUserDropdown]         = useState(false);
+  const [showChannelDropdown, setShowChannelDropdown]   = useState(false);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
-  const [showRoleDropdown, setShowRoleDropdown]     = useState(false);
+  const [showRoleDropdown, setShowRoleDropdown]         = useState(false);
 
   // Entity lists
-  const [users, setUsers]                           = useState([]);
-  const [filteredUsers, setFilteredUsers]           = useState([]);
-  const [channels, setChannels]                     = useState([]);
-  const [filteredChannels, setFilteredChannels]     = useState([]);
-  const [categories, setCategories]                 = useState([]);
+  const [users, setUsers]                         = useState([]);
+  const [filteredUsers, setFilteredUsers]         = useState([]);
+  const [channels, setChannels]                   = useState([]);
+  const [filteredChannels, setFilteredChannels]   = useState([]);
+  const [categories, setCategories]               = useState([]);
   const [filteredCategories, setFilteredCategories] = useState([]);
-  const [roles, setRoles]                           = useState([]);
-  const [filteredRoles, setFilteredRoles]           = useState([]);
+  const [roles, setRoles]                         = useState([]);
+  const [filteredRoles, setFilteredRoles]         = useState([]);
 
-  // Chart data — single source of truth, both charts use this
-  const [hourlyData, setHourlyData]                 = useState(null);  // Array(24) of numbers | null
-  const [heatmapData, setHeatmapData]               = useState({});    // { 'YYYY-MM-DD': number }
-  const [loadingData, setLoadingData]               = useState(false);
+  // Chart data
+  const [hourlyData, setHourlyData]       = useState(null);
+  const [heatmapData, setHeatmapData]     = useState({});
+  const [loadingPieChart, setLoadingPieChart] = useState(false);
+  const [loadingHeatmap, setLoadingHeatmap]   = useState(false);
 
-  const rolesRef       = useRef([]);
-  const prevFiltersRef = useRef('');
-  const NAVBAR_HEIGHT  = "80px";
+  const rolesRef              = useRef([]);
+  const prevFiltersRef        = useRef('');  // pie chart cache key
+  const prevHeatmapFiltersRef = useRef('');  // heatmap cache key (includes activeHeatmapView)
+  const NAVBAR_HEIGHT         = "80px";
 
   useEffect(() => { rolesRef.current = roles; }, [roles]);
 
-  // Reset stat type when view changes to one that doesn't have the current type
+  // Reset stat type when view changes
   useEffect(() => {
     const types = STAT_TYPES[selectedView];
     if (types && !types.find(t => t.value === selectedStatType)) {
@@ -225,7 +238,6 @@ const DistributionDashboard = () => {
     fetchTz();
   }, [currentServer, isPublicMode]);
 
-  // Initial auth load
   useEffect(() => { loadInitialData(); }, []);
 
   const fallbackPublic = () => {
@@ -262,7 +274,7 @@ const DistributionDashboard = () => {
 
   const checkServerAccess = async (guildId, hasAdmin, hasManageServer) => {
     try {
-      const r = await fetch(`${API_BASE_URL}/api/settings/get`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ guild_id: guildId }) });
+      const r = await fetch(`${API_BASE_URL}/api/settings/get`, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'include', body: JSON.stringify({ guild_id: guildId }) });
       if (!r.ok) { setHasAccess(false); return; }
       const d = await r.json();
       const lvl = d.dashboard_access_level || 'Member';
@@ -272,23 +284,50 @@ const DistributionDashboard = () => {
     } catch { setHasAccess(false); }
   };
 
-  // Load entity lists when server / access changes
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
     profileCache.clear();
     fetchAllUsers(); fetchAllChannels(); fetchAllCategories(); fetchAllRoles();
   }, [currentServer, hasAccess]);
 
-  // ── Main data fetch — triggered by any filter change ──────────────────────
+  // ── Pie chart fetch — never depends on activeHeatmapView ─────────────────
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
-    const key = JSON.stringify({ selectedView, selectedStatType, timePeriod, customDaysBack, customStartDate, customEndDate, selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId, serverTimezone });
+    const key = JSON.stringify({
+      selectedView, selectedStatType, timePeriod, customDaysBack,
+      customStartDate, customEndDate, selectedUserId, selectedChannelId,
+      selectedCategoryId, selectedRoleId, serverTimezone,
+    });
     if (prevFiltersRef.current === key) return;
     prevFiltersRef.current = key;
-    fetchAllData();
-  }, [selectedView, selectedStatType, timePeriod, customDaysBack, customStartDate, customEndDate, selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId, currentServer, hasAccess, serverTimezone]);
+    fetchDistributionData();
+  }, [
+    selectedView, selectedStatType, timePeriod, customDaysBack,
+    customStartDate, customEndDate, selectedUserId, selectedChannelId,
+    selectedCategoryId, selectedRoleId, currentServer, hasAccess,
+    serverTimezone,
+  ]);
 
-  // ── Username lazy-load on dropdown open ───────────────────────────────────
+  // ── Heatmap fetch — also re-runs when activeHeatmapView changes ──────────
+  useEffect(() => {
+    if (!currentServer || !hasAccess) return;
+    const key = JSON.stringify({
+      selectedView, selectedStatType, timePeriod, customDaysBack,
+      customStartDate, customEndDate, selectedUserId, selectedChannelId,
+      selectedCategoryId, selectedRoleId, serverTimezone,
+      activeHeatmapView,
+    });
+    if (prevHeatmapFiltersRef.current === key) return;
+    prevHeatmapFiltersRef.current = key;
+    fetchDailyHeatmapData(activeHeatmapView);
+  }, [
+    selectedView, selectedStatType, timePeriod, customDaysBack,
+    customStartDate, customEndDate, selectedUserId, selectedChannelId,
+    selectedCategoryId, selectedRoleId, currentServer, hasAccess,
+    serverTimezone, activeHeatmapView,
+  ]);
+
+  // Username lazy-load
   useEffect(() => {
     if (!showUserDropdown || !filteredUsers.length) return;
     const missing = filteredUsers.filter(u => !u.name);
@@ -430,112 +469,157 @@ const DistributionDashboard = () => {
     return { startDate: start, endDate: end };
   };
 
-  const getDaysBack = () => {
-    if (timePeriod === 'all') return 0;
-    if (timePeriod === 'custom-lookback') return parseInt(customDaysBack) || 30;
-    if (timePeriod === 'custom-range') {
-      if (!customStartDate || !customEndDate) return 30;
-      return Math.ceil((new Date(customEndDate) - new Date(customStartDate)) / 86400000);
-    }
+  const getTimePeriodLabel = () => {
+    if (timePeriod === 'all') return null;
+    if (timePeriod === 'custom-lookback') return customDaysBack ? parseInt(customDaysBack) : null;
+    if (timePeriod === 'custom-range') return null;
     return parseInt(timePeriod);
   };
 
-  // ── THE SINGLE FETCH — both chart and heatmap come from here ──────────────
-  // Strategy: call the distribution endpoint once. The hourly totals (hour_0..hour_23)
-  // feed the pie chart directly. For the heatmap we spread the daily-equivalent total
-  // across the date range proportionally using the hourly shape as a weight.
+  const buildRequestBody = () => {
+    const { startDate, endDate } = getDateRange();
+    const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
+    const roleFilterArray = selectedRoleId && statConf?.hasRoleFilter ? [String(selectedRoleId)] : null;
 
-  const fetchAllData = async () => {
+    const body = { guild_id: currentServer.id, timezone_str: serverTimezone };
+    if (startDate) body.start_time = startDate.toISOString();
+    if (endDate) { const e = new Date(endDate); e.setHours(23, 59, 59, 999); body.end_time = e.toISOString(); }
+    if (roleFilterArray) body.role_filter_ids = roleFilterArray;
+    if (selectedView === 'user')     body.user_id     = selectedUserId;
+    if (selectedView === 'channel')  body.channel_id  = selectedChannelId;
+    if (selectedView === 'category') body.category_id = selectedCategoryId;
+
+    return body;
+  };
+
+  // ── FETCH 1: Hourly distribution → pie chart ─────────────────────────────
+
+  const fetchDistributionData = async () => {
     if (!currentServer || !hasAccess) return;
     if (selectedView === 'user' && !selectedUserId) return;
     if (selectedView === 'channel' && !selectedChannelId) return;
     if (selectedView === 'category' && !selectedCategoryId) return;
 
-    setLoadingData(true);
-    setHourlyData(null);
-    setHeatmapData({});
-
     const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
-    if (!statConf) { setLoadingData(false); return; }
+    if (!statConf) return;
 
-    const { startDate, endDate } = getDateRange();
-    const roleFilterArray = selectedRoleId && statConf.hasRoleFilter ? [String(selectedRoleId)] : null;
-    const scope = selectedView;
-
-    // Build request body — one body for both (distribution endpoint uses POST)
-    const body = { guild_id: currentServer.id, timezone_str: serverTimezone };
-    if (startDate) body.start_time = startDate.toISOString();
-    if (endDate) { const e = new Date(endDate); e.setHours(23, 59, 59, 999); body.end_time = e.toISOString(); }
-    if (roleFilterArray) body.role_filter_ids = roleFilterArray;
-    if (scope === 'user')     body.user_id     = selectedUserId;
-    if (scope === 'channel')  body.channel_id  = selectedChannelId;
-    if (scope === 'category') body.category_id = selectedCategoryId;
+    setLoadingPieChart(true);
+    setHourlyData(null);
 
     const distEndpoint = isPublicMode
-      ? `${API_BASE_URL}/api/public/${scope}/distribution/${statConf.endpoint}`
-      : `${API_BASE_URL}/api/${scope}/distribution/${statConf.endpoint}`;
+      ? `${API_BASE_URL}/api/public/${selectedView}/distribution/${statConf.endpoint}`
+      : `${API_BASE_URL}/api/${selectedView}/distribution/${statConf.endpoint}`;
 
     try {
       const r = await fetch(distEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: isPublicMode ? 'omit' : 'include',
-        body: JSON.stringify(body),
+        body: JSON.stringify(buildRequestBody()),
       });
-
-      if (!r.ok) {
-        console.error('Distribution fetch failed:', r.status, await r.text());
-        setLoadingData(false);
-        return;
-      }
-
+      if (!r.ok) { console.error('Distribution fetch failed:', r.status); return; }
       const data = await r.json();
-
-      // Extract hourly array — always hour_0 … hour_23
       const hourly = Array.from({ length: 24 }, (_, i) => {
         const v = data[`hour_${i}`];
         return (v !== undefined && v !== null) ? Number(v) : 0;
       });
-
       setHourlyData(hourly);
-
-      // Build heatmap from this same data
-      // We know the total from the hourly sum, and we know the date range.
-      // We spread the total evenly across days (heatmap shows relative daily activity).
-      // For stat types that have a clear per-day shape this is the best we can do
-      // without a separate timeseries call — and it keeps the two charts consistent.
-      const totalValue = hourly.reduce((s, v) => s + v, 0);
-      const map = {};
-
-      if (totalValue > 0 && startDate) {
-        const end = endDate ? new Date(endDate) : new Date();
-        const start = new Date(startDate);
-        // Count days
-        let dayCount = 0;
-        { let c = new Date(start); while (c <= end) { dayCount++; c.setDate(c.getDate() + 1); } }
-        const perDay = dayCount > 0 ? totalValue / dayCount : 0;
-
-        // Assign each day the per-day value (uniform distribution — pie chart shows time-of-day shape)
-        let cur = new Date(start);
-        while (cur <= end) {
-          map[cur.toISOString().slice(0, 10)] = Math.round(perDay);
-          cur.setDate(cur.getDate() + 1);
-        }
-      } else if (totalValue > 0 && !startDate) {
-        // "All time" — we have no start date so we can't spread across days.
-        // Just show today as the only day with the total, so heatmap isn't empty.
-        // The yearly view will at least show current-year activity.
-        const today = new Date().toISOString().slice(0, 10);
-        map[today] = Math.round(totalValue);
-      }
-
-      setHeatmapData(map);
-
     } catch (e) {
-      console.error('fetchAllData error:', e);
+      console.error('fetchDistributionData error:', e);
     } finally {
-      setLoadingData(false);
+      setLoadingPieChart(false);
     }
+  };
+
+  // ── FETCH 2: Heatmap data — endpoint depends on requested view ────────────
+  //
+  //  'weekly'  → distribution-weekly endpoint  → keys: 'YYYY-MM-DD-H'
+  //  'month'   → timeseries endpoint           → keys: 'YYYY-MM-DD'
+  //  'yearly'  → timeseries endpoint           → keys: 'YYYY-MM-DD'
+  //
+  // The view parameter comes from the caller (activeHeatmapView) so that
+  // manual overrides from the toggle also hit the right endpoint.
+
+  const fetchDailyHeatmapData = async (heatmapView) => {
+    if (!currentServer || !hasAccess) return;
+    if (selectedView === 'user' && !selectedUserId) return;
+    if (selectedView === 'channel' && !selectedChannelId) return;
+    if (selectedView === 'category' && !selectedCategoryId) return;
+
+    const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
+    if (!statConf) return;
+
+    setLoadingHeatmap(true);
+    setHeatmapData({});
+
+    // ── Weekly: per-day-per-hour endpoint ────────────────────────────────
+    if (heatmapView === 'weekly') {
+      const weeklyEndpoint = isPublicMode
+        ? `${API_BASE_URL}/api/public/${selectedView}/distribution-weekly/${statConf.endpoint}`
+        : `${API_BASE_URL}/api/${selectedView}/distribution-weekly/${statConf.endpoint}`;
+
+      try {
+        const r = await fetch(weeklyEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify(buildRequestBody()),
+        });
+        if (!r.ok) { console.error('Weekly heatmap fetch failed:', r.status); return; }
+        const data = await r.json();
+        const map = {};
+        for (const [key, value] of Object.entries(data)) {
+          if (typeof value === 'number') map[key] = value;
+        }
+        setHeatmapData(map);
+      } catch (e) {
+        console.error('fetchDailyHeatmapData (weekly) error:', e);
+      } finally {
+        setLoadingHeatmap(false);
+      }
+      return;
+    }
+
+    // ── Month / Yearly: daily timeseries endpoint ─────────────────────────
+    const dailyEndpoint = isPublicMode
+      ? `${API_BASE_URL}/api/public/${selectedView}/timeseries/${statConf.endpoint}`
+      : `${API_BASE_URL}/api/${selectedView}/timeseries/${statConf.endpoint}`;
+
+    try {
+      const r = await fetch(dailyEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublicMode ? 'omit' : 'include',
+        body: JSON.stringify(buildRequestBody()),
+      });
+      if (!r.ok) { console.error('Daily timeseries fetch failed:', r.status); return; }
+      const data = await r.json();
+      const map = {};
+      if (data.data && Array.isArray(data.data)) {
+        for (const item of data.data) {
+          const value = item.value ?? item.count ?? item.total ?? item.total_seconds ?? 0;
+          if (item.date && typeof value === 'number') map[item.date] = value;
+        }
+      } else if (data && typeof data === 'object') {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        for (const [key, value] of Object.entries(data)) {
+          if (dateRegex.test(key) && typeof value === 'number') map[key] = value;
+        }
+      }
+      setHeatmapData(map);
+    } catch (e) {
+      console.error('fetchDailyHeatmapData error:', e);
+    } finally {
+      setLoadingHeatmap(false);
+    }
+  };
+
+  // ── Handle manual view change from the heatmap toggle ────────────────────
+  // When the user clicks a different view in the toggle, we update activeHeatmapView
+  // which triggers the useEffect above to refetch with the correct endpoint.
+  const handleHeatmapViewChange = (newView) => {
+    setActiveHeatmapView(newView);
+    // fetchDailyHeatmapData will be called by the useEffect that depends on activeHeatmapView
   };
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -545,9 +629,9 @@ const DistributionDashboard = () => {
   const clearRoleFilter      = ()     => { setSelectedRoleId(''); setTempRoleId(''); setTempRoleSearch(''); setShowApplyButton(false); };
   const getRoleName          = (id)   => { const r = rolesRef.current.find(r => r.id === String(id)); return r ? r.name : `Role ${id}`; };
 
-  const currentStatConf    = () => STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType) || null;
-  const currentStatLabel   = () => currentStatConf()?.label || 'Activity';
-  const currentStatFormat  = () => currentStatConf()?.format || 'count';
+  const currentStatConf         = () => STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType) || null;
+  const currentStatLabel        = () => currentStatConf()?.label || 'Activity';
+  const currentStatFormat       = () => currentStatConf()?.format || 'count';
   const currentStatSupportsRole = () => currentStatConf()?.hasRoleFilter ?? true;
 
   const valueFormatter = (v) => {
@@ -557,29 +641,20 @@ const DistributionDashboard = () => {
     return String(Math.round(v));
   };
 
-  const getTimePeriodLabel = () => {
-    if (timePeriod === 'all') return null;
-    if (timePeriod === 'custom-lookback') return customDaysBack ? parseInt(customDaysBack) : null;
-    if (timePeriod === 'custom-range') return null;
-    return parseInt(timePeriod);
-  };
-
-  const heatmapView = getHeatmapView(timePeriod, customDaysBack);
-
   const timePeriodSubtitle = timePeriod === 'all' ? 'All Time'
     : timePeriod === 'custom-lookback' ? `Last ${customDaysBack} days`
     : timePeriod === 'custom-range'    ? `${customStartDate} – ${customEndDate}`
     : `Last ${timePeriod} days`;
 
   const timePeriodOptions = [
-    { value: '7',              label: 'Last 7 days'        },
-    { value: '14',             label: 'Last 14 days'       },
-    { value: '30',             label: 'Last 30 days'       },
-    { value: '60',             label: 'Last 60 days'       },
-    { value: '90',             label: 'Last 90 days'       },
-    { value: 'all',            label: 'All Time'           },
-    { value: 'custom-lookback',label: 'Custom lookback'    },
-    { value: 'custom-range',   label: 'Custom date range'  },
+    { value: '7',               label: 'Last 7 days'       },
+    { value: '14',              label: 'Last 14 days'      },
+    { value: '30',              label: 'Last 30 days'      },
+    { value: '60',              label: 'Last 60 days'      },
+    { value: '90',              label: 'Last 90 days'      },
+    { value: 'all',             label: 'All Time'          },
+    { value: 'custom-lookback', label: 'Custom lookback'   },
+    { value: 'custom-range',    label: 'Custom date range' },
   ];
 
   // ── Render filters ────────────────────────────────────────────────────────
@@ -624,7 +699,7 @@ const DistributionDashboard = () => {
       )}
 
       {currentStatSupportsRole() && (
-        <div className="filter-row entity-filter" style={{ position: 'relative', zIndex: showRoleDropdown ? 9999 : 'auto' }}>
+        <div className="filter-row entity-filter" style={{ position:'relative', zIndex: showRoleDropdown ? 9999 : 'auto' }}>
           <label>Role Filter:</label>
           <div className="entity-selector">
             <input
@@ -668,7 +743,7 @@ const DistributionDashboard = () => {
       )}
 
       {selectedView === 'user' && (
-        <div className="filter-row entity-filter" style={{ position: 'relative', zIndex: showUserDropdown ? 9999 : 'auto' }}>
+        <div className="filter-row entity-filter" style={{ position:'relative', zIndex: showUserDropdown ? 9999 : 'auto' }}>
           <label>Select User:</label>
           <div className="entity-selector">
             <input type="text" placeholder="Search by name or ID..." value={userSearch}
@@ -693,7 +768,7 @@ const DistributionDashboard = () => {
       )}
 
       {selectedView === 'channel' && (
-        <div className="filter-row entity-filter" style={{ position: 'relative', zIndex: showChannelDropdown ? 9999 : 'auto' }}>
+        <div className="filter-row entity-filter" style={{ position:'relative', zIndex: showChannelDropdown ? 9999 : 'auto' }}>
           <label>Channel:</label>
           <div className="entity-selector">
             <input type="text" placeholder="Search by name or ID..." value={channelSearch}
@@ -718,7 +793,7 @@ const DistributionDashboard = () => {
       )}
 
       {selectedView === 'category' && (
-        <div className="filter-row entity-filter" style={{ position: 'relative', zIndex: showCategoryDropdown ? 9999 : 'auto' }}>
+        <div className="filter-row entity-filter" style={{ position:'relative', zIndex: showCategoryDropdown ? 9999 : 'auto' }}>
           <label>Category:</label>
           <div className="entity-selector">
             <input type="text" placeholder="Search by name or ID..." value={categorySearch}
@@ -747,21 +822,21 @@ const DistributionDashboard = () => {
   // ── Render content ────────────────────────────────────────────────────────
 
   const renderContent = () => {
-    // Entity selection required
-    if (selectedView === 'user' && !selectedUserId)       return <div className="no-selection"><h2>Select a User</h2><p>Please select a user from the dropdown above to view distribution data.</p></div>;
-    if (selectedView === 'channel' && !selectedChannelId) return <div className="no-selection"><h2>Select a Channel</h2><p>Please select a channel from the dropdown above to view distribution data.</p></div>;
+    if (selectedView === 'user' && !selectedUserId)         return <div className="no-selection"><h2>Select a User</h2><p>Please select a user from the dropdown above to view distribution data.</p></div>;
+    if (selectedView === 'channel' && !selectedChannelId)   return <div className="no-selection"><h2>Select a Channel</h2><p>Please select a channel from the dropdown above to view distribution data.</p></div>;
     if (selectedView === 'category' && !selectedCategoryId) return <div className="no-selection"><h2>Select a Category</h2><p>Please select a category from the dropdown above to view distribution data.</p></div>;
 
-    const statLabel = currentStatLabel();
-    const hasData   = hourlyData && hourlyData.some(v => v > 0);
+    const statLabel  = currentStatLabel();
+    const hasData    = hourlyData && hourlyData.some(v => v > 0);
     const hasHeatmap = Object.keys(heatmapData).length > 0;
 
     return (
       <>
+        {/* Pie chart */}
         <div className="charts-section">
           <h2 className="section-title">{statLabel} — Hourly Distribution</h2>
           <div className="chart-wrapper">
-            {loadingData ? (
+            {loadingPieChart ? (
               <LoadingSpinner size="large" text="Loading distribution data..." />
             ) : hasData ? (
               <TimezonePieChart
@@ -778,15 +853,18 @@ const DistributionDashboard = () => {
           </div>
         </div>
 
+        {/* Heatmap — view and data endpoint controlled from dashboard */}
         <div className="charts-section">
           <h2 className="section-title">{statLabel} — Activity Heatmap</h2>
           <div className="chart-wrapper heatmap-wrapper">
-            {loadingData ? (
+            {loadingHeatmap ? (
               <LoadingSpinner size="large" text="Loading heatmap data..." />
             ) : hasHeatmap ? (
               <ActivityHeatmap
                 data={heatmapData}
-                view={heatmapView}
+                view={autoHeatmapView}
+                activeView={activeHeatmapView}
+                onViewChange={handleHeatmapViewChange}
                 valueFormatter={valueFormatter}
                 title={`${statLabel} Activity`}
                 subtitle={`${currentServer?.name || 'Server'} • ${timePeriodSubtitle}`}
@@ -809,21 +887,16 @@ const DistributionDashboard = () => {
     html { min-height:100%; background-color:#0a0a0a; }
     body { min-height:100vh; margin:0; padding:0; background-color:#0a0a0a; color:#fff; overflow-y:auto; }
     #app { min-height:100vh; background-color:#0a0a0a; }
-
     .dashboard-page { max-width:100%; margin:0 auto; background-color:#0a0a0a; color:#fff; min-height:100vh; display:flex; position:relative; }
     .dashboard-main { flex:1; margin-left:280px; background-color:#0a0a0a; min-height:100vh; overflow-x:hidden; width:calc(100% - 280px); }
     .dashboard-content { max-width:1600px; margin:0 auto; padding:20px 40px 40px; background-color:#0a0a0a; width:100%; }
-
-    /* overflow:visible is critical so dropdowns escape the filter bar */
     .filters-section { background-color:#0a0a0a; padding:24px; border-radius:16px; margin-bottom:20px; border:1px solid #1a1a1a; display:flex; flex-wrap:wrap; gap:24px; align-items:flex-start; width:100%; position:relative; overflow:visible; }
     .filter-row { display:flex; align-items:center; gap:12px; min-width:200px; }
     .filter-row label { color:#b0b0b0; font-size:14px; font-weight:500; white-space:nowrap; text-transform:uppercase; letter-spacing:0.5px; min-width:80px; }
-
     .modern-select { background-color:#1a1a1a; color:#fff; border:1px solid #2a2a2a; border-radius:12px; padding:12px 20px; font-size:14px; cursor:pointer; outline:none; min-width:200px; transition:all 0.2s; appearance:none; background-image:url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23aa00ff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e"); background-repeat:no-repeat; background-position:right 16px center; background-size:16px; }
     .modern-select:hover { border-color:#aa00ff; background-color:#222; }
     .modern-select:focus { border-color:#aa00ff; box-shadow:0 0 0 3px rgba(170,0,255,0.15); }
     .modern-select option { background:#1a1a1a; color:#fff; }
-
     .custom-date-range,.custom-lookback { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
     .custom-lookback input { background-color:#1a1a1a; color:#fff; border:1px solid #2a2a2a; border-radius:12px; padding:12px 16px; font-size:14px; outline:none; transition:all 0.2s; width:150px; }
     .custom-lookback input:hover,.custom-lookback input:focus { border-color:#aa00ff; }
@@ -834,15 +907,12 @@ const DistributionDashboard = () => {
     .modern-date-input:hover { border-color:#aa00ff; }
     .modern-date-input:focus { border-color:#aa00ff; box-shadow:0 0 0 3px rgba(170,0,255,0.15); }
     .modern-date-input::-webkit-calendar-picker-indicator { filter:invert(0.8); cursor:pointer; }
-
     .entity-filter { flex:1; min-width:250px; }
     .entity-selector { position:relative; width:100%; }
     .modern-entity-search { width:100%; background-color:#1a1a1a; color:#fff; border:1px solid #2a2a2a; border-radius:12px; padding:12px 16px; font-size:14px; outline:none; transition:all 0.2s; }
     .modern-entity-search:hover { border-color:#aa00ff; background-color:#222; }
     .modern-entity-search:focus { border-color:#aa00ff; box-shadow:0 0 0 3px rgba(170,0,255,0.15); }
     .modern-entity-search::placeholder { color:#666; }
-
-    /* z-index:9999 + position:fixed behaviour via the inline style on the wrapper */
     .entity-dropdown { position:absolute; top:100%; left:0; right:0; background-color:#1a1a1a; border:1px solid #2a2a2a; border-radius:12px; margin-top:8px; max-height:300px; overflow-y:auto; z-index:9999; box-shadow:0 8px 24px rgba(0,0,0,0.7); }
     .entity-option { padding:12px 16px; color:#fff; cursor:pointer; transition:all 0.2s; border-left:3px solid transparent; font-size:14px; display:flex; justify-content:space-between; align-items:center; }
     .entity-option:hover { background-color:#2a2a2a; }
@@ -851,7 +921,6 @@ const DistributionDashboard = () => {
     .entity-name { font-weight:500; color:#fff; }
     .entity-id { color:#888; font-size:12px; }
     .entity-color-dot { width:12px; height:12px; border-radius:50%; display:inline-block; flex-shrink:0; }
-
     .apply-button-container { display:flex; gap:8px; margin-top:8px; }
     .apply-button { background-color:#aa00ff; color:#fff; border:none; border-radius:8px; padding:8px 16px; font-size:14px; font-weight:600; cursor:pointer; transition:all 0.2s; flex:1; }
     .apply-button:hover { background-color:#8800cc; transform:translateY(-2px); box-shadow:0 4px 12px rgba(170,0,255,0.3); }
@@ -860,10 +929,8 @@ const DistributionDashboard = () => {
     .active-role-filter { margin-top:8px; padding:8px 12px; background-color:rgba(170,0,255,0.1); border:1px solid #aa00ff; border-radius:8px; display:flex; align-items:center; justify-content:space-between; }
     .active-role-filter span { color:#aa00ff; font-size:14px; }
     .active-role-filter button { background:none; border:none; color:#ff4444; cursor:pointer; font-size:14px; padding:4px 8px; }
-
     .section-title { color:#fff; font-size:28px; font-weight:600; margin:40px 0 24px; position:relative; display:inline-block; }
     .section-title::after { content:''; position:absolute; bottom:-8px; left:0; width:60px; height:3px; background-color:#aa00ff; border-radius:2px; }
-
     .charts-section { margin-bottom:40px; width:100%; }
     .chart-wrapper { background-color:#0a0a0a; border:1px solid #1a1a1a; border-radius:16px; padding:24px; transition:all 0.2s; min-height:450px; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; overflow:visible; }
     .chart-wrapper:hover { border-color:#aa00ff; box-shadow:0 8px 24px rgba(170,0,255,0.2); }
@@ -871,22 +938,17 @@ const DistributionDashboard = () => {
     .heatmap-wrapper { min-height:300px; align-items:stretch; }
     .heatmap-wrapper > div { width:100%; }
     .no-chart-data { color:#b0b0b0; font-size:16px; text-align:center; }
-
     .no-selection { text-align:center; padding:100px; background-color:#0a0a0a; border:1px solid #1a1a1a; border-radius:16px; color:#b0b0b0; }
     .no-selection h2 { color:#fff; margin-bottom:16px; }
-
     .public-banner { margin-bottom:20px; padding:16px; background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%); border:1px solid #aa00ff; border-radius:12px; text-align:center; }
     .public-banner p { color:#b0b0b0; margin:0; }
     .public-banner a { color:#aa00ff; text-decoration:none; font-weight:600; }
     .public-banner a:hover { text-decoration:underline; }
-
     .loading { text-align:center; padding:60px; color:#b0b0b0; font-size:18px; }
-
     .entity-dropdown::-webkit-scrollbar { width:8px; }
     .entity-dropdown::-webkit-scrollbar-track { background:#1a1a1a; }
     .entity-dropdown::-webkit-scrollbar-thumb { background:#2a2a2a; border-radius:4px; }
     .entity-dropdown::-webkit-scrollbar-thumb:hover { background:#aa00ff; }
-
     @media (max-width:1024px) { .dashboard-main { margin-left:250px; width:calc(100% - 250px); } .dashboard-content { padding:16px; } }
     @media (max-width:768px) {
       .dashboard-main { margin-left:0; width:100%; }
@@ -909,16 +971,12 @@ const DistributionDashboard = () => {
   if (loadingServers && !currentServer) {
     return (<><NavBar /><div className="dashboard-page"><DashboardSidebar topOffset={NAVBAR_HEIGHT} isPublicMode={isPublicMode} publicGuildId={PUBLIC_GUILD_ID} /><main className="dashboard-main"><div className="dashboard-content"><div className="loading"><LoadingSpinner size="large" text="Loading dashboard..." /></div></div><Footer /></main></div><style>{styles}</style></>);
   }
-
   if (hasAccess === null && isAuthenticated && currentServer) {
     return (<><NavBar /><div className="dashboard-page"><DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} isPublicMode={false} /><main className="dashboard-main"><div className="dashboard-content"><div className="loading"><LoadingSpinner size="large" text="Checking permissions..." /></div></div><Footer /></main></div><style>{styles}</style></>);
   }
-
   if (isAuthenticated && currentServer && !hasAccess) {
     return (<><NavBar /><div className="dashboard-page"><DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} isPublicMode={false} /><main className="dashboard-main"><div className="dashboard-content"><AccessDenied accessLevel={dashboardAccessLevel} /></div><Footer /></main></div><style>{styles}</style></>);
   }
-
-  // ── Main render ────────────────────────────────────────────────────────────
 
   return (
     <>
