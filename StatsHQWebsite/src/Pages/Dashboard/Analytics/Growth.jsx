@@ -278,6 +278,106 @@ const GrowthDashboard = () => {
     loadInitialData();
   }, []);
 
+  // FIXED: applyServerTimePeriod now returns computed values
+  const applyServerTimePeriod = (settings) => {
+    const mode = settings.default_time_mode || 'days_back';
+    const result = {};
+
+    if (mode === 'all_time') {
+      setTimePeriod('all');
+      result.timePeriod = 'all';
+    } else if (mode === 'days_back') {
+      const days = settings.default_days_back || 14;
+      const presets = ['7', '14', '30', '60', '90'];
+      if (presets.includes(String(days))) {
+        setTimePeriod(String(days));
+        result.timePeriod = String(days);
+      } else {
+        setTimePeriod('custom-lookback');
+        setCustomDaysBack(String(days));
+        result.timePeriod = 'custom-lookback';
+        result.customDaysBack = String(days);
+      }
+    } else if (mode === 'date_range') {
+      setTimePeriod('custom-range');
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      
+      let fromDate = null;
+      let toDate = null;
+      
+      if (settings.default_from_date) {
+        fromDate = settings.default_from_date.split('T')[0];
+        setCustomStartDate(fromDate);
+      }
+      if (settings.default_to_date) {
+        toDate = settings.default_to_date.split('T')[0];
+        setCustomEndDate(toDate);
+      }
+      
+      if (fromDate && !toDate) {
+        toDate = formattedToday;
+        setCustomEndDate(toDate);
+      } else if (!fromDate && toDate) {
+        fromDate = '';
+        setCustomStartDate('');
+      }
+      
+      result.timePeriod = 'custom-range';
+      result.customStartDate = fromDate || '';
+      result.customEndDate = toDate || '';
+    } else if (mode === 'rolling_window') {
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      let startDate = null;
+      
+      if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
+        const targetWeekday = settings.default_rolling_value;
+        const currentWeekday = today.getDay();
+        const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
+        
+        let daysToSubtract;
+        if (currentWeekdayMonday >= targetWeekday) {
+          daysToSubtract = currentWeekdayMonday - targetWeekday;
+        } else {
+          daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
+        }
+        
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - daysToSubtract);
+        
+      } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
+        const targetDay = settings.default_rolling_value;
+        const currentDate = today.getDate();
+        
+        startDate = new Date(today);
+        
+        if (currentDate >= targetDay) {
+          startDate.setDate(targetDay);
+        } else {
+          startDate.setMonth(today.getMonth() - 1);
+          const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+          startDate.setDate(Math.min(targetDay, lastDayOfMonth));
+        }
+      }
+      
+      if (startDate) {
+        const formattedStartDate = startDate.toISOString().split('T')[0];
+        setTimePeriod('custom-range');
+        setCustomStartDate(formattedStartDate);
+        setCustomEndDate(formattedToday);
+        result.timePeriod = 'custom-range';
+        result.customStartDate = formattedStartDate;
+        result.customEndDate = formattedToday;
+      } else {
+        setTimePeriod('all');
+        result.timePeriod = 'all';
+      }
+    }
+    
+    return result;
+  };
+
   const loadInitialData = async () => {
     setLoadingServers(true);
     setApiError(null);
@@ -443,7 +543,11 @@ const GrowthDashboard = () => {
         }
         
         setHasAccess(hasAccessFlag);
+        const timeParams = applyServerTimePeriod(settingsData);
         setLoading(false);
+        
+        // Fetch data immediately with the computed params
+        await fetchDataWithParams(timeParams);
         
       } else {
         console.error('Failed to get settings for guild:', guildId);
@@ -456,6 +560,315 @@ const GrowthDashboard = () => {
       setLoading(false);
     }
   };
+
+  // NEW: fetchDataWithParams - uses overrides instead of state
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer || !hasAccess) return;
+    
+    setLoading(true);
+    setApiError(null);
+    
+    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+    const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+    
+    let startDate = null;
+    let endDate = null;
+    let days = null;
+    
+    if (effectiveTimePeriod === "all") {
+      days = 2000;
+    } else if (effectiveTimePeriod === "custom-lookback") {
+      if (effectiveCustomDaysBack && parseInt(effectiveCustomDaysBack) > 0) {
+        days = parseInt(effectiveCustomDaysBack);
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+      }
+    } else if (effectiveTimePeriod === "custom-range") {
+      if (effectiveCustomStartDate && effectiveCustomEndDate) {
+        startDate = new Date(effectiveCustomStartDate);
+        endDate = new Date(effectiveCustomEndDate);
+        days = null;
+      }
+    } else {
+      days = parseInt(effectiveTimePeriod);
+      endDate = new Date();
+      startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+    }
+    
+    try {
+      if (selectedView === 'server') {
+        await fetchServerDataWithDates(startDate, endDate, days);
+      } else if (selectedView === 'role' && selectedRoleId) {
+        await fetchRoleDataWithDates(startDate, endDate, days);
+      }
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoading(false);
+      fetchedRef.current = true;
+    }
+  };
+
+  // Helper functions for fetchDataWithParams
+  const fetchServerDataWithDates = async (startDate, endDate, days) => {
+    setLoadingServerStats(true);
+    setLoadingMemberChart(true);
+    setLoadingJoinsLeavesChart(true);
+    setLoadingProjectedChart(true);
+    
+    const isPublic = isPublicMode;
+    
+    try {
+      // 1. Fetch member timeseries
+      const memberRequestBody = { guild_id: currentServer.id };
+      if (days !== null && days !== undefined && !isNaN(days)) {
+        memberRequestBody.days = days;
+      }
+      if (startDate) memberRequestBody.start_time = startDate.toISOString();
+      if (endDate) memberRequestBody.end_time = endDate.toISOString();
+      
+      const memberEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/server/members/timeseries`, isPublic);
+      
+      const memberResponse = await fetch(memberEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(memberRequestBody)
+      });
+      
+      let memberData = [];
+      let currentMembers = 0;
+      
+      if (memberResponse.ok) {
+        const data = await memberResponse.json();
+        memberData = data.timeseries || [];
+        currentMembers = data.current_members || 0;
+        setMemberTimeseries(memberData);
+      }
+      
+      // 2. Fetch joins and leaves
+      const joinsLeavesRequestBody = { guild_id: currentServer.id };
+      if (days !== null && days !== undefined && !isNaN(days)) {
+        joinsLeavesRequestBody.days = days;
+      }
+      if (startDate) joinsLeavesRequestBody.start_time = startDate.toISOString();
+      if (endDate) joinsLeavesRequestBody.end_time = endDate.toISOString();
+      
+      const joinsLeavesEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/server/joins-leaves`, isPublic);
+      
+      const joinsLeavesResponse = await fetch(joinsLeavesEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(joinsLeavesRequestBody)
+      });
+      
+      let totalJoins = 0;
+      let totalLeaves = 0;
+      let joinsSeries = [];
+      let leavesSeries = [];
+      
+      if (joinsLeavesResponse.ok) {
+        const data = await joinsLeavesResponse.json();
+        totalJoins = data.total_joins || 0;
+        totalLeaves = data.total_leaves || 0;
+        joinsSeries = data.joins_timeseries || [];
+        leavesSeries = data.leaves_timeseries || [];
+        setJoinsLeavesTimeseries({ joins: joinsSeries, leaves: leavesSeries });
+      }
+      
+      const growthPercent = calculateGrowthPercentage(memberData);
+      
+      const newServerStats = {
+        currentMembers,
+        totalJoins,
+        totalLeaves,
+        netGrowth: totalJoins - totalLeaves,
+        growthPercentage: growthPercent
+      };
+      
+      setServerStats(newServerStats);
+      
+      // 3. Fetch projected growth
+      const projectedDays = (days !== null && days !== undefined && !isNaN(days)) ? days : 1825;
+      const projectedRequestBody = {
+        guild_id: currentServer.id,
+        days: projectedDays
+      };
+      
+      const projectedEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/server/projected`, isPublic);
+      
+      const projectedResponse = await fetch(projectedEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(projectedRequestBody)
+      });
+      
+      let projectedData = { data: [], joins: [], leaves: [] };
+      
+      if (projectedResponse.ok) {
+        const data = await projectedResponse.json();
+        projectedData = {
+          data: data.projected_data || [],
+          joins: data.joins_forecast || [],
+          leaves: data.leaves_forecast || []
+        };
+        setProjectedTimeseries(projectedData);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching server data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoadingServerStats(false);
+      setLoadingMemberChart(false);
+      setLoadingJoinsLeavesChart(false);
+      setLoadingProjectedChart(false);
+    }
+  };
+
+  const fetchRoleDataWithDates = async (startDate, endDate, days) => {
+    if (!selectedRoleId) return;
+    
+    setLoadingRoleStats(true);
+    setLoadingRoleChart(true);
+    setLoadingRoleProjectedChart(true);
+    
+    const isPublic = isPublicMode;
+    
+    try {
+      const roleRequestBody = {
+        guild_id: currentServer.id,
+        role_id: selectedRoleId
+      };
+      
+      if (days !== null && days !== undefined && !isNaN(days)) {
+        roleRequestBody.days = days;
+      }
+      if (startDate) roleRequestBody.start_time = startDate.toISOString();
+      if (endDate) roleRequestBody.end_time = endDate.toISOString();
+      
+      const roleEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/role/additions-removals`, isPublic);
+      
+      const roleResponse = await fetch(roleEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(roleRequestBody)
+      });
+      
+      let addedSeries = [];
+      let removedSeries = [];
+      let totalAdded = 0;
+      let totalRemoved = 0;
+      
+      if (roleResponse.ok) {
+        const data = await roleResponse.json();
+        totalAdded = data.total_added || 0;
+        totalRemoved = data.total_removed || 0;
+        addedSeries = data.added_timeseries || [];
+        removedSeries = data.removed_timeseries || [];
+        setRoleTimeseries({ added: addedSeries, removed: removedSeries });
+      }
+      
+      const netGrowthArray = addedSeries.map((item, index) => ({
+        count: (addedSeries[index]?.count || 0) - (removedSeries[index]?.count || 0)
+      }));
+      const growthPercent = calculateGrowthPercentage(netGrowthArray);
+      
+      const roleName = roles.find(r => r.id === selectedRoleId)?.name || `Role ${selectedRoleId}`;
+      const roleColor = roleColors[selectedRoleId] || '#99aab5';
+      
+      const newRoleStats = {
+        totalAdded,
+        totalRemoved,
+        netGrowth: totalAdded - totalRemoved,
+        growthPercentage: growthPercent,
+        roleName,
+        roleColor
+      };
+      
+      setRoleStats(newRoleStats);
+      
+      const projectedDays = (days !== null && days !== undefined && !isNaN(days)) ? days : 1825;
+      const projectedRequestBody = {
+        guild_id: currentServer.id,
+        role_id: selectedRoleId,
+        days: projectedDays
+      };
+      
+      const projectedEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/role/projected`, isPublic);
+      
+      const projectedResponse = await fetch(projectedEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(projectedRequestBody)
+      });
+      
+      let projectedData = { data: [], added: [], removed: [] };
+      
+      if (projectedResponse.ok) {
+        const data = await projectedResponse.json();
+        projectedData = {
+          data: data.projected_data || [],
+          added: data.added_forecast || [],
+          removed: data.removed_forecast || []
+        };
+        setRoleProjectedTimeseries(projectedData);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching role data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoadingRoleStats(false);
+      setLoadingRoleChart(false);
+      setLoadingRoleProjectedChart(false);
+    }
+  };
+
+  // UPDATED: Fetch settings and apply time period, then fetch data immediately
+  useEffect(() => {
+    if (!currentServer) return;
+    
+    const fetchAndApplyTimePeriod = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const timeParams = applyServerTimePeriod(data);
+          await fetchDataWithParams(timeParams);
+        } else {
+          if (selectedView === 'server') {
+            await fetchServerData();
+          } else if (selectedView === 'role' && selectedRoleId) {
+            await fetchRoleData();
+          }
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+        if (selectedView === 'server') {
+          await fetchServerData();
+        } else if (selectedView === 'role' && selectedRoleId) {
+          await fetchRoleData();
+        }
+      }
+    };
+    
+    fetchAndApplyTimePeriod();
+  }, [currentServer]);
 
   // Fetch roles from growth table
   const fetchRoles = async () => {
@@ -708,7 +1121,6 @@ const GrowthDashboard = () => {
         totalLeaves = data.total_leaves || 0;
         joinsSeries = data.joins_timeseries || [];
         leavesSeries = data.leaves_timeseries || [];
-        // Data is correct - joins are joins, leaves are leaves
         setJoinsLeavesTimeseries({ joins: joinsSeries, leaves: leavesSeries });
       }
       

@@ -4,7 +4,6 @@ import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
 import Leaderboard from "../../../Components/Leaderboard.jsx";
-import TimezonePieChart from "../../../Components/PieChart.jsx";
 import InteractiveLineChart from "../../../Components/Charts.jsx";
 
 // API base URL - your FastAPI backend
@@ -245,8 +244,6 @@ const VoiceDashboard = () => {
   const [loadingChannelTopUsers, setLoadingChannelTopUsers] = useState(true);
   const [loadingCategoryTopUsers, setLoadingCategoryTopUsers] = useState(true);
   const [loadingCategoryTopChannels, setLoadingCategoryTopChannels] = useState(true);
-  const [loadingHourlyDistribution, setLoadingHourlyDistribution] = useState(true);
-  const [loadingUserHourlyDistribution, setLoadingUserHourlyDistribution] = useState(true);
   const [loadingSummaryStats, setLoadingSummaryStats] = useState(true);
   const [loadingAverages, setLoadingAverages] = useState(true);
   const [loadingTimeseries, setLoadingTimeseries] = useState(true);
@@ -339,7 +336,7 @@ const VoiceDashboard = () => {
     return PRIVILEGED_USERS.includes(userId);
   };
 
-  // FIXED: Fetch single user's basic info (username only, no avatar)
+  // Fetch single user's basic info (username only, no avatar)
   const fetchUserBasicInfo = async (userId, guildId) => {
     if (!userId) return null;
     
@@ -356,7 +353,6 @@ const VoiceDashboard = () => {
     
     try {
       const isPublic = isPublicMode;
-      // Use the any-table endpoint to get username
       const url = getApiEndpoint(`${API_BASE_URL}/api/username/any-table/${guildId}/${stringId}`, isPublic);
       
       const response = await fetch(url, {
@@ -380,19 +376,17 @@ const VoiceDashboard = () => {
       console.error(`Error fetching user basic info for ${stringId}:`, error);
     }
     
-    // Fallback - DO NOT cache fallbacks
     const fallbackInfo = { id: stringId, name: `User ${stringId.slice(-4)}`, username: `User ${stringId.slice(-4)}` };
     return fallbackInfo;
   };
 
-  // FIXED: Batch fetch user basic info (usernames only) using any-table endpoint
+  // Batch fetch user basic info
   const batchFetchUserBasicInfo = async (guildId, userIds) => {
     if (!guildId || !userIds || userIds.length === 0) return {};
     
     const uncachedUserIds = [];
     const results = {};
     
-    // Check cache first - only accept valid cached entries
     for (const userId of userIds) {
       const stringId = String(userId);
       const cacheKey = `${guildId}:${stringId}`;
@@ -412,7 +406,6 @@ const VoiceDashboard = () => {
     
     try {
       const isPublic = isPublicMode;
-      // Fetch each user individually using any-table endpoint (tries all tables)
       const fetchPromises = uncachedUserIds.map(async (userId) => {
         const url = getApiEndpoint(`${API_BASE_URL}/api/username/any-table/${guildId}/${userId}`, isPublic);
         
@@ -449,7 +442,6 @@ const VoiceDashboard = () => {
       console.error('Error in batch fetch user basic info:', error);
     }
     
-    // Fill in any missing users with fallback - DO NOT cache these
     for (const userId of uncachedUserIds) {
       if (!results[userId]) {
         const fallbackInfo = { id: userId, name: `User ${userId.slice(-4)}`, username: `User ${userId.slice(-4)}` };
@@ -491,7 +483,6 @@ const VoiceDashboard = () => {
     return null;
   };
 
-  // Fetch usernames when user dropdown opens
   useEffect(() => {
     if (showUserDropdown && rawUserIds.length > 0 && !isFetchingUsernames && currentServer) {
       const fetchUsernamesForDropdown = async () => {
@@ -535,7 +526,6 @@ const VoiceDashboard = () => {
     }
   }, [showUserDropdown, rawUserIds, currentServer, isFetchingUsernames]);
 
-  // Fetch server timezone
   useEffect(() => {
     const fetchServerTimezone = async () => {
       try {
@@ -600,7 +590,10 @@ const VoiceDashboard = () => {
         }
         
         setHasAccess(hasAccessFlag);
+        const timeParams = applyServerTimePeriod(settingsData);
         setLoading(false);
+        
+        await fetchDataWithParams(timeParams);
         
       } else {
         console.error('Failed to get settings for guild:', guildId);
@@ -750,7 +743,6 @@ const VoiceDashboard = () => {
     return '#99aab5';
   };
 
-  // FIXED: Fetch all users - stores only user IDs initially
   const fetchAllUsers = async () => {
     if (!currentServer) return;
     
@@ -789,10 +781,9 @@ const VoiceDashboard = () => {
       }
       
       const userIds = data.user_ids;
-      // Store only user IDs initially with placeholder names
       const userList = userIds.map(userId => ({
         id: String(userId),
-        name: `User ${userId}`, // Placeholder
+        name: `User ${userId}`,
         username: null,
         global_name: null,
         avatar: null
@@ -819,7 +810,6 @@ const VoiceDashboard = () => {
     }
   };
 
-  // Fetch all channels from voice data
   const fetchAllChannels = async () => {
     if (!currentServer) return;
     
@@ -877,7 +867,6 @@ const VoiceDashboard = () => {
     }
   };
 
-  // Fetch all categories from voice data
   const fetchAllCategories = async () => {
     if (!currentServer) return;
     
@@ -933,7 +922,6 @@ const VoiceDashboard = () => {
     }
   };
 
-  // Fetch all roles
   const fetchAllRoles = async () => {
     if (!currentServer) return;
     
@@ -1009,8 +997,6 @@ const VoiceDashboard = () => {
     setLoadingChannelTopUsers(true);
     setLoadingCategoryTopUsers(true);
     setLoadingCategoryTopChannels(true);
-    setLoadingHourlyDistribution(true);
-    setLoadingUserHourlyDistribution(true);
     setLoadingSummaryStats(true);
     setLoadingTimeseries(true);
     setLoadingUserTimeseries(true);
@@ -1400,7 +1386,87 @@ const VoiceDashboard = () => {
     }
   };
 
-  // FIXED: fetchServerData with proper username handling
+  // fetchDataWithParams - uses overrides instead of state
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer || !hasAccess) return;
+    
+    setLoading(true);
+    setApiError(null);
+    
+    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+    const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+    
+    let startDate = null;
+    let endDate = null;
+    
+    if (effectiveTimePeriod === "all") {
+      startDate = null;
+      endDate = null;
+    } else if (effectiveTimePeriod === "custom-lookback") {
+      if (!effectiveCustomDaysBack || parseInt(effectiveCustomDaysBack) <= 0) {
+        startDate = null;
+        endDate = null;
+      } else {
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - parseInt(effectiveCustomDaysBack));
+      }
+    } else if (effectiveTimePeriod === "custom-range") {
+      if (!effectiveCustomStartDate || !effectiveCustomEndDate) {
+        startDate = null;
+        endDate = null;
+      } else {
+        startDate = new Date(effectiveCustomStartDate);
+        endDate = new Date(effectiveCustomEndDate);
+      }
+    } else {
+      endDate = new Date();
+      startDate = new Date();
+      startDate.setDate(startDate.getDate() - parseInt(effectiveTimePeriod));
+    }
+    
+    let daysInPeriod = 0;
+    if (startDate && endDate) {
+      daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+    } else if (effectiveTimePeriod !== "all" && effectiveTimePeriod !== "custom-lookback" && effectiveTimePeriod !== "custom-range") {
+      daysInPeriod = parseInt(effectiveTimePeriod);
+    } else if (effectiveTimePeriod === "custom-lookback" && effectiveCustomDaysBack) {
+      daysInPeriod = parseInt(effectiveCustomDaysBack);
+    } else {
+      daysInPeriod = 30;
+    }
+    
+    try {
+      const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
+      
+      const requestBody = {
+        guild_id: currentServer.id,
+        role_filter_ids: roleFilterArray,
+        start_time: startDate?.toISOString(),
+        end_time: endDate?.toISOString()
+      };
+      
+      if (selectedView === 'server') {
+        await fetchServerData(requestBody, daysInPeriod);
+      } else if (selectedView === 'user' && selectedUserId) {
+        await fetchUserData(requestBody, daysInPeriod);
+      } else if (selectedView === 'channel' && selectedChannelId) {
+        await fetchChannelData(requestBody, daysInPeriod);
+      } else if (selectedView === 'category' && selectedCategoryId) {
+        await fetchCategoryData(requestBody, daysInPeriod);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoading(false);
+      fetchedRef.current = true;
+    }
+  };
+
   const fetchServerData = async (requestBody, daysInPeriod) => {
     const isPublic = isPublicMode;
     
@@ -1419,7 +1485,6 @@ const VoiceDashboard = () => {
       setLoadingTopUsers(false);
       setLoadingTopChannels(false);
       setLoadingTopCategories(false);
-      setLoadingHourlyDistribution(false);
       setLoadingTimeseries(false);
       return;
     }
@@ -1455,7 +1520,6 @@ const VoiceDashboard = () => {
     }
     setLoadingSummaryStats(false);
     
-    // 2. Top users - Batch fetch usernames for all, avatars only for top 3
     const usersUrl = buildUrl(getApiEndpoint(`${API_BASE_URL}/api/server/top/users/voice`, isPublic), {
       guild_id: requestBody.guild_id,
       role_filter_ids: requestBody.role_filter_ids,
@@ -1499,7 +1563,6 @@ const VoiceDashboard = () => {
     }
     setLoadingTopUsers(false);
     
-    // 3. Top voice channels
     const channelsUrl = buildUrl(getApiEndpoint(`${API_BASE_URL}/api/leaderboard/server/top/voice-channels`, isPublic), {
       guild_id: requestBody.guild_id,
       role_filter_ids: requestBody.role_filter_ids,
@@ -1540,7 +1603,6 @@ const VoiceDashboard = () => {
       setLoadingTopChannels(false);
     }
     
-    // 4. Top categories
     try {
       const categoriesUrl = buildUrl(getApiEndpoint(`${API_BASE_URL}/api/leaderboard/server/top/categories/voice`, isPublic), {
         guild_id: requestBody.guild_id,
@@ -1581,57 +1643,7 @@ const VoiceDashboard = () => {
       setLoadingTopCategories(false);
     }
     
-    // 5. Hourly distribution
-    try {
-      let daysBack = 30;
-      if (timePeriod === "all") {
-        daysBack = 0;
-      } else if (timePeriod === "custom-lookback" && customDaysBack) {
-        daysBack = parseInt(customDaysBack);
-      } else if (timePeriod === "custom-range") {
-        daysBack = daysInPeriod;
-      } else {
-        daysBack = parseInt(timePeriod);
-      }
-      
-      const distEndpoint = getApiEndpoint(`${API_BASE_URL}/api/server/activity/distribution`, isPublic);
-      const distResponse = await fetch(distEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: isPublic ? 'omit' : 'include',
-        body: JSON.stringify({
-          guild_id: requestBody.guild_id,
-          days_back: daysBack,
-          role_filter_ids: requestBody.role_filter_ids,
-          timezone_str: serverTimezone
-        })
-      });
-      
-      if (distResponse.ok) {
-        const distData = await distResponse.json();
-        
-        if (distData.voice) {
-          const distribution = [];
-          let hasData = false;
-          
-          for (let i = 0; i < 24; i++) {
-            const value = distData.voice[`hour_${i}`] || 0;
-            if (value > 0) hasData = true;
-            distribution.push({
-              name: `${i.toString().padStart(2, '0')}:00`,
-              value: value
-            });
-          }
-          
-          setHourlyDistribution(hasData ? distribution : []);
-          await fetchTimeseriesData(requestBody);
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching hourly distribution:', error);
-    } finally {
-      setLoadingHourlyDistribution(false);
-    }
+    await fetchTimeseriesData(requestBody);
     
     serverDataCache.set(cacheKey, {
       serverData: {
@@ -1649,7 +1661,6 @@ const VoiceDashboard = () => {
     });
   };
 
-  // FIXED: fetchUserData with proper username handling
   const fetchUserData = async (requestBody, daysInPeriod) => {
     if (!selectedUserId) return;
     
@@ -1668,7 +1679,6 @@ const VoiceDashboard = () => {
       setLoadingSummaryStats(false);
       setLoadingUserTopChannels(false);
       setLoadingUserTopCategories(false);
-      setLoadingUserHourlyDistribution(false);
       setLoadingUserTimeseries(false);
       return;
     }
@@ -1707,7 +1717,6 @@ const VoiceDashboard = () => {
     setAveragesData(averages);
     setLoadingSummaryStats(false);
     
-    // User top channels
     const channelsUrl = buildUrl(getApiEndpoint(`${API_BASE_URL}/api/user/top/voice-channels`, isPublic), {
       guild_id: requestBody.guild_id,
       user_id: selectedUserId,
@@ -1743,7 +1752,6 @@ const VoiceDashboard = () => {
     }
     setLoadingUserTopChannels(false);
     
-    // User top categories
     try {
       const categoriesUrl = buildUrl(getApiEndpoint(`${API_BASE_URL}/api/user/top/categories/voice`, isPublic), {
         guild_id: requestBody.guild_id,
@@ -1783,53 +1791,7 @@ const VoiceDashboard = () => {
       setLoadingUserTopCategories(false);
     }
     
-    // User hourly distribution
-    let daysBack = 30;
-    if (timePeriod === "all") {
-      daysBack = 0;
-    } else if (timePeriod === "custom-lookback" && customDaysBack) {
-      daysBack = parseInt(customDaysBack);
-    } else if (timePeriod === "custom-range") {
-      daysBack = daysInPeriod;
-    } else {
-      daysBack = parseInt(timePeriod);
-    }
-    
-    const distEndpoint = getApiEndpoint(`${API_BASE_URL}/api/user/activity/distribution`, isPublic);
-    const distResponse = await fetch(distEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: isPublic ? 'omit' : 'include',
-      body: JSON.stringify({
-        guild_id: requestBody.guild_id,
-        user_id: selectedUserId,
-        days_back: daysBack,
-        role_filter_ids: requestBody.role_filter_ids,
-        timezone_str: serverTimezone
-      })
-    });
-    
-    let userDistData = [];
-    if (distResponse.ok) {
-      const distData = await distResponse.json();
-      
-      if (distData.voice) {
-        let hasData = false;
-        
-        for (let i = 0; i < 24; i++) {
-          const value = distData.voice[`hour_${i}`] || 0;
-          if (value > 0) hasData = true;
-          userDistData.push({
-            name: `${i.toString().padStart(2, '0')}:00`,
-            value: value
-          });
-        }
-        
-        setUserHourlyDistribution(hasData ? userDistData : []);
-        await fetchUserTimeseriesData(requestBody);
-      }
-    }
-    setLoadingUserHourlyDistribution(false);
+    await fetchUserTimeseriesData(requestBody);
     
     const userName = userProfile?.name || `User ${selectedUserId.slice(-4)}`;
     
@@ -1850,12 +1812,11 @@ const VoiceDashboard = () => {
       averagesData: averages,
       userTopChannels: formattedChannels,
       userTopCategories: userTopCategories,
-      userHourlyDistribution: userDistData,
+      userHourlyDistribution: userHourlyDistribution,
       userTimeseriesData: userTimeseriesData
     });
   };
 
-  // FIXED: fetchChannelData with proper username handling
   const fetchChannelData = async (requestBody, daysInPeriod) => {
     if (!selectedChannelId) return;
     
@@ -1905,7 +1866,6 @@ const VoiceDashboard = () => {
     setAveragesData(averages);
     setLoadingSummaryStats(false);
     
-    // Top users in this channel
     const usersUrl = buildUrl(getApiEndpoint(`${API_BASE_URL}/api/channel/top/users/voice`, isPublic), {
       guild_id: requestBody.guild_id,
       channel_id: selectedChannelId,
@@ -1973,7 +1933,6 @@ const VoiceDashboard = () => {
     });
   };
 
-  // FIXED: fetchCategoryData with proper username handling
   const fetchCategoryData = async (requestBody, daysInPeriod) => {
     if (!selectedCategoryId) return;
     
@@ -2025,7 +1984,6 @@ const VoiceDashboard = () => {
     setAveragesData(averages);
     setLoadingSummaryStats(false);
     
-    // Top users in this category
     const usersUrl = buildUrl(getApiEndpoint(`${API_BASE_URL}/api/category/top/users/voice`, isPublic), {
       guild_id: requestBody.guild_id,
       category_id: selectedCategoryId,
@@ -2069,7 +2027,6 @@ const VoiceDashboard = () => {
     }
     setLoadingCategoryTopUsers(false);
     
-    // Top channels in this category
     const channelsUrl = buildUrl(getApiEndpoint(`${API_BASE_URL}/api/category/top/channels/voice`, isPublic), {
       guild_id: requestBody.guild_id,
       category_id: selectedCategoryId,
@@ -2149,6 +2106,134 @@ const VoiceDashboard = () => {
     setTempRoleSearch("");
     setShowApplyButton(false);
   };
+
+  // FIXED: applyServerTimePeriod now returns computed values
+  const applyServerTimePeriod = (settings) => {
+    const mode = settings.default_time_mode || 'days_back';
+    const result = {};
+
+    if (mode === 'all_time') {
+      setTimePeriod('all');
+      result.timePeriod = 'all';
+    } else if (mode === 'days_back') {
+      const days = settings.default_days_back || 14;
+      const presets = ['7', '14', '30', '60', '90'];
+      if (presets.includes(String(days))) {
+        setTimePeriod(String(days));
+        result.timePeriod = String(days);
+      } else {
+        setTimePeriod('custom-lookback');
+        setCustomDaysBack(String(days));
+        result.timePeriod = 'custom-lookback';
+        result.customDaysBack = String(days);
+      }
+    } else if (mode === 'date_range') {
+      setTimePeriod('custom-range');
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      
+      let fromDate = null;
+      let toDate = null;
+      
+      if (settings.default_from_date) {
+        fromDate = settings.default_from_date.split('T')[0];
+        setCustomStartDate(fromDate);
+      }
+      if (settings.default_to_date) {
+        toDate = settings.default_to_date.split('T')[0];
+        setCustomEndDate(toDate);
+      }
+      
+      if (fromDate && !toDate) {
+        toDate = formattedToday;
+        setCustomEndDate(toDate);
+      } else if (!fromDate && toDate) {
+        fromDate = '';
+        setCustomStartDate('');
+      }
+      
+      result.timePeriod = 'custom-range';
+      result.customStartDate = fromDate || '';
+      result.customEndDate = toDate || '';
+    } else if (mode === 'rolling_window') {
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      let startDate = null;
+      
+      if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
+        const targetWeekday = settings.default_rolling_value;
+        const currentWeekday = today.getDay();
+        const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
+        
+        let daysToSubtract;
+        if (currentWeekdayMonday >= targetWeekday) {
+          daysToSubtract = currentWeekdayMonday - targetWeekday;
+        } else {
+          daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
+        }
+        
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - daysToSubtract);
+        
+      } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
+        const targetDay = settings.default_rolling_value;
+        const currentDate = today.getDate();
+        
+        startDate = new Date(today);
+        
+        if (currentDate >= targetDay) {
+          startDate.setDate(targetDay);
+        } else {
+          startDate.setMonth(today.getMonth() - 1);
+          const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+          startDate.setDate(Math.min(targetDay, lastDayOfMonth));
+        }
+      }
+      
+      if (startDate) {
+        const formattedStartDate = startDate.toISOString().split('T')[0];
+        setTimePeriod('custom-range');
+        setCustomStartDate(formattedStartDate);
+        setCustomEndDate(formattedToday);
+        result.timePeriod = 'custom-range';
+        result.customStartDate = formattedStartDate;
+        result.customEndDate = formattedToday;
+      } else {
+        setTimePeriod('all');
+        result.timePeriod = 'all';
+      }
+    }
+    
+    return result;
+  };
+
+  // UPDATED: Fetch settings and apply time period, then fetch data immediately
+  useEffect(() => {
+    if (!currentServer) return;
+    
+    const fetchAndApplyTimePeriod = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const timeParams = applyServerTimePeriod(data);
+          await fetchDataWithParams(timeParams);
+        } else {
+          await fetchData();
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+        await fetchData();
+      }
+    };
+    
+    fetchAndApplyTimePeriod();
+  }, [currentServer]);
 
   const formatValue = (value) => formatDynamicTime(value);
 
@@ -3166,7 +3251,7 @@ const VoiceDashboard = () => {
     );
   }
 
-  // Not authenticated - public mode WITH ROLE FILTER
+  // Not authenticated - public mode
   if (!isAuthenticated && isPublicMode) {
     return (
       <>
@@ -3248,7 +3333,6 @@ const VoiceDashboard = () => {
                   </div>
                 )}
                 
-                {/* ROLE FILTER - Available for ALL views in public mode */}
                 <div className="filter-row entity-filter">
                   <label>Role Filter:</label>
                   <div className="entity-selector">
@@ -3320,7 +3404,6 @@ const VoiceDashboard = () => {
                   </div>
                 </div>
                 
-                {/* User Selector - WITHOUT avatars */}
                 {selectedView === 'user' && (
                   <div className="filter-row entity-filter">
                     <label>Select User:</label>
@@ -3422,7 +3505,6 @@ const VoiceDashboard = () => {
                 )}
               </div>
               
-              {/* Server View */}
               {selectedView === 'server' && (
                 <>
                   <div className="summary-stats">
@@ -3511,19 +3593,9 @@ const VoiceDashboard = () => {
                       ) : <div className="no-chart-data">No timeseries data available</div>}
                     </div>
                   </div>
-                  
-                  <div className="charts-section">
-                    <h2 className="section-title">Most Active Hours (Voice)</h2>
-                    <div className="chart-wrapper">
-                      {loadingHourlyDistribution ? <LoadingSpinner size="large" text="Loading hourly data..." /> : hourlyDistribution.length > 0 && hourlyDistribution.some(item => item.value > 0) ? (
-                        <TimezonePieChart hourlyData={hourlyDistribution.map(item => item.value)} timezone={serverTimezone} activityType="Voice" valueFormatter={formatDynamicTime} guildName={currentServer?.name || "Server"} daysBack={timePeriod === "all" ? null : parseInt(timePeriod)} />
-                      ) : <div className="no-chart-data">No hourly data available</div>}
-                    </div>
-                  </div>
                 </>
               )}
               
-              {/* User View */}
               {selectedView === 'user' && (
                 <>
                   {!selectedUserId ? (
@@ -3581,7 +3653,6 @@ const VoiceDashboard = () => {
                 </>
               )}
               
-              {/* Channel View */}
               {selectedView === 'channel' && (
                 <>
                   {!selectedChannelId ? (
@@ -3657,7 +3728,6 @@ const VoiceDashboard = () => {
                 </>
               )}
               
-              {/* Category View */}
               {selectedView === 'category' && (
                 <>
                   {!selectedCategoryId ? (
@@ -3821,7 +3891,7 @@ const VoiceDashboard = () => {
     );
   }
 
-  // Authenticated user with access - full dashboard with role filter for all views
+  // Authenticated user with access - full dashboard
   return (
     <>
       <NavBar />
@@ -3899,7 +3969,6 @@ const VoiceDashboard = () => {
                 </div>
               )}
               
-              {/* Role Filter - Available for ALL views in authenticated mode */}
               <div className="filter-row entity-filter">
                 <label>Role Filter:</label>
                 <div className="entity-selector">
@@ -3971,7 +4040,6 @@ const VoiceDashboard = () => {
                 </div>
               </div>
               
-              {/* User Selector - WITHOUT avatars */}
               {selectedView === 'user' && (
                 <div className="filter-row entity-filter">
                   <label>Select User:</label>
@@ -4073,7 +4141,6 @@ const VoiceDashboard = () => {
               )}
             </div>
             
-            {/* Server View */}
             {selectedView === 'server' && (
               <>
                 <div className="summary-stats">
@@ -4158,19 +4225,9 @@ const VoiceDashboard = () => {
                     ) : <div className="no-chart-data">No timeseries data available {selectedRoleId ? 'with this role filter' : ''}</div>}
                   </div>
                 </div>
-                
-                <div className="charts-section">
-                  <h2 className="section-title">Most Active Hours (Voice)</h2>
-                  <div className="chart-wrapper">
-                    {loadingHourlyDistribution ? <LoadingSpinner size="large" text="Loading hourly data..." /> : hourlyDistribution.length > 0 && hourlyDistribution.some(item => item.value > 0) ? (
-                      <TimezonePieChart hourlyData={hourlyDistribution.map(item => item.value)} timezone={serverTimezone} activityType="Voice" valueFormatter={formatDynamicTime} guildName={currentServer?.name || "Server"} daysBack={timePeriod === "all" ? null : parseInt(timePeriod)} />
-                    ) : <div className="no-chart-data">No hourly data available {selectedRoleId ? 'with this role filter' : ''}</div>}
-                  </div>
-                </div>
               </>
             )}
             
-            {/* User View */}
             {selectedView === 'user' && (
               <>
                 {!selectedUserId ? (
@@ -4228,7 +4285,6 @@ const VoiceDashboard = () => {
               </>
             )}
             
-            {/* Channel View */}
             {selectedView === 'channel' && (
               <>
                 {!selectedChannelId ? (
@@ -4304,7 +4360,6 @@ const VoiceDashboard = () => {
               </>
             )}
             
-            {/* Category View */}
             {selectedView === 'category' && (
               <>
                 {!selectedCategoryId ? (

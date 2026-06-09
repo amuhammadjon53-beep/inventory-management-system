@@ -448,13 +448,12 @@ class MentionsImageGenerator:
         guild: discord.Guild,
         leaderboard_data: list,
         title: str,
-        days_back,
+        display_text: str,
         role_id: str = None,
         page: int = 0,
         pool=None,
         target_user: discord.Member = None,
-        metric_type: str = "sent",
-        mode_label: str = None
+        metric_type: str = "sent"
     ) -> io.BytesIO:
         template_path = MentionsConfig.TEMPLATE_PATH
         try:
@@ -478,18 +477,9 @@ class MentionsImageGenerator:
         MentionsImageGenerator.draw_text_with_stroke(
             draw, (70, 424), role_text, font_small, "white", "black", 1)
 
-        # ===== FIX #1: Display mode_label (Custom/All Time/etc.) on the template =====
-        if mode_label:
-            time_text = mode_label
-        elif isinstance(days_back, str):
-            time_text = days_back
-        elif days_back == 999999:
-            time_text = "All Time"
-        else:
-            time_text = f"{days_back} days"
-
+        # Use display_text for time period
         MentionsImageGenerator.draw_text_with_stroke(
-            draw, (630, 422), time_text, font_small, "white", "black", 1)
+            draw, (630, 422), display_text, font_small, "white", "black", 1)
 
         MentionsImageGenerator.draw_text_with_stroke(draw, (550, 38), datetime.now(
         ).strftime("%B %d, %Y"), font_small, "white", "black", 1)
@@ -552,7 +542,6 @@ class MentionsImageGenerator:
                     radius=8, fill=placement_color, outline=None
                 )
 
-                # ===== FIX #2: Clean ratio display - raw ratio value only, no brackets =====
                 if metric_type == "ratio":
                     ratio_display = item.get('ratio_display', '0.0')
                     value_text = ratio_display
@@ -640,7 +629,11 @@ class MentionsTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 await interaction.followup.send("❌ Could not find the leaderboard view. Please try the command again.", ephemeral=True)
                 return
 
-            view.current_days = days
+            now = datetime.utcnow()
+            view.current_start_time = now - timedelta(days=days)
+            view.current_end_time = now
+            view.current_days_back_equiv = days
+            view.current_display_text = f"{days} days"
             view.using_server_default = False
             view.show_time_buttons = False
             view.page = 0
@@ -821,17 +814,20 @@ class RoleIdButton(discord.ui.Button):
 
 
 class MentionsLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, metric_type: str = "sent",
+    def __init__(self, cog_instance, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = 30, display_text: str = "30 days", metric_type: str = "sent",
                  page: int = 0, selected_role_id: str = None, pool=None, using_server_default: bool = True,
                  target_channel: Union[discord.TextChannel,
                                        discord.VoiceChannel] = None,
                  target_category: discord.CategoryChannel = None,
-                 target_user: discord.Member = None,
-                 mode_label: str = None):
+                 target_user: discord.Member = None):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.metric_type = metric_type
         self.page = page
         self.selected_role_id = selected_role_id
@@ -842,7 +838,6 @@ class MentionsLeaderboardView(discord.ui.View):
         self.target_channel = target_channel
         self.target_category = target_category
         self.target_user = target_user
-        self.mode_label = mode_label
         self._update_buttons()
 
     def _update_buttons(self):
@@ -868,7 +863,7 @@ class MentionsLeaderboardView(discord.ui.View):
         if self.show_time_buttons:
             row = 4
             all_time = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time", custom_id="mentions_all_time", row=row
             )
             all_time.callback = self.all_time_callback
@@ -876,15 +871,15 @@ class MentionsLeaderboardView(discord.ui.View):
 
             for days in MentionsConfig.TIME_PERIODS:
                 days_button = discord.ui.Button(
-                    style=discord.ButtonStyle.primary if self.current_days == days else discord.ButtonStyle.secondary,
+                    style=discord.ButtonStyle.primary if self.current_days_back_equiv == days else discord.ButtonStyle.secondary,
                     label=f"{days} Days", custom_id=f"mentions_days_{days}", row=row
                 )
                 days_button.callback = self.create_days_callback(days)
                 self.add_item(days_button)
 
             custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success if self.current_days not in MentionsConfig.TIME_PERIODS and self.current_days != 999999 else discord.ButtonStyle.secondary,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in MentionsConfig.TIME_PERIODS and self.current_days != 999999 else "Custom",
+                style=discord.ButtonStyle.success if self.current_days_back_equiv not in MentionsConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else discord.ButtonStyle.secondary,
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in MentionsConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else "Custom",
                 custom_id="mentions_custom", row=row
             )
             custom_button.callback = self.custom_days_callback
@@ -892,11 +887,13 @@ class MentionsLeaderboardView(discord.ui.View):
 
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
-            await self.handle_time_period_change(interaction, days)
+            now = datetime.utcnow()
+            await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 999999)
+        now = datetime.utcnow()
+        await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
     async def refresh_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
@@ -915,14 +912,16 @@ class MentionsLeaderboardView(discord.ui.View):
                                   self.target_channel, self.target_category, self.target_user)
         await interaction.response.send_modal(modal)
 
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+    async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.using_server_default = False
         self.show_time_buttons = False
         self.page = 0
-        self.mode_label = None
         await self.update_message(interaction)
 
     async def _get_decrypted_username(self, user_id: int) -> Optional[str]:
@@ -933,10 +932,6 @@ class MentionsLeaderboardView(discord.ui.View):
     async def fetch_data(self):
         if not self.cog.db_cog:
             return []
-
-        end_time = datetime.utcnow()
-        start_time = None if self.current_days == 999999 else end_time - \
-            timedelta(days=self.current_days)
 
         role_filter_ids = None
         if self.selected_role_id and self.selected_role_id != "none":
@@ -949,8 +944,8 @@ class MentionsLeaderboardView(discord.ui.View):
                     source_user_id=self.target_user.id,
                     limit=100,
                     role_filter_ids=role_filter_ids,
-                    start_time=start_time,
-                    end_time=end_time
+                    start_time=self.current_start_time,
+                    end_time=self.current_end_time
                 )
             else:
                 data = await self.cog.db_cog.q_leaderboard_mentions_target_user_server(
@@ -958,8 +953,8 @@ class MentionsLeaderboardView(discord.ui.View):
                     target_user_id=self.target_user.id,
                     limit=100,
                     role_filter_ids=role_filter_ids,
-                    start_time=start_time,
-                    end_time=end_time
+                    start_time=self.current_start_time,
+                    end_time=self.current_end_time
                 )
         elif self.target_channel:
             if isinstance(self.target_channel, discord.TextChannel):
@@ -969,8 +964,8 @@ class MentionsLeaderboardView(discord.ui.View):
                         channel_id=self.target_channel.id,
                         limit=100,
                         role_filter_ids=role_filter_ids,
-                        start_time=start_time,
-                        end_time=end_time
+                        start_time=self.current_start_time,
+                        end_time=self.current_end_time
                     )
                 else:
                     data = await self.cog.db_cog.q_leaderboard_mentions_received_channel(
@@ -978,8 +973,8 @@ class MentionsLeaderboardView(discord.ui.View):
                         channel_id=self.target_channel.id,
                         limit=100,
                         role_filter_ids=role_filter_ids,
-                        start_time=start_time,
-                        end_time=end_time
+                        start_time=self.current_start_time,
+                        end_time=self.current_end_time
                     )
             else:
                 return []
@@ -990,8 +985,8 @@ class MentionsLeaderboardView(discord.ui.View):
                     category_id=self.target_category.id,
                     limit=100,
                     role_filter_ids=role_filter_ids,
-                    start_time=start_time,
-                    end_time=end_time
+                    start_time=self.current_start_time,
+                    end_time=self.current_end_time
                 )
             else:
                 data = await self.cog.db_cog.q_leaderboard_mentions_received_category(
@@ -999,8 +994,8 @@ class MentionsLeaderboardView(discord.ui.View):
                     category_id=self.target_category.id,
                     limit=100,
                     role_filter_ids=role_filter_ids,
-                    start_time=start_time,
-                    end_time=end_time
+                    start_time=self.current_start_time,
+                    end_time=self.current_end_time
                 )
         else:
             if self.metric_type == "sent":
@@ -1008,16 +1003,16 @@ class MentionsLeaderboardView(discord.ui.View):
                     guild_id=self.guild.id,
                     limit=100,
                     role_filter_ids=role_filter_ids,
-                    start_time=start_time,
-                    end_time=end_time
+                    start_time=self.current_start_time,
+                    end_time=self.current_end_time
                 )
             else:
                 data = await self.cog.db_cog.q_leaderboard_mentions_received_server(
                     guild_id=self.guild.id,
                     limit=100,
                     role_filter_ids=role_filter_ids,
-                    start_time=start_time,
-                    end_time=end_time
+                    start_time=self.current_start_time,
+                    end_time=self.current_end_time
                 )
 
         formatted_data = []
@@ -1040,19 +1035,16 @@ class MentionsLeaderboardView(discord.ui.View):
     async def generate_image(self):
         self.leaderboard_data = await self.fetch_data()
 
-        display_days = "All Time" if self.current_days == 999999 else self.current_days
-
         return await MentionsImageGenerator.generate_leaderboard_image(
             guild=self.guild,
             leaderboard_data=self.leaderboard_data,
             title=self.guild.name,
-            days_back=display_days,
+            display_text=self.current_display_text,
             role_id=self.selected_role_id,
             page=self.page,
             pool=self.pool,
             target_user=self.target_user,
-            metric_type=self.metric_type,
-            mode_label=getattr(self, 'mode_label', None)
+            metric_type=self.metric_type
         )
 
     async def update_message(self, interaction: discord.Interaction):
@@ -1097,16 +1089,19 @@ class MentionsLeaderboardView(discord.ui.View):
 
 
 class MentionsRatioLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, ratio_order: str = "high",
+    def __init__(self, cog_instance, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = 30, display_text: str = "30 days", ratio_order: str = "high",
                  page: int = 0, selected_role_id: str = None, pool=None, using_server_default: bool = True,
                  target_channel: Union[discord.TextChannel,
                                        discord.VoiceChannel] = None,
-                 target_category: discord.CategoryChannel = None,
-                 mode_label: str = None):
+                 target_category: discord.CategoryChannel = None):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.ratio_order = ratio_order
         self.page = page
         self.selected_role_id = selected_role_id
@@ -1116,7 +1111,6 @@ class MentionsRatioLeaderboardView(discord.ui.View):
         self.leaderboard_data = []
         self.target_channel = target_channel
         self.target_category = target_category
-        self.mode_label = mode_label
         self._update_buttons()
 
     def _update_buttons(self):
@@ -1142,7 +1136,7 @@ class MentionsRatioLeaderboardView(discord.ui.View):
         if self.show_time_buttons:
             row = 4
             all_time = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time", custom_id="ratio_all_time", row=row
             )
             all_time.callback = self.all_time_callback
@@ -1150,15 +1144,15 @@ class MentionsRatioLeaderboardView(discord.ui.View):
 
             for days in MentionsConfig.TIME_PERIODS:
                 days_btn = discord.ui.Button(
-                    style=discord.ButtonStyle.primary if self.current_days == days else discord.ButtonStyle.secondary,
+                    style=discord.ButtonStyle.primary if self.current_days_back_equiv == days else discord.ButtonStyle.secondary,
                     label=f"{days} Days", custom_id=f"ratio_days_{days}", row=row
                 )
                 days_btn.callback = self.create_days_callback(days)
                 self.add_item(days_btn)
 
             custom = discord.ui.Button(
-                style=discord.ButtonStyle.success if self.current_days not in MentionsConfig.TIME_PERIODS and self.current_days != 999999 else discord.ButtonStyle.secondary,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in MentionsConfig.TIME_PERIODS and self.current_days != 999999 else "Custom",
+                style=discord.ButtonStyle.success if self.current_days_back_equiv not in MentionsConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else discord.ButtonStyle.secondary,
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in MentionsConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else "Custom",
                 custom_id="ratio_custom", row=row
             )
             custom.callback = self.custom_days_callback
@@ -1166,11 +1160,13 @@ class MentionsRatioLeaderboardView(discord.ui.View):
 
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
-            await self.handle_time_period_change(interaction, days)
+            now = datetime.utcnow()
+            await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 999999)
+        now = datetime.utcnow()
+        await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
     async def refresh_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
@@ -1189,14 +1185,16 @@ class MentionsRatioLeaderboardView(discord.ui.View):
                                   self.guild, self.target_channel, self.target_category)
         await interaction.response.send_modal(modal)
 
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+    async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.using_server_default = False
         self.show_time_buttons = False
         self.page = 0
-        self.mode_label = None
         await self.update_message(interaction)
 
     async def _get_decrypted_username(self, user_id: int) -> Optional[str]:
@@ -1207,10 +1205,6 @@ class MentionsRatioLeaderboardView(discord.ui.View):
     async def fetch_data(self):
         if not self.cog.db_cog:
             return []
-
-        end_time = datetime.utcnow()
-        start_time = None if self.current_days == 999999 else end_time - \
-            timedelta(days=self.current_days)
 
         role_filter_ids = None
         if self.selected_role_id and self.selected_role_id != "none":
@@ -1224,8 +1218,8 @@ class MentionsRatioLeaderboardView(discord.ui.View):
                     limit=100,
                     min_mentions_sent=1,
                     role_filter_ids=role_filter_ids,
-                    start_time=start_time,
-                    end_time=end_time
+                    start_time=self.current_start_time,
+                    end_time=self.current_end_time
                 )
                 if self.ratio_order == "low" and data:
                     data = list(reversed(data))
@@ -1238,8 +1232,8 @@ class MentionsRatioLeaderboardView(discord.ui.View):
                 limit=100,
                 min_mentions_sent=1,
                 role_filter_ids=role_filter_ids,
-                start_time=start_time,
-                end_time=end_time
+                start_time=self.current_start_time,
+                end_time=self.current_end_time
             )
             if self.ratio_order == "low" and data:
                 data = list(reversed(data))
@@ -1249,8 +1243,8 @@ class MentionsRatioLeaderboardView(discord.ui.View):
                 limit=100,
                 min_mentions_sent=1,
                 role_filter_ids=role_filter_ids,
-                start_time=start_time,
-                end_time=end_time
+                start_time=self.current_start_time,
+                end_time=self.current_end_time
             )
             if self.ratio_order == "low" and data:
                 data = list(reversed(data))
@@ -1266,7 +1260,6 @@ class MentionsRatioLeaderboardView(discord.ui.View):
             if not name:
                 name = f"User {user_id}"
 
-            # ===== FIX #2: Prevent infinity by treating 0 sent as 1 =====
             if mentions_sent == 0:
                 safe_ratio = float(mentions_received) / 1.0
             else:
@@ -1286,19 +1279,16 @@ class MentionsRatioLeaderboardView(discord.ui.View):
     async def generate_image(self):
         self.leaderboard_data = await self.fetch_data()
 
-        display_days = "All Time" if self.current_days == 999999 else self.current_days
-
         return await MentionsImageGenerator.generate_leaderboard_image(
             guild=self.guild,
             leaderboard_data=self.leaderboard_data,
             title=self.guild.name,
-            days_back=display_days,
+            display_text=self.current_display_text,
             role_id=self.selected_role_id,
             page=self.page,
             pool=self.pool,
             target_user=None,
-            metric_type="ratio",
-            mode_label=getattr(self, 'mode_label', None)
+            metric_type="ratio"
         )
 
     async def update_message(self, interaction: discord.Interaction):
@@ -1344,14 +1334,17 @@ class MentionsRatioLeaderboardView(discord.ui.View):
 
 
 class MentionsRatioEmbedView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, target_user: discord.Member, mode_label: str = None):
+    def __init__(self, cog_instance, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = 30, display_text: str = "30 days", target_user: discord.Member = None):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.target_user = target_user
         self.show_time_buttons = False
-        self.mode_label = mode_label
         self._update_buttons()
 
     def _update_buttons(self):
@@ -1369,7 +1362,7 @@ class MentionsRatioEmbedView(discord.ui.View):
         if self.show_time_buttons:
             row = 2
             all_time = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time", custom_id="ratio_embed_all_time", row=row
             )
             all_time.callback = self.all_time_callback
@@ -1377,15 +1370,15 @@ class MentionsRatioEmbedView(discord.ui.View):
 
             for days in MentionsConfig.TIME_PERIODS:
                 days_button = discord.ui.Button(
-                    style=discord.ButtonStyle.primary if self.current_days == days else discord.ButtonStyle.secondary,
+                    style=discord.ButtonStyle.primary if self.current_days_back_equiv == days else discord.ButtonStyle.secondary,
                     label=f"{days} Days", custom_id=f"ratio_embed_days_{days}", row=row
                 )
                 days_button.callback = self.create_days_callback(days)
                 self.add_item(days_button)
 
             custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success if self.current_days not in MentionsConfig.TIME_PERIODS and self.current_days != 999999 else discord.ButtonStyle.secondary,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in MentionsConfig.TIME_PERIODS and self.current_days != 999999 else "Custom",
+                style=discord.ButtonStyle.success if self.current_days_back_equiv not in MentionsConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else discord.ButtonStyle.secondary,
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in MentionsConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else "Custom",
                 custom_id="ratio_embed_custom", row=row
             )
             custom_button.callback = self.custom_days_callback
@@ -1393,11 +1386,13 @@ class MentionsRatioEmbedView(discord.ui.View):
 
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
-            await self.handle_time_period_change(interaction, days)
+            now = datetime.utcnow()
+            await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 999999)
+        now = datetime.utcnow()
+        await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
     async def refresh_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
@@ -1415,32 +1410,29 @@ class MentionsRatioEmbedView(discord.ui.View):
         modal = MentionsTimeModal(self.cog, interaction.message.id, self.guild)
         await interaction.response.send_modal(modal)
 
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+    async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.show_time_buttons = False
-        self.mode_label = None
         await self.update_embed(interaction)
 
     async def update_embed(self, interaction: discord.Interaction):
         try:
-            end_time = datetime.utcnow()
-            start_time = None if self.current_days == 999999 else end_time - \
-                timedelta(days=self.current_days)
-
             ratio_data = await self.cog.db_cog.q_user_mentions_ratio_server(
                 guild_id=self.guild.id,
                 user_id=self.target_user.id,
-                start_time=start_time,
-                end_time=end_time
+                start_time=self.current_start_time,
+                end_time=self.current_end_time
             )
 
             mentions_sent = ratio_data.get('mentions_sent', 0)
             mentions_received = ratio_data.get('mentions_received', 0)
             ratio = ratio_data.get('ratio', 0.0)
 
-            # ===== FIX #2: Prevent infinity by treating 0 sent as 1 =====
             if mentions_sent == 0:
                 safe_ratio = float(mentions_received) / 1.0
             else:
@@ -1458,14 +1450,7 @@ class MentionsRatioEmbedView(discord.ui.View):
             if self.target_user.avatar:
                 embed.set_thumbnail(url=self.target_user.avatar.url)
 
-            # ===== FIX #1: Display mode_label in embed footer =====
-            if self.mode_label:
-                embed.set_footer(text=f"Time Period: {self.mode_label}")
-            elif self.current_days == 999999:
-                embed.set_footer(text="Time Period: All Time")
-            else:
-                embed.set_footer(
-                    text=f"Time Period: Last {self.current_days} days")
+            embed.set_footer(text=f"Time Period: {self.current_display_text}")
 
             self._update_buttons()
 
@@ -1507,36 +1492,103 @@ class Mentions(commands.Cog):
                 break
             await asyncio.sleep(1)
 
-    async def get_server_default_days(self, guild: discord.Guild) -> tuple:
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
         try:
             settings_cog = self.bot.get_cog('Settings')
             if not settings_cog:
-                return (14, "14 days")
+                end = datetime.utcnow()
+                start = end - timedelta(days=14)
+                return (start, end, "14 days", 14)
 
             settings = await settings_cog.get_guild_settings(guild.id)
-
-            if settings is None:
-                return (14, "14 days")
-
-            if isinstance(settings, dict):
-                mode = settings.get('default_time_mode', 'days_back')
-                days = settings.get('default_days_back') or 14
-            else:
-                mode = getattr(settings, 'default_time_mode', 'days_back')
-                days = getattr(settings, 'default_days_back', 14) or 14
+            mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.utcnow()
 
             if mode == 'all_time':
-                return (999999, "All Time")
+                return (None, now, "All Time", 999999)
+
             elif mode == 'days_back':
-                return (days, f"{days} days")
-            else:
-                # ===== FIX #1: Return "Custom" for rollback, date_range, and any other mode =====
-                return (days, "Custom")
+                days = settings.get('default_days_back') or 14
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Since the {rolling_value}{suffix}"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=14)
+            return (start, end, "14 days", 14)
 
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return (14, "14 days")
+            end = datetime.utcnow()
+            start = end - timedelta(days=14)
+            return (start, end, "14 days", 14)
 
     async def _check_permission(self, ctx_or_interaction) -> bool:
         user = ctx_or_interaction.user if hasattr(
@@ -1694,17 +1746,7 @@ class Mentions(commands.Cog):
 
         await interaction.response.defer()
 
-        days_back, mode_label = await self.get_server_default_days(interaction.guild)
-
-        # ===== Convert custom mode to actual days for database query =====
-        if mode_label == "Custom":
-            if self.bot.get_cog('Settings'):
-                settings = await self.bot.get_cog('Settings').get_guild_settings(interaction.guild.id)
-                if settings and isinstance(settings, dict) and settings.get('default_from_date'):
-                    to_date = settings.get(
-                        'default_to_date') or datetime.utcnow()
-                    delta = to_date - settings.get('default_from_date')
-                    days_back = max(1, delta.days)
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(interaction.guild)
 
         pool = self.db_cog.pool if hasattr(self.db_cog, 'pool') else None
 
@@ -1721,12 +1763,11 @@ class Mentions(commands.Cog):
                 target_category = target
 
         view = MentionsLeaderboardView(
-            self, interaction.guild, days_back, "sent",
+            self, interaction.guild, start_time, end_time, days_back_equiv, display_text, "sent",
             selected_role_id=None, pool=pool, using_server_default=True,
             target_channel=target_channel,
             target_category=target_category,
-            target_user=target_user_param,
-            mode_label=mode_label
+            target_user=target_user_param
         )
 
         img_bytes = await view.generate_image()
@@ -1750,21 +1791,7 @@ class Mentions(commands.Cog):
 
         await interaction.response.defer()
 
-        days_back, mode_label = await self.get_server_default_days(interaction.guild)
-
-        # ===== Convert custom mode to actual days for database query =====
-        if mode_label == "Custom":
-            if self.bot.get_cog('Settings'):
-                settings = await self.bot.get_cog('Settings').get_guild_settings(interaction.guild.id)
-                if settings and isinstance(settings, dict) and settings.get('default_from_date'):
-                    to_date = settings.get(
-                        'default_to_date') or datetime.utcnow()
-                    delta = to_date - settings.get('default_from_date')
-                    days_back = max(1, delta.days)
-
-        end_time = datetime.utcnow()
-        start_time = None if days_back == 999999 else end_time - \
-            timedelta(days=days_back)
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(interaction.guild)
 
         ratio_data = await self.db_cog.q_user_mentions_ratio_server(
             guild_id=interaction.guild.id,
@@ -1777,7 +1804,6 @@ class Mentions(commands.Cog):
         mentions_received = ratio_data.get('mentions_received', 0)
         ratio = ratio_data.get('ratio', 0.0)
 
-        # ===== FIX #2: Prevent infinity by treating 0 sent as 1 =====
         if mentions_sent == 0:
             safe_ratio = float(mentions_received) / 1.0
         else:
@@ -1795,11 +1821,10 @@ class Mentions(commands.Cog):
         if target_user.avatar:
             embed.set_thumbnail(url=target_user.avatar.url)
 
-        # ===== FIX #1: Display mode_label in embed footer =====
-        embed.set_footer(text=f"Time Period: {mode_label}")
+        embed.set_footer(text=f"Time Period: {display_text}")
 
         view = MentionsRatioEmbedView(
-            self, interaction.guild, days_back, target_user, mode_label=mode_label)
+            self, interaction.guild, start_time, end_time, days_back_equiv, display_text, target_user)
         await interaction.followup.send(embed=embed, view=view)
 
     async def _handle_slash_ratios_leaderboard(
@@ -1822,17 +1847,7 @@ class Mentions(commands.Cog):
 
         await interaction.response.defer()
 
-        days_back, mode_label = await self.get_server_default_days(interaction.guild)
-
-        # ===== Convert custom mode to actual days for database query =====
-        if mode_label == "Custom":
-            if self.bot.get_cog('Settings'):
-                settings = await self.bot.get_cog('Settings').get_guild_settings(interaction.guild.id)
-                if settings and isinstance(settings, dict) and settings.get('default_from_date'):
-                    to_date = settings.get(
-                        'default_to_date') or datetime.utcnow()
-                    delta = to_date - settings.get('default_from_date')
-                    days_back = max(1, delta.days)
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(interaction.guild)
 
         pool = self.db_cog.pool if hasattr(self.db_cog, 'pool') else None
 
@@ -1846,11 +1861,10 @@ class Mentions(commands.Cog):
                 target_category = target
 
         view = MentionsRatioLeaderboardView(
-            self, interaction.guild, days_back, "high",
+            self, interaction.guild, start_time, end_time, days_back_equiv, display_text, "high",
             selected_role_id=None, pool=pool, using_server_default=True,
             target_channel=target_channel,
-            target_category=target_category,
-            mode_label=mode_label
+            target_category=target_category
         )
 
         img_bytes = await view.generate_image()
@@ -1885,17 +1899,7 @@ class Mentions(commands.Cog):
 
         await ctx.defer()
 
-        days_back, mode_label = await self.get_server_default_days(ctx.guild)
-
-        # ===== Convert custom mode to actual days for database query =====
-        if mode_label == "Custom":
-            if self.bot.get_cog('Settings'):
-                settings = await self.bot.get_cog('Settings').get_guild_settings(ctx.guild.id)
-                if settings and isinstance(settings, dict) and settings.get('default_from_date'):
-                    to_date = settings.get(
-                        'default_to_date') or datetime.utcnow()
-                    delta = to_date - settings.get('default_from_date')
-                    days_back = max(1, delta.days)
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(ctx.guild)
 
         pool = self.db_cog.pool if hasattr(self.db_cog, 'pool') else None
 
@@ -1912,12 +1916,11 @@ class Mentions(commands.Cog):
                 target_category = target
 
         view = MentionsLeaderboardView(
-            self, ctx.guild, days_back, "sent",
+            self, ctx.guild, start_time, end_time, days_back_equiv, display_text, "sent",
             selected_role_id=None, pool=pool, using_server_default=True,
             target_channel=target_channel,
             target_category=target_category,
-            target_user=target_user_param,
-            mode_label=mode_label
+            target_user=target_user_param
         )
 
         img_bytes = await view.generate_image()
@@ -1946,21 +1949,7 @@ class Mentions(commands.Cog):
 
         await ctx.defer()
 
-        days_back, mode_label = await self.get_server_default_days(ctx.guild)
-
-        # ===== Convert custom mode to actual days for database query =====
-        if mode_label == "Custom":
-            if self.bot.get_cog('Settings'):
-                settings = await self.bot.get_cog('Settings').get_guild_settings(ctx.guild.id)
-                if settings and isinstance(settings, dict) and settings.get('default_from_date'):
-                    to_date = settings.get(
-                        'default_to_date') or datetime.utcnow()
-                    delta = to_date - settings.get('default_from_date')
-                    days_back = max(1, delta.days)
-
-        end_time = datetime.utcnow()
-        start_time = None if days_back == 999999 else end_time - \
-            timedelta(days=days_back)
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(ctx.guild)
 
         ratio_data = await self.db_cog.q_user_mentions_ratio_server(
             guild_id=ctx.guild.id,
@@ -1973,7 +1962,6 @@ class Mentions(commands.Cog):
         mentions_received = ratio_data.get('mentions_received', 0)
         ratio = ratio_data.get('ratio', 0.0)
 
-        # ===== FIX #2: Prevent infinity by treating 0 sent as 1 =====
         if mentions_sent == 0:
             safe_ratio = float(mentions_received) / 1.0
         else:
@@ -1991,11 +1979,10 @@ class Mentions(commands.Cog):
         if target_user.avatar:
             embed.set_thumbnail(url=target_user.avatar.url)
 
-        # ===== FIX #1: Display mode_label in embed footer =====
-        embed.set_footer(text=f"Time Period: {mode_label}")
+        embed.set_footer(text=f"Time Period: {display_text}")
 
         view = MentionsRatioEmbedView(
-            self, ctx.guild, days_back, target_user, mode_label=mode_label)
+            self, ctx.guild, start_time, end_time, days_back_equiv, display_text, target_user)
         await ctx.send(embed=embed, view=view)
 
     async def _handle_prefix_ratios_leaderboard(
@@ -2023,17 +2010,7 @@ class Mentions(commands.Cog):
 
         await ctx.defer()
 
-        days_back, mode_label = await self.get_server_default_days(ctx.guild)
-
-        # ===== Convert custom mode to actual days for database query =====
-        if mode_label == "Custom":
-            if self.bot.get_cog('Settings'):
-                settings = await self.bot.get_cog('Settings').get_guild_settings(ctx.guild.id)
-                if settings and isinstance(settings, dict) and settings.get('default_from_date'):
-                    to_date = settings.get(
-                        'default_to_date') or datetime.utcnow()
-                    delta = to_date - settings.get('default_from_date')
-                    days_back = max(1, delta.days)
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(ctx.guild)
 
         pool = self.db_cog.pool if hasattr(self.db_cog, 'pool') else None
 
@@ -2047,11 +2024,10 @@ class Mentions(commands.Cog):
                 target_category = target
 
         view = MentionsRatioLeaderboardView(
-            self, ctx.guild, days_back, "high",
+            self, ctx.guild, start_time, end_time, days_back_equiv, display_text, "high",
             selected_role_id=None, pool=pool, using_server_default=True,
             target_channel=target_channel,
-            target_category=target_category,
-            mode_label=mode_label
+            target_category=target_category
         )
 
         img_bytes = await view.generate_image()

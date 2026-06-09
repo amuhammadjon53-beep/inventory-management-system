@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval,
          getDay, addMonths, subMonths,
          startOfWeek, addWeeks } from 'date-fns';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 
 // ─── Intensity ────────────────────────────────────────────────────────────────
 
@@ -409,8 +411,13 @@ const ActivityHeatmap = ({
   subtitle,
 }) => {
   const [currentMonth, setCurrentMonth] = useState(new Date());
-
   const [internalView, setInternalView] = useState(autoView);
+  const [exportingCSV, setExportingCSV] = useState(false);
+  const [exportingPDF, setExportingPDF] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const heatmapRef = useRef(null);
+  const exportButtonRef = useRef(null);
+
   const isControlled = activeView !== undefined && onViewChange !== undefined;
   const currentView  = isControlled ? activeView : internalView;
 
@@ -427,10 +434,161 @@ const ActivityHeatmap = ({
     }
   }, [autoView, isControlled]);
 
+  // Handle outside click to close menu
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (exportButtonRef.current && !exportButtonRef.current.contains(event.target)) {
+        setShowExportMenu(false);
+      }
+    };
+
+    if (showExportMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showExportMenu]);
+
   const maxValue = useMemo(() => {
     const values = Object.values(data);
     return values.length ? Math.max(...values) : 0;
   }, [data]);
+
+  // Export functions
+  const exportToCSV = async () => {
+    setExportingCSV(true);
+    try {
+      if (!data || Object.keys(data).length === 0) {
+        console.error('No data to export');
+        return;
+      }
+
+      // Convert data object to array of entries and sort by date
+      const entries = Object.entries(data)
+        .map(([key, value]) => {
+          // Parse different key formats
+          let date, hour;
+          if (key.includes('-')) {
+            const parts = key.split('-');
+            if (parts.length === 3 && !key.includes('T')) {
+              // Date format: yyyy-MM-dd
+              date = key;
+              hour = null;
+            } else if (parts.length === 4) {
+              // Hour format: yyyy-MM-dd-HH
+              date = `${parts[0]}-${parts[1]}-${parts[2]}`;
+              hour = parseInt(parts[3]);
+            }
+          }
+          return { key, date, hour, value };
+        })
+        .sort((a, b) => a.key.localeCompare(b.key));
+
+      // Prepare CSV headers based on view type
+      let headers = ['Date', 'Value'];
+      if (currentView === 'weekly') {
+        headers = ['Date', 'Hour', 'Value'];
+      }
+
+      const csvRows = [headers];
+      
+      for (const entry of entries) {
+        if (currentView === 'weekly' && entry.hour !== null) {
+          const hourStr = `${String(entry.hour).padStart(2, '0')}:00`;
+          const row = [`"${entry.date}"`, hourStr, entry.value];
+          csvRows.push(row.join(','));
+        } else if (currentView !== 'weekly' && entry.hour === null) {
+          const row = [`"${entry.date}"`, entry.value];
+          csvRows.push(row.join(','));
+        }
+      }
+      
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      // Include current view in filename
+      const filename = `${title.toLowerCase().replace(/\s+/g, '_')}_${currentView}_export.csv`;
+      
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error exporting CSV:', error);
+    } finally {
+      setExportingCSV(false);
+    }
+  };
+
+  const exportToPDF = async () => {
+    setExportingPDF(true);
+    const buttons = heatmapRef.current?.querySelector('.export-buttons-container');
+    try {
+      if (!heatmapRef.current) {
+        console.error('Heatmap ref not available');
+        return;
+      }
+
+      // Hide buttons temporarily
+      if (buttons) buttons.style.visibility = 'hidden';
+
+      // Capture with higher scale for retina quality
+      const canvas = await html2canvas(heatmapRef.current, {
+        scale: 2,
+        backgroundColor: '#0a0a0a',
+        logging: false,
+        useCORS: true
+      });
+
+      // Restore buttons
+      if (buttons) buttons.style.visibility = 'visible';
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        unit: 'px',
+        format: [canvas.width, canvas.height],
+        orientation: canvas.width > canvas.height ? 'landscape' : 'portrait'
+      });
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+      
+      // Include current view in filename
+      const filename = `${title.toLowerCase().replace(/\s+/g, '_')}_${currentView}_export.pdf`;
+      pdf.save(filename);
+    } catch (error) {
+      // Restore buttons on error
+      if (buttons) buttons.style.visibility = 'visible';
+      console.error('Error exporting PDF:', error);
+    } finally {
+      setExportingPDF(false);
+    }
+  };
+
+  const handleExportOption = async (exportFn) => {
+    setShowExportMenu(false);
+    await exportFn();
+  };
+
+  // Export options array for easy extensibility
+  const EXPORT_OPTIONS = [
+    {
+      label: 'CSV',
+      icon: '↓',
+      onClick: exportToCSV,
+      exporting: exportingCSV
+    },
+    {
+      label: 'PDF',
+      icon: '⎙',
+      onClick: exportToPDF,
+      exporting: exportingPDF
+    }
+  ];
 
   const renderView = () => {
     switch (currentView) {
@@ -446,29 +604,135 @@ const ActivityHeatmap = ({
   };
 
   return (
-    <div style={{
-      background: 'linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%)',
-      borderRadius: '24px',
-      padding: '24px',
-      color: 'white',
-      width: '100%',
-      boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
-      border: '1px solid rgba(255,255,255,0.05)',
-      boxSizing: 'border-box',
-    }}>
+    <div 
+      ref={heatmapRef}
+      style={{
+        background: 'linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%)',
+        borderRadius: '24px',
+        padding: '24px',
+        color: 'white',
+        width: '100%',
+        boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
+        border: '1px solid rgba(255,255,255,0.05)',
+        boxSizing: 'border-box',
+      }}
+    >
       <div style={{ marginBottom: '20px' }}>
-        {/* Row 1: title + legend */}
+        {/* Row 1: title + legend + export buttons */}
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'12px', marginBottom:'14px' }}>
           <div>
             <h2 style={{ margin:0, fontSize:'20px', fontWeight:'600', color:'#fff', letterSpacing:'0.5px' }}>{title}</h2>
             {subtitle && <div style={{ fontSize:'12px', color:'#888', marginTop:'4px' }}>{subtitle}</div>}
           </div>
-          <div style={{ display:'flex', gap:'8px', alignItems:'center', background:'rgba(255,255,255,0.05)', padding:'8px 14px', borderRadius:'30px', border:'1px solid rgba(255,255,255,0.1)' }}>
-            <span style={{ fontSize:'11px', color:'#aaa' }}>Low</span>
-            {[0.12, 0.25, 0.45, 0.65, 0.85, 1].map((opacity, i) => (
-              <div key={i} style={{ width:'18px', height:'18px', backgroundColor:'#aa00ff', opacity, borderRadius:'4px', border:'1px solid rgba(255,255,255,0.15)' }} />
-            ))}
-            <span style={{ fontSize:'11px', color:'#aaa' }}>High</span>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            {/* Export Button with Dropdown Menu */}
+            <div className="export-buttons-container" style={{
+              position: 'relative',
+              display: 'inline-block'
+            }} ref={exportButtonRef}>
+              <button
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  fontWeight: '500',
+                  background: 'transparent',
+                  color: '#ffffff',
+                  border: '1px solid #333333',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  fontFamily: 'inherit'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#aa00ff';
+                  e.currentTarget.style.color = '#aa00ff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = '#333333';
+                  e.currentTarget.style.color = '#ffffff';
+                }}
+              >
+                <span className="export-icon">↑</span>
+                <span className="export-label">Export</span>
+                <span>▾</span>
+              </button>
+
+              {/* Dropdown Menu */}
+              {showExportMenu && (
+                <div style={{
+                  position: 'absolute',
+                  bottom: '100%',
+                  right: 0,
+                  marginBottom: '4px',
+                  backgroundColor: '#1a1a1a',
+                  border: '1px solid #333333',
+                  borderRadius: '8px',
+                  boxShadow: '0 -4px 16px rgba(0,0,0,0.4)',
+                  padding: '4px',
+                  minWidth: '120px',
+                  animation: 'fadeIn 0.15s ease-out',
+                  zIndex: 1000
+                }}>
+                  {EXPORT_OPTIONS.map((option) => (
+                    <button
+                      key={option.label}
+                      onClick={() => handleExportOption(option.onClick)}
+                      disabled={option.exporting}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        width: '100%',
+                        padding: '8px 12px',
+                        backgroundColor: 'transparent',
+                        border: 'none',
+                        borderRadius: '6px',
+                        color: '#ffffff',
+                        fontSize: '12px',
+                        cursor: option.exporting ? 'wait' : 'pointer',
+                        transition: 'all 0.15s ease',
+                        fontFamily: 'inherit',
+                        textAlign: 'left'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!option.exporting) {
+                          e.currentTarget.style.backgroundColor = 'rgba(170, 0, 255, 0.12)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = 'transparent';
+                      }}
+                    >
+                      <span style={{ fontSize: '13px' }}>{option.icon}</span>
+                      <span style={{ flex: 1 }}>{option.label}</span>
+                      {option.exporting && (
+                        <span className="export-spinner" style={{
+                          display: 'inline-block',
+                          width: '10px',
+                          height: '10px',
+                          border: `2px solid #aa00ff`,
+                          borderTopColor: 'transparent',
+                          borderRadius: '50%',
+                          animation: 'spin 0.6s linear infinite'
+                        }} />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            <div style={{ display:'flex', gap:'8px', alignItems:'center', background:'rgba(255,255,255,0.05)', padding:'8px 14px', borderRadius:'30px', border:'1px solid rgba(255,255,255,0.1)' }}>
+              <span style={{ fontSize:'11px', color:'#aaa' }}>Low</span>
+              {[0.12, 0.25, 0.45, 0.65, 0.85, 1].map((opacity, i) => (
+                <div key={i} style={{ width:'18px', height:'18px', backgroundColor:'#aa00ff', opacity, borderRadius:'4px', border:'1px solid rgba(255,255,255,0.15)' }} />
+              ))}
+              <span style={{ fontSize:'11px', color:'#aaa' }}>High</span>
+            </div>
           </div>
         </div>
         {/* Row 2: view toggle */}
@@ -485,6 +749,33 @@ const ActivityHeatmap = ({
       <div style={{ marginTop:'20px', paddingTop:'16px', borderTop:'1px solid rgba(255,255,255,0.05)', fontSize:'11px', color:'#555', textAlign:'center' }}>
         Each square represents activity intensity · Darker = More activity
       </div>
+
+      <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        
+        @keyframes fadeIn {
+          from {
+            opacity: 0;
+            transform: translateY(5px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        
+        @media (max-width: 768px) {
+          .export-label {
+            display: none;
+          }
+          .export-buttons-container button {
+            padding: 6px 8px;
+          }
+        }
+      `}</style>
     </div>
   );
 };

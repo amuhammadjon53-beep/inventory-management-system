@@ -1043,6 +1043,499 @@ const DashboardAccessSetting = ({ currentLevel, onSave, saving }) => {
   );
 };
 
+const SimpleCalendar = ({ onSelectDate, currentDate, onClose }) => {
+  const [currentMonth, setCurrentMonth] = useState(currentDate ? new Date(currentDate) : new Date());
+  
+  const getDaysInMonth = (date) => {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  };
+  
+  const getFirstDayOfMonth = (date) => {
+    return new Date(date.getFullYear(), date.getMonth(), 1).getDay();
+  };
+  
+  const handleDateSelect = (day) => {
+    const selected = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+    onSelectDate(selected);
+    onClose();
+  };
+  
+  const changeMonth = (delta) => {
+    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + delta, 1));
+  };
+  
+  const daysInMonth = getDaysInMonth(currentMonth);
+  const firstDay = getFirstDayOfMonth(currentMonth);
+  const days = [];
+  
+  // Adjust for Monday as first day of week
+  let startOffset = firstDay === 0 ? 6 : firstDay - 1;
+  
+  // Empty cells for days before month starts
+  for (let i = 0; i < startOffset; i++) {
+    days.push(<div key={`empty-${i}`} style={{ padding: '8px' }}></div>);
+  }
+  
+  // Days of the month
+  for (let i = 1; i <= daysInMonth; i++) {
+    const isSelected = currentDate && 
+      currentDate.getDate() === i && 
+      currentDate.getMonth() === currentMonth.getMonth() && 
+      currentDate.getFullYear() === currentMonth.getFullYear();
+      
+    days.push(
+      <div
+        key={i}
+        onClick={() => handleDateSelect(i)}
+        style={{
+          padding: '8px',
+          textAlign: 'center',
+          cursor: 'pointer',
+          borderRadius: '6px',
+          backgroundColor: isSelected ? '#aa00ff' : 'transparent',
+          color: isSelected ? '#fff' : '#e0e0e0',
+          transition: 'all 0.2s ease'
+        }}
+        onMouseEnter={(e) => {
+          if (!isSelected) {
+            e.target.style.backgroundColor = '#2a2a2a';
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (!isSelected) {
+            e.target.style.backgroundColor = 'transparent';
+          }
+        }}
+      >
+        {i}
+      </div>
+    );
+  }
+  
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  
+  return (
+    <div style={{
+      position: 'absolute',
+      top: '100%',
+      left: 0,
+      marginTop: '8px',
+      backgroundColor: '#1a1a1a',
+      border: '1px solid #aa00ff',
+      borderRadius: '12px',
+      padding: '16px',
+      zIndex: 1000,
+      boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+      minWidth: '280px'
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+        <button
+          onClick={() => changeMonth(-1)}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: '#aa00ff',
+            cursor: 'pointer',
+            fontSize: '18px',
+            padding: '4px 8px'
+          }}
+        >
+          ◀
+        </button>
+        <span style={{ color: '#fff', fontWeight: 'bold' }}>
+          {monthNames[currentMonth.getMonth()]} {currentMonth.getFullYear()}
+        </span>
+        <button
+          onClick={() => changeMonth(1)}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: '#aa00ff',
+            cursor: 'pointer',
+            fontSize: '18px',
+            padding: '4px 8px'
+          }}
+        >
+          ▶
+        </button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px', marginBottom: '8px' }}>
+        {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => (
+          <div key={day} style={{ textAlign: 'center', color: '#888', fontSize: '12px', padding: '4px' }}>
+            {day}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px' }}>
+        {days}
+      </div>
+    </div>
+  );
+};
+
+const TimePeriodSetting = ({ settings, onSave, saving }) => {
+  const [editing, setEditing] = useState(false);
+  const [timeMode, setTimeMode] = useState(settings.default_time_mode || 'all_time');
+  const [daysBack, setDaysBack] = useState(settings.default_days_back || 7);
+  const [fromDate, setFromDate] = useState(settings.default_from_date ? new Date(settings.default_from_date) : null);
+  const [toDate, setToDate] = useState(settings.default_to_date ? new Date(settings.default_to_date) : null);
+  const [rollingType, setRollingType] = useState(settings.default_rolling_type || 'weekday');
+  const [rollingValue, setRollingValue] = useState(settings.default_rolling_value || 0);
+  const [showFromCalendar, setShowFromCalendar] = useState(false);
+  const [showToCalendar, setShowToCalendar] = useState(false);
+  const [validationError, setValidationError] = useState(null);
+  
+  const formatDateForDisplay = (date) => {
+    if (!date) return '';
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}-${month}-${year}`;
+  };
+  
+  const parseDateFromString = (dateStr) => {
+    if (!dateStr) return null;
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      return new Date(parts[2], parts[1] - 1, parts[0]);
+    }
+    return null;
+  };
+  
+  const getPreviewText = () => {
+    const mode = settings.default_time_mode || 'all_time';
+    
+    switch(mode) {
+      case 'all_time':
+        return 'All Time';
+      case 'days_back':
+        return `Last ${settings.default_days_back || 7} days`;
+      case 'date_range':
+        const from = settings.default_from_date ? formatDateForDisplay(new Date(settings.default_from_date)) : 'Start';
+        const to = settings.default_to_date ? formatDateForDisplay(new Date(settings.default_to_date)) : 'End';
+        return `${from} to ${to}`;
+      case 'rolling_window':
+        if (settings.default_rolling_type === 'weekday') {
+          const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+          return `Rolling — every ${weekdays[settings.default_rolling_value || 0]}`;
+        } else {
+          const day = settings.default_rolling_value || 1;
+          const ordinal = (n) => {
+            if (n === 1) return '1st';
+            if (n === 2) return '2nd';
+            if (n === 3) return '3rd';
+            return `${n}th`;
+          };
+          return `Rolling — ${ordinal(day)} of each month`;
+        }
+      default:
+        return 'All Time';
+    }
+  };
+  
+  const validateSettings = () => {
+    if (timeMode === 'days_back') {
+      if (!daysBack || daysBack < 1 || daysBack > 3650) {
+        setValidationError('Days back must be between 1 and 3650');
+        return false;
+      }
+    } else if (timeMode === 'date_range') {
+      if (!fromDate && !toDate) {
+        setValidationError('At least one date (from or to) must be provided');
+        return false;
+      }
+      if (fromDate && toDate && fromDate >= toDate) {
+        setValidationError('From date must be before to date');
+        return false;
+      }
+    } else if (timeMode === 'rolling_window') {
+      if (rollingType === 'weekday') {
+        if (rollingValue < 0 || rollingValue > 6) {
+          setValidationError('Invalid weekday selection');
+          return false;
+        }
+      } else {
+        if (!rollingValue || rollingValue < 1 || rollingValue > 31) {
+          setValidationError('Day of month must be between 1 and 31');
+          return false;
+        }
+      }
+    }
+    setValidationError(null);
+    return true;
+  };
+  
+  const handleSave = async () => {
+    if (!validateSettings()) return;
+    
+    const data = {
+      default_time_mode: timeMode,
+      default_days_back: timeMode === 'days_back' ? daysBack : null,
+      default_from_date: fromDate ? fromDate.toISOString() : null,
+      default_to_date: toDate ? toDate.toISOString() : null,
+      default_rolling_type: timeMode === 'rolling_window' ? rollingType : null,
+      default_rolling_value: timeMode === 'rolling_window' ? rollingValue : null
+    };
+    
+    await onSave(data);
+    setEditing(false);
+  };
+  
+  const handleCancel = () => {
+    setTimeMode(settings.default_time_mode || 'all_time');
+    setDaysBack(settings.default_days_back || 7);
+    setFromDate(settings.default_from_date ? new Date(settings.default_from_date) : null);
+    setToDate(settings.default_to_date ? new Date(settings.default_to_date) : null);
+    setRollingType(settings.default_rolling_type || 'weekday');
+    setRollingValue(settings.default_rolling_value || 0);
+    setValidationError(null);
+    setEditing(false);
+  };
+  
+  if (!editing) {
+    return (
+      <div>
+        <div className="setting-preview">
+          <span className="setting-value">{getPreviewText()}</span>
+          <button className="setting-change-btn" onClick={() => setEditing(true)}>
+            Change
+          </button>
+        </div>
+        <p className="setting-note">
+          Default time period used across bot commands and dashboard
+        </p>
+      </div>
+    );
+  }
+  
+  return (
+    <div>
+      <div className="permission-boxes" style={{ marginBottom: '20px' }}>
+        {[
+          { value: 'all_time', label: 'All Time', icon: '🕒' },
+          { value: 'days_back', label: 'Days Back', icon: '📅' },
+          { value: 'date_range', label: 'Date Range', icon: '📆' },
+          { value: 'rolling_window', label: 'Rolling Window', icon: '🔄' }
+        ].map(mode => (
+          <div
+            key={mode.value}
+            className={`permission-box ${timeMode === mode.value ? 'selected' : ''}`}
+            onClick={() => setTimeMode(mode.value)}
+          >
+            <span className="permission-box-icon">{mode.icon}</span>
+            <div className="permission-box-name">{mode.label}</div>
+          </div>
+        ))}
+      </div>
+      
+      {timeMode === 'all_time' && (
+        <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: '#1a1a1a', borderRadius: '8px' }}>
+          <span style={{ color: '#888', fontSize: '13px' }}>📊 No time filter — all historical data will be used.</span>
+        </div>
+      )}
+      
+      {timeMode === 'days_back' && (
+        <div style={{ marginBottom: '16px' }}>
+          <input
+            type="number"
+            value={daysBack}
+            onChange={(e) => setDaysBack(parseInt(e.target.value))}
+            min="1"
+            max="3650"
+            className="setting-input"
+            placeholder="Number of days (1-3650)"
+          />
+          {validationError && timeMode === 'days_back' && (
+            <div style={{ color: '#ff7675', fontSize: '12px', marginTop: '8px' }}>{validationError}</div>
+          )}
+        </div>
+      )}
+      
+      {timeMode === 'date_range' && (
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, position: 'relative' }}>
+              <div style={{ marginBottom: '4px', color: '#888', fontSize: '12px' }}>From Date (optional)</div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  value={fromDate ? formatDateForDisplay(fromDate) : ''}
+                  onChange={(e) => {
+                    const parsed = parseDateFromString(e.target.value);
+                    setFromDate(parsed);
+                  }}
+                  placeholder="DD-MM-YYYY"
+                  className="setting-input"
+                  style={{ flex: 1 }}
+                />
+                <button
+                  onClick={() => setShowFromCalendar(!showFromCalendar)}
+                  style={{
+                    backgroundColor: '#2a2a2a',
+                    border: '1px solid #3a3a3a',
+                    borderRadius: '10px',
+                    padding: '0 12px',
+                    cursor: 'pointer',
+                    fontSize: '20px'
+                  }}
+                >
+                  📅
+                </button>
+              </div>
+              {showFromCalendar && (
+                <SimpleCalendar
+                  onSelectDate={(date) => {
+                    setFromDate(date);
+                    setShowFromCalendar(false);
+                  }}
+                  currentDate={fromDate}
+                  onClose={() => setShowFromCalendar(false)}
+                />
+              )}
+              <div style={{ color: '#666', fontSize: '11px', marginTop: '4px' }}>
+                Leave empty for open start
+              </div>
+            </div>
+            
+            <div style={{ flex: 1, position: 'relative' }}>
+              <div style={{ marginBottom: '4px', color: '#888', fontSize: '12px' }}>To Date (optional)</div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  value={toDate ? formatDateForDisplay(toDate) : ''}
+                  onChange={(e) => {
+                    const parsed = parseDateFromString(e.target.value);
+                    setToDate(parsed);
+                  }}
+                  placeholder="DD-MM-YYYY"
+                  className="setting-input"
+                  style={{ flex: 1 }}
+                />
+                <button
+                  onClick={() => setShowToCalendar(!showToCalendar)}
+                  style={{
+                    backgroundColor: '#2a2a2a',
+                    border: '1px solid #3a3a3a',
+                    borderRadius: '10px',
+                    padding: '0 12px',
+                    cursor: 'pointer',
+                    fontSize: '20px'
+                  }}
+                >
+                  📅
+                </button>
+              </div>
+              {showToCalendar && (
+                <SimpleCalendar
+                  onSelectDate={(date) => {
+                    setToDate(date);
+                    setShowToCalendar(false);
+                  }}
+                  currentDate={toDate}
+                  onClose={() => setShowToCalendar(false)}
+                />
+              )}
+              <div style={{ color: '#666', fontSize: '11px', marginTop: '4px' }}>
+                Leave empty for open end
+              </div>
+            </div>
+          </div>
+          {validationError && timeMode === 'date_range' && (
+            <div style={{ color: '#ff7675', fontSize: '12px', marginTop: '8px' }}>{validationError}</div>
+          )}
+        </div>
+      )}
+      
+      {timeMode === 'rolling_window' && (
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+            <div
+              onClick={() => setRollingType('weekday')}
+              style={{
+                flex: 1,
+                padding: '10px',
+                textAlign: 'center',
+                backgroundColor: rollingType === 'weekday' ? '#2a2a2a' : '#1a1a1a',
+                border: rollingType === 'weekday' ? '2px solid #aa00ff' : '2px solid #2a2a2a',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: rollingType === 'weekday' ? 'bold' : 'normal'
+              }}
+            >
+              Day of Week
+            </div>
+            <div
+              onClick={() => setRollingType('monthly')}
+              style={{
+                flex: 1,
+                padding: '10px',
+                textAlign: 'center',
+                backgroundColor: rollingType === 'monthly' ? '#2a2a2a' : '#1a1a1a',
+                border: rollingType === 'monthly' ? '2px solid #aa00ff' : '2px solid #2a2a2a',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: rollingType === 'monthly' ? 'bold' : 'normal'
+              }}
+            >
+              Day of Month
+            </div>
+          </div>
+          
+          {rollingType === 'weekday' ? (
+            <div>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map((day, index) => (
+                  <div
+                    key={day}
+                    onClick={() => setRollingValue(index)}
+                    style={{
+                      padding: '8px 12px',
+                      backgroundColor: rollingValue === index ? '#aa00ff' : '#1a1a1a',
+                      border: rollingValue === index ? '1px solid #aa00ff' : '1px solid #2a2a2a',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      color: rollingValue === index ? '#fff' : '#e0e0e0',
+                      transition: 'all 0.2s ease',
+                      fontSize: '13px'
+                    }}
+                  >
+                    {day}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <input
+                type="number"
+                value={rollingValue}
+                onChange={(e) => setRollingValue(parseInt(e.target.value))}
+                min="1"
+                max="31"
+                className="setting-input"
+                placeholder="Day of month (1-31)"
+              />
+              {validationError && timeMode === 'rolling_window' && (
+                <div style={{ color: '#ff7675', fontSize: '12px', marginTop: '8px' }}>{validationError}</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      
+      <div className="button-group">
+        <button className="button-save" onClick={handleSave} disabled={saving}>
+          {saving ? 'Saving...' : 'Save Changes'}
+        </button>
+        <button className="button-cancel" onClick={handleCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const AccessDenied = ({ accessLevel }) => {
   let requiredPermission = "Administrator";
   if (accessLevel === 'Member' || accessLevel === 'Moderator') {
@@ -1081,7 +1574,8 @@ const SettingsDashboard = () => {
     voiceStates: false,
     botFilter: false,
     permissionLevel: false,
-    dashboardAccess: false
+    dashboardAccess: false,
+    timePeriod: false
   });
 
   // Check if current user is privileged
@@ -1354,6 +1848,50 @@ const SettingsDashboard = () => {
     }
   };
 
+  const updateTimePeriod = async (timePeriodData) => {
+    if (!currentServer) return false;
+
+    setSaving(prev => ({ ...prev, timePeriod: true }));
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/settings/time-period/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          guild_id: currentServer.id,
+          ...timePeriodData
+        })
+      });
+
+      const result = await response.json();
+      
+      if (result.success) {
+        setSettings(prev => ({
+          ...prev,
+          default_time_mode: timePeriodData.default_time_mode,
+          default_days_back: timePeriodData.default_days_back,
+          default_from_date: timePeriodData.default_from_date,
+          default_to_date: timePeriodData.default_to_date,
+          default_rolling_type: timePeriodData.default_rolling_type,
+          default_rolling_value: timePeriodData.default_rolling_value
+        }));
+        
+        showToast('Successfully updated time period settings', 'success');
+        return true;
+      } else {
+        showToast(result.message || 'Failed to update time period settings', 'error');
+        return false;
+      }
+    } catch (error) {
+      console.error('Error updating time period:', error);
+      showToast('❌ Error updating time period settings', 'error');
+      return false;
+    } finally {
+      setSaving(prev => ({ ...prev, timePeriod: false }));
+    }
+  };
+
   // Loading state
   if (loadingServers || (isAuthenticated && !currentServer && !apiError)) {
     return (
@@ -1554,6 +2092,24 @@ const SettingsDashboard = () => {
                         currentLevel={settings.dashboard_access_level || 'Member'}
                         onSave={(value) => updateSetting('dashboard_access_level', value)}
                         saving={saving.dashboardAccess}
+                      />
+                    </SettingsCard>
+
+                    <SettingsCard 
+                      title="Time Period" 
+                      icon="🕐" 
+                      description="Set the default time period used across bot commands and the dashboard"
+                      infoDescriptions={[
+                        { level: 'All Time', description: 'No time filter — all historical data is used' },
+                        { level: 'Days Back', description: 'Show data from the last X days (1-3650 days)' },
+                        { level: 'Date Range', description: 'Show data between specific dates (open-ended allowed)' },
+                        { level: 'Rolling Window', description: 'Show data for a specific recurring day (weekly or monthly)' }
+                      ]}
+                    >
+                      <TimePeriodSetting
+                        settings={settings}
+                        onSave={(data) => updateTimePeriod(data)}
+                        saving={saving.timePeriod}
                       />
                     </SettingsCard>
                   </div>

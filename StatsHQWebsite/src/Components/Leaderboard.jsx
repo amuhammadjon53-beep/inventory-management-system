@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 
 const Leaderboard = ({
   data = [],
@@ -31,6 +33,13 @@ const Leaderboard = ({
   const [displayedCount, setDisplayedCount] = useState(itemsPerPage);
   const loadedIdsRef = useRef(new Set());
   const loadingIdsRef = useRef(new Set());
+  
+  // Refs for export functionality
+  const componentRef = useRef(null);
+  const exportButtonRef = useRef(null);
+  const [exportingCSV, setExportingCSV] = useState(false);
+  const [exportingPDF, setExportingPDF] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   // Podium items - only top 3
   const podiumItemsRaw = showPodium ? data.slice(0, 3) : [];
@@ -131,6 +140,131 @@ const Leaderboard = ({
       scrollContainerRef.current.scrollTop = 0;
     }
   }, [data, itemsPerPage]);
+
+  // Handle outside click to close menu
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (exportButtonRef.current && !exportButtonRef.current.contains(event.target)) {
+        setShowExportMenu(false);
+      }
+    };
+
+    if (showExportMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showExportMenu]);
+
+  // Export functions
+  const exportToCSV = async () => {
+    setExportingCSV(true);
+    try {
+      // Prepare data for CSV
+      const exportData = data.map((item, index) => ({
+        rank: index + 1,
+        name: item[nameKey] || 'Unknown',
+        value: item[valueKey] || 0,
+        valueLabel: valueLabel
+      }));
+
+      // Create CSV content
+      const headers = ['Rank', 'Name', valueLabel];
+      const csvRows = [headers];
+      
+      for (const row of exportData) {
+        const values = [
+          row.rank,
+          `"${String(row.name).replace(/"/g, '""')}"`, // Escape quotes
+          row.value
+        ];
+        csvRows.push(values.join(','));
+      }
+      
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      const filename = `${title.toLowerCase().replace(/\s+/g, '_')}_export.csv`;
+      
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error exporting CSV:', error);
+    } finally {
+      setExportingCSV(false);
+    }
+  };
+
+  const exportToPDF = async () => {
+    setExportingPDF(true);
+    const buttons = componentRef.current?.querySelector('.export-buttons-container');
+    try {
+      if (!componentRef.current) {
+        console.error('Component ref not available');
+        return;
+      }
+
+      // Hide buttons temporarily
+      if (buttons) buttons.style.visibility = 'hidden';
+
+      // Capture with higher scale for retina quality
+      const canvas = await html2canvas(componentRef.current, {
+        scale: 2,
+        backgroundColor: backgroundColor,
+        logging: false,
+        useCORS: true
+      });
+
+      // Restore buttons
+      if (buttons) buttons.style.visibility = 'visible';
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        unit: 'px',
+        format: [canvas.width, canvas.height],
+        orientation: canvas.width > canvas.height ? 'landscape' : 'portrait'
+      });
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+      
+      const filename = `${title.toLowerCase().replace(/\s+/g, '_')}_export.pdf`;
+      pdf.save(filename);
+    } catch (error) {
+      // Restore buttons on error
+      if (buttons) buttons.style.visibility = 'visible';
+      console.error('Error exporting PDF:', error);
+    } finally {
+      setExportingPDF(false);
+    }
+  };
+
+  const handleExportOption = async (exportFn) => {
+    setShowExportMenu(false);
+    await exportFn();
+  };
+
+  // Export options array for easy extensibility
+  const EXPORT_OPTIONS = [
+    {
+      label: 'CSV',
+      icon: '↓',
+      onClick: exportToCSV,
+      exporting: exportingCSV
+    },
+    {
+      label: 'PDF',
+      icon: '⎙',
+      onClick: exportToPDF,
+      exporting: exportingPDF
+    }
+  ];
 
   // ─── name helpers ────────────────────────────────────────────────────────────
   // renderName(item) is used when the caller supplies it (e.g. emoji dashboard).
@@ -268,11 +402,15 @@ const Leaderboard = ({
   const needsScroll = scrollableItems.length > itemsPerPage;
 
   return (
-    <div className={`leaderboard-container ${className}`} style={{
-      backgroundColor, borderRadius: '16px', padding: '24px', color: textColor,
-      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      display: 'flex', flexDirection: 'column', height: '100%'
-    }}>
+    <div 
+      ref={componentRef}
+      className={`leaderboard-container ${className}`} 
+      style={{
+        backgroundColor, borderRadius: '16px', padding: '24px', color: textColor,
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        display: 'flex', flexDirection: 'column', height: '100%'
+      }}
+    >
       {/* Header */}
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -287,6 +425,107 @@ const Leaderboard = ({
           {title}
         </h2>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {/* Export Button with Dropdown Menu */}
+          <div className="export-buttons-container" style={{
+            position: 'relative',
+            display: 'inline-block',
+            marginRight: '12px'
+          }} ref={exportButtonRef}>
+            <button
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                fontSize: '13px',
+                fontWeight: '500',
+                background: 'transparent',
+                color: textColor,
+                border: `1px solid ${borderColor}`,
+                borderRadius: '6px',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                fontFamily: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = accentColor;
+                e.currentTarget.style.color = accentColor;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = borderColor;
+                e.currentTarget.style.color = textColor;
+              }}
+            >
+              <span className="export-label">Export</span>
+              <span>▾</span>
+            </button>
+
+            {/* Dropdown Menu */}
+            {showExportMenu && (
+              <div style={{
+                position: 'absolute',
+                bottom: '100%',
+                right: 0,
+                marginBottom: '4px',
+                backgroundColor: '#1a1a1a',
+                border: `1px solid ${borderColor}`,
+                borderRadius: '8px',
+                boxShadow: '0 -4px 16px rgba(0,0,0,0.4)',
+                padding: '4px',
+                minWidth: '140px',
+                animation: 'fadeIn 0.15s ease-out',
+                zIndex: 1000
+              }}>
+                {EXPORT_OPTIONS.map((option) => (
+                  <button
+                    key={option.label}
+                    onClick={() => handleExportOption(option.onClick)}
+                    disabled={option.exporting}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      padding: '8px 12px',
+                      backgroundColor: 'transparent',
+                      border: 'none',
+                      borderRadius: '6px',
+                      color: textColor,
+                      fontSize: '13px',
+                      cursor: option.exporting ? 'wait' : 'pointer',
+                      transition: 'all 0.15s ease',
+                      fontFamily: 'inherit',
+                      textAlign: 'left'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!option.exporting) {
+                        e.currentTarget.style.backgroundColor = 'rgba(170, 0, 255, 0.12)';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'transparent';
+                    }}
+                  >
+                    <span style={{ fontSize: '14px' }}>{option.icon}</span>
+                    <span style={{ flex: 1 }}>{option.label}</span>
+                    {option.exporting && (
+                      <span className="export-spinner" style={{
+                        display: 'inline-block',
+                        width: '12px',
+                        height: '12px',
+                        border: `2px solid ${accentColor}`,
+                        borderTopColor: 'transparent',
+                        borderRadius: '50%',
+                        animation: 'spin 0.6s linear infinite'
+                      }} />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          
           <span style={{
             backgroundColor: cardBackground, padding: '4px 12px',
             borderRadius: '20px', fontSize: '14px', color: secondaryTextColor
@@ -480,6 +719,26 @@ const Leaderboard = ({
         @keyframes spin {
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
+        }
+        
+        @keyframes fadeIn {
+          from {
+            opacity: 0;
+            transform: translateY(5px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        
+        @media (max-width: 768px) {
+          .export-label {
+            display: none;
+          }
+          .export-buttons-container button {
+            padding: 6px 8px;
+          }
         }
       `}</style>
     </div>

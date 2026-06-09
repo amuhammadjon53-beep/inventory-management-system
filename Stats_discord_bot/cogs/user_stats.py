@@ -35,7 +35,6 @@ def ensure_aware(dt):
 # TEXT CENTERING
 
 def draw_text_centered(pilmoji_instance, text, position, font, fill, max_width=None):
-
     draw = pilmoji_instance.draw
     center_x, center_y = position
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -57,7 +56,6 @@ def draw_text_centered(pilmoji_instance, text, position, font, fill, max_width=N
 
 
 def format_voice_time(total_seconds):
-
     if total_seconds < 60:
         return f"{int(total_seconds)}s"
     elif total_seconds < 3600:
@@ -75,7 +73,6 @@ def format_voice_time(total_seconds):
 
 
 def format_voice_hours_per_hour(voice_hours_per_hour):
-
     seconds_per_hour = voice_hours_per_hour * 3600
 
     if seconds_per_hour < 60:
@@ -131,10 +128,16 @@ class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 await interaction.followup.send(blacklist_error, ephemeral=True)
                 return
 
-            image_buffer = await self.cog._generate_user_stats_image(self.guild, self.member, days_back=days)
+            # For custom days, we use days_back mode
+            start_time = datetime.utcnow() - timedelta(days=days)
+            end_time = datetime.utcnow()
+            display_text = f"{days} days"
+            days_back_equiv = days
+
+            image_buffer = await self.cog._generate_user_stats_image(self.guild, self.member, start_time=start_time, end_time=end_time, display_text=display_text, days_back_equiv=days_back_equiv)
 
             view = UserStatsView(self.cog, self.guild,
-                                 self.member, days_back=days)
+                                 self.member, start_time=start_time, end_time=end_time, display_text=display_text, days_back_equiv=days_back_equiv)
             file = discord.File(image_buffer, filename="user_stats.png")
 
             await interaction.edit_original_response(attachments=[file], view=view)
@@ -149,14 +152,18 @@ class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
 # MAIN VIEW
 
 class UserStatsView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, member: discord.Member, days_back: int = None):
+    def __init__(self, cog_instance, guild: discord.Guild, member: discord.Member, start_time: datetime = None, end_time: datetime = None, display_text: str = None, days_back_equiv: int = None):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.member = member
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_display_text = display_text
+        self.current_days_back_equiv = days_back_equiv
         self.show_time_buttons = False
-        self.using_server_default = (days_back is None)
+        self.using_server_default = (
+            start_time is None and end_time is None and display_text is None and days_back_equiv is None)
         self._update_buttons()
 
     # BUTTON LOGIC
@@ -184,7 +191,7 @@ class UserStatsView(discord.ui.View):
 
         if self.show_time_buttons:
             all_time_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
                 custom_id="user_stats_all_time",
                 row=1
@@ -193,7 +200,7 @@ class UserStatsView(discord.ui.View):
             self.add_item(all_time_button)
 
             days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
                 custom_id="user_stats_days_7",
                 row=1
@@ -202,7 +209,7 @@ class UserStatsView(discord.ui.View):
             self.add_item(days_7_button)
 
             days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 14 else discord.ButtonStyle.secondary,
                 label="14 Days",
                 custom_id="user_stats_days_14",
                 row=1
@@ -211,7 +218,7 @@ class UserStatsView(discord.ui.View):
             self.add_item(days_14_button)
 
             days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 30 else discord.ButtonStyle.secondary,
                 label="30 Days",
                 custom_id="user_stats_days_30",
                 row=1
@@ -221,7 +228,7 @@ class UserStatsView(discord.ui.View):
 
             custom_button = discord.ui.Button(
                 style=discord.ButtonStyle.success,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in [
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in [
                     7, 14, 30, 999999] else "Custom",
                 custom_id="user_stats_custom_days",
                 row=1
@@ -242,27 +249,33 @@ class UserStatsView(discord.ui.View):
             await interaction.response.send_message("❌ An error occurred while updating time settings.", ephemeral=True)
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=999999)
+        await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=datetime.utcnow(), display_text="All Time")
 
     async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=7)
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
     async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=14)
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
     async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=30)
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = UserStatsTimeModal(self.cog, self.guild, self.member)
         await interaction.response.send_modal(modal)
 
-    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, days: int = None):
+    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, start_time: datetime = None, end_time: datetime = None, display_text: str = None, days_back_equiv: int = None):
         try:
             await interaction.response.defer()
 
-            if days:
-                self.current_days = days
+            if start_time is not None:
+                self.current_start_time = start_time
+                self.current_end_time = end_time
+                self.current_display_text = display_text
+                self.current_days_back_equiv = days_back_equiv
                 self.using_server_default = False
                 self.show_time_buttons = False
 
@@ -285,7 +298,7 @@ class UserStatsView(discord.ui.View):
                     pass
                 return
 
-            image_buffer = await self.cog._generate_user_stats_image(self.guild, self.member, self.current_days if not self.using_server_default else None)
+            image_buffer = await self.cog._generate_user_stats_image(self.guild, self.member, self.current_start_time if not self.using_server_default else None, self.current_end_time if not self.using_server_default else None, self.current_display_text if not self.using_server_default else None, self.current_days_back_equiv if not self.using_server_default else None)
 
             self._update_buttons()
             file = discord.File(image_buffer, filename="user_stats.png")
@@ -383,7 +396,6 @@ class UserStats(commands.Cog):
     # ERROR HANDLING
 
     async def check_blacklist_and_get_error(self, guild: discord.Guild, member: discord.Member) -> str:
-
         try:
             db_cog = self.bot.get_cog('DatabaseStats')
             if not db_cog:
@@ -399,34 +411,101 @@ class UserStats(commands.Cog):
             logger.error(f"Error checking blacklist: {e}")
             return "❌ Error checking blacklist status."
 
-    # NEW METHOD: GET SERVER DEFAULT TIME PERIOD
-    async def get_server_default_days(self, guild: discord.Guild) -> tuple:
-        """Get the default days back from server settings. Returns (days_back, display_text)"""
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
         try:
             settings_cog = self.bot.get_cog('Settings')
             if not settings_cog:
-                return (14, "14 days")
+                end = datetime.utcnow()
+                start = end - timedelta(days=14)
+                return (start, end, "14 days", 14)
 
             settings = await settings_cog.get_guild_settings(guild.id)
             mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.utcnow()
 
             if mode == 'all_time':
-                return (999999, "All Time")
+                return (None, now, "All Time", 999999)
+
             elif mode == 'days_back':
                 days = settings.get('default_days_back') or 14
-                return (days, f"{days} days")
-            else:
-                # For rolling window or date range, use 14 days as fallback but show "Custom"
-                return (14, "Custom")
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    display = f"Custom"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=14)
+            return (start, end, "14 days", 14)
 
         except Exception as e:
-            logger.error(f"Error getting server default days: {e}")
-            return (14, "14 days")
+            end = datetime.utcnow()
+            start = end - timedelta(days=14)
+            return (start, end, "14 days", 14)
 
     # QUERY FUNCTIONS
 
     async def get_channel_name(self, guild: discord.Guild, channel_id: int) -> str:
-
         try:
             db_cog = self.bot.get_cog('DatabaseStats')
             if not db_cog:
@@ -459,8 +538,7 @@ class UserStats(commands.Cog):
             logger.error(f"Error getting channel name: {e}")
             return f"#{channel_id}"
 
-    async def _get_user_stats_data(self, guild: discord.Guild, member: discord.Member, days_back: int = 14):
-
+    async def _get_user_stats_data(self, guild: discord.Guild, member: discord.Member, start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14):
         blacklist_error = await self.check_blacklist_and_get_error(guild, member)
         if blacklist_error:
             return {"error": blacklist_error}
@@ -484,14 +562,12 @@ class UserStats(commands.Cog):
             return {"error": "Database pool not available."}
 
         try:
-            # For "All Time" (days_back = 999999), use None for start_time
-            if days_back == 999999:
-                start_time = None
-                use_all_time = True
-            else:
-                start_time = datetime.utcnow() - timedelta(days=days_back)
-                use_all_time = False
-            end_time = datetime.utcnow()
+            # For "All Time" (start_time is None)
+            use_all_time = (start_time is None)
+
+            # If end_time is not provided, use current time
+            if end_time is None:
+                end_time = datetime.utcnow()
 
             # Initialize variables with default values
             message_rank = 0
@@ -752,8 +828,9 @@ class UserStats(commands.Cog):
                 messages_per_hour = total_messages / total_hours if total_hours > 0 else 0
                 total_voice_hours = total_voice_seconds / 3600
                 voice_hours_per_hour = total_voice_hours / total_hours if total_hours > 0 else 0
-            elif not use_all_time:
-                total_hours = days_back * 24
+            elif not use_all_time and start_time:
+                total_hours = (end_time - start_time).total_seconds() / 3600
+                total_hours = max(total_hours, 0.01)
                 messages_per_hour = total_messages / total_hours if total_hours > 0 else 0
                 total_voice_hours = total_voice_seconds / 3600
                 voice_hours_per_hour = total_voice_hours / total_hours if total_hours > 0 else 0
@@ -783,9 +860,10 @@ class UserStats(commands.Cog):
                     )
                     message_periods_data[f'{period_days}d'] = period_data.get(
                         'total_messages', 0) if period_data else 0
-            elif not use_all_time:
+            elif not use_all_time and start_time:
                 for period_days in [1, 5, 10, 20, 30]:
-                    if period_days > days_back:
+                    # Use days_back_equiv to check if period exceeds the main range
+                    if period_days > days_back_equiv:
                         message_periods_data[f'{period_days}d'] = 0
                         continue
                     period_end = end_time
@@ -828,9 +906,9 @@ class UserStats(commands.Cog):
                     )
                     voice_periods_data[f'{period_days}d'] = period_data.get(
                         'total_seconds', 0) if period_data else 0
-            elif not use_all_time:
+            elif not use_all_time and start_time:
                 for period_days in [1, 5, 10, 20, 30]:
-                    if period_days > days_back:
+                    if period_days > days_back_equiv:
                         voice_periods_data[f'{period_days}d'] = 0
                         continue
                     period_end = end_time
@@ -877,19 +955,13 @@ class UserStats(commands.Cog):
 
     # IMAGE GENERATION
 
-    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
-    async def _generate_user_stats_image(self, guild: discord.Guild, member: discord.Member, days_back: int = None):
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=25.0)
+    async def _generate_user_stats_image(self, guild: discord.Guild, member: discord.Member, start_time: datetime = None, end_time: datetime = None, display_text: str = None, days_back_equiv: int = None):
+        # If no time parameters provided, use server default
+        if start_time is None and end_time is None and display_text is None and days_back_equiv is None:
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild)
 
-        # If days_back is None, use server default
-        if days_back is None:
-            days_back, time_display = await self.get_server_default_days(guild)
-        else:
-            if days_back == 999999:
-                time_display = "All Time"
-            else:
-                time_display = f"{days_back} days"
-
-        data = await self._get_user_stats_data(guild, member, days_back)
+        data = await self._get_user_stats_data(guild, member, start_time, end_time, days_back_equiv)
 
         if "error" in data:
             image = Image.new('RGB', (800, 800), color='#2C2F33')
@@ -1019,7 +1091,6 @@ class UserStats(commands.Cog):
         # INVISIBLE RECTANGLE FUNCTIONS
 
         def check_text_against_rectangle(text, font, text_x, text_y, rect_center_x, rect_center_y, rect_width, rect_height):
-
             rect_left = rect_center_x - (rect_width // 2)
             rect_right = rect_center_x + (rect_width // 2)
             rect_top = rect_center_y - (rect_height // 2)
@@ -1038,7 +1109,6 @@ class UserStats(commands.Cog):
             return exceeds_width or exceeds_height
 
         def fit_text_to_rectangle(text, text_center_x, text_center_y, rect_center_x, rect_center_y, rect_width, rect_height, is_channel=False, is_username=False):
-
             if is_username:
                 font_sizes = [34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14]
             elif is_channel:
@@ -1240,7 +1310,7 @@ class UserStats(commands.Cog):
                            font_horndon_medium, "white", max_width=150)
 
         # TIME PERIOD
-        draw_text_centered(pilmoji, time_display, (147, 713),
+        draw_text_centered(pilmoji, display_text, (147, 713),
                            font_horndon_medium, "white", max_width=100)
 
         # RANKS
@@ -1249,7 +1319,6 @@ class UserStats(commands.Cog):
                            font_horndon_xlarge, "white", max_width=150)
 
         # Voice rank
-
         voice_rank_text = f"#{data['voice_rank']}" if data['voice_rank'] > 0 else "-"
         draw_text_centered(pilmoji, voice_rank_text, (190, 215),
                            font_horndon_xlarge, "white", max_width=150)
@@ -1550,8 +1619,6 @@ class UserStats(commands.Cog):
             if is_interaction:
                 user = ctx_or_interaction.user
                 guild = ctx_or_interaction.guild
-                send_method = ctx_or_interaction.followup.send
-                original_message = None
             else:
                 user = ctx_or_interaction.author
                 guild = ctx_or_interaction.guild
@@ -1560,8 +1627,6 @@ class UserStats(commands.Cog):
                     await ctx_or_interaction.message.delete()
                 except:
                     pass
-                send_method = ctx_or_interaction.send
-                original_message = await ctx_or_interaction.original_response() if hasattr(ctx_or_interaction, 'original_response') else None
 
             # Handle member parameter
             if member is None:
@@ -1593,38 +1658,78 @@ class UserStats(commands.Cog):
                 return
 
             # Use None to indicate server default, which will fetch from settings
-            days = None
+            start_time = None
+            end_time = None
+            display_text = None
+            days_back_equiv = None
 
+            # IMPORTANT FIX: Properly defer the interaction
             if is_interaction:
-                await ctx_or_interaction.response.defer()
+                # Check if we can defer the response
+                if not ctx_or_interaction.response.is_done():
+                    await ctx_or_interaction.response.defer(thinking=True)
 
-            # Generate stats image (will use server default since days=None)
-            image_buffer = await self._generate_user_stats_image(guild, member, days_back=days)
+            # Generate stats image (will use server default since all params are None)
+            try:
+                image_buffer = await self._generate_user_stats_image(guild, member, start_time=start_time, end_time=end_time, display_text=display_text, days_back_equiv=days_back_equiv)
+            except asyncio.TimeoutError:
+                if is_interaction:
+                    await ctx_or_interaction.followup.send("⚠️ The stats generation is taking longer than expected. Please try again in a moment.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("⚠️ The stats generation is taking longer than expected. Please try again in a moment.", delete_after=10)
+                return
+            except Exception as e:
+                logger.error(f"Error generating image: {e}")
+                if is_interaction:
+                    await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ An error occurred while generating stats image.", delete_after=10)
+                return
+
             file = discord.File(image_buffer, filename="user_stats.png")
 
-            # Create view with days_back=None to indicate using server default
-            view = UserStatsView(self, guild, member, days_back=None)
+            # Create view with None params to indicate using server default
+            view = UserStatsView(self, guild, member, start_time=start_time, end_time=end_time,
+                                 display_text=display_text, days_back_equiv=days_back_equiv)
 
             # Send the image
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                # When we defer with thinking=True, we need to use followup.send
+                # edit_original_response doesn't support file attachments
+                msg = await ctx_or_interaction.followup.send(file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await ctx_or_interaction.send(file=file, view=view, delete_after=300)
 
             # Store session
             self.active_user_stats_sessions[msg.id] = {
                 'guild_id': guild.id,
                 'user_id': member.id,
-                'current_days': None,
+                'current_start_time': None,
+                'current_end_time': None,
+                'current_display_text': None,
+                'current_days_back_equiv': None,
                 'view': view,
                 'created_at': time.time()
             }
 
-        except Exception as e:
-            logger.error(f"Error in _handle_user_stats_command: {e}")
+        except discord.errors.NotFound as e:
+            # Interaction timed out - this is expected for long operations
+            logger.warning(f"Interaction not found (likely timed out): {e}")
             if is_interaction:
                 try:
-                    await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
+                    # Try to send a followup message if possible
+                    await ctx_or_interaction.followup.send("⚠️ The command took too long to process. Please try again.", ephemeral=True)
+                except:
+                    pass
+        except Exception as e:
+            logger.error(f"Error in _handle_user_stats_command: {e}")
+            traceback.print_exc()
+            if is_interaction:
+                try:
+                    if not ctx_or_interaction.response.is_done():
+                        await ctx_or_interaction.response.send_message("❌ An error occurred while generating stats image.", ephemeral=True)
+                    else:
+                        await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
                 except:
                     pass
             else:
@@ -1661,13 +1766,27 @@ class UserStats(commands.Cog):
     @user_group.command(name="stats", description="Display the stats of a user")
     @app_commands.describe(member="Choose which member's stats to view")
     async def user_stats(self, interaction: discord.Interaction, member: discord.Member = None):
-        await self._handle_user_stats_command(interaction, member, is_interaction=True)
+        """Display user stats via slash command"""
+        try:
+            await self._handle_user_stats_command(interaction, member, is_interaction=True)
+        except discord.errors.NotFound:
+            # Interaction timed out - ignore as the handler already tries to recover
+            logger.warning(
+                f"User stats command interaction timed out for {interaction.user}")
+        except Exception as e:
+            logger.error(f"Unexpected error in user_stats slash command: {e}")
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ An error occurred while processing your request.", ephemeral=True)
+                else:
+                    await interaction.followup.send("❌ An error occurred while processing your request.", ephemeral=True)
+            except:
+                pass
 
     # CLEANUP
 
     @tasks.loop(minutes=5)
     async def cleanup_sessions(self):
-
         current_time = time.time()
 
         keys_to_remove = []
@@ -1679,12 +1798,10 @@ class UserStats(commands.Cog):
             del self.active_user_stats_sessions[key]
 
     async def cog_load(self):
-
         if not self.cleanup_sessions.is_running():
             self.cleanup_sessions.start()
 
     async def cog_unload(self):
-
         self.cleanup_sessions.cancel()
 
 

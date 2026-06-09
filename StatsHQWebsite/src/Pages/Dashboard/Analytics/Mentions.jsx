@@ -838,6 +838,106 @@ const MentionsDashboard = () => {
 
   useEffect(() => { loadInitialData(); }, []);
 
+  // FIXED: applyServerTimePeriod now returns computed values
+  const applyServerTimePeriod = (settings) => {
+    const mode = settings.default_time_mode || 'days_back';
+    const result = {};
+
+    if (mode === 'all_time') {
+      setTimePeriod('all');
+      result.timePeriod = 'all';
+    } else if (mode === 'days_back') {
+      const days = settings.default_days_back || 14;
+      const presets = ['7', '14', '30', '60', '90'];
+      if (presets.includes(String(days))) {
+        setTimePeriod(String(days));
+        result.timePeriod = String(days);
+      } else {
+        setTimePeriod('custom-lookback');
+        setCustomDaysBack(String(days));
+        result.timePeriod = 'custom-lookback';
+        result.customDaysBack = String(days);
+      }
+    } else if (mode === 'date_range') {
+      setTimePeriod('custom-range');
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      
+      let fromDate = null;
+      let toDate = null;
+      
+      if (settings.default_from_date) {
+        fromDate = settings.default_from_date.split('T')[0];
+        setCustomStartDate(fromDate);
+      }
+      if (settings.default_to_date) {
+        toDate = settings.default_to_date.split('T')[0];
+        setCustomEndDate(toDate);
+      }
+      
+      if (fromDate && !toDate) {
+        toDate = formattedToday;
+        setCustomEndDate(toDate);
+      } else if (!fromDate && toDate) {
+        fromDate = '';
+        setCustomStartDate('');
+      }
+      
+      result.timePeriod = 'custom-range';
+      result.customStartDate = fromDate || '';
+      result.customEndDate = toDate || '';
+    } else if (mode === 'rolling_window') {
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      let startDate = null;
+      
+      if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
+        const targetWeekday = settings.default_rolling_value;
+        const currentWeekday = today.getDay();
+        const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
+        
+        let daysToSubtract;
+        if (currentWeekdayMonday >= targetWeekday) {
+          daysToSubtract = currentWeekdayMonday - targetWeekday;
+        } else {
+          daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
+        }
+        
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - daysToSubtract);
+        
+      } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
+        const targetDay = settings.default_rolling_value;
+        const currentDate = today.getDate();
+        
+        startDate = new Date(today);
+        
+        if (currentDate >= targetDay) {
+          startDate.setDate(targetDay);
+        } else {
+          startDate.setMonth(today.getMonth() - 1);
+          const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+          startDate.setDate(Math.min(targetDay, lastDayOfMonth));
+        }
+      }
+      
+      if (startDate) {
+        const formattedStartDate = startDate.toISOString().split('T')[0];
+        setTimePeriod('custom-range');
+        setCustomStartDate(formattedStartDate);
+        setCustomEndDate(formattedToday);
+        result.timePeriod = 'custom-range';
+        result.customStartDate = formattedStartDate;
+        result.customEndDate = formattedToday;
+      } else {
+        setTimePeriod('all');
+        result.timePeriod = 'all';
+      }
+    }
+    
+    return result;
+  };
+
   const loadInitialData = async () => {
     setLoadingServers(true);
     setApiError(null);
@@ -946,7 +1046,11 @@ const MentionsDashboard = () => {
         else hasAccessFlag = true;
 
         setHasAccess(hasAccessFlag);
+        const timeParams = applyServerTimePeriod(settingsData);
         setLoading(false);
+        
+        // Fetch data immediately with the computed params
+        await fetchDataWithParams(timeParams);
       } else {
         setHasAccess(false);
         setLoading(false);
@@ -957,6 +1061,353 @@ const MentionsDashboard = () => {
       setLoading(false);
     }
   };
+
+  // NEW: fetchDataWithParams - uses overrides instead of state
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer || !hasAccess) return;
+    setLoading(true);
+    setApiError(null);
+
+    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+    const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+
+    let startDate = null;
+    let endDate = null;
+
+    if (effectiveTimePeriod === "all") {
+      startDate = null;
+      endDate = null;
+    } else if (effectiveTimePeriod === "custom-lookback") {
+      if (!effectiveCustomDaysBack || parseInt(effectiveCustomDaysBack) <= 0) {
+        startDate = null;
+        endDate = null;
+      } else {
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - parseInt(effectiveCustomDaysBack));
+      }
+    } else if (effectiveTimePeriod === "custom-range") {
+      if (!effectiveCustomStartDate || !effectiveCustomEndDate) {
+        startDate = null;
+        endDate = null;
+      } else {
+        startDate = new Date(effectiveCustomStartDate);
+        endDate = new Date(effectiveCustomEndDate);
+      }
+    } else {
+      endDate = new Date();
+      startDate = new Date();
+      startDate.setDate(startDate.getDate() - parseInt(effectiveTimePeriod));
+    }
+
+    try {
+      if (selectedView === 'server') await fetchServerDataWithDates(startDate, endDate);
+      else if (selectedView === 'user' && selectedUserId) await fetchUserDataWithDates(startDate, endDate);
+      else if (selectedView === 'channel' && selectedChannelId) await fetchChannelDataWithDates(startDate, endDate);
+      else if (selectedView === 'category' && selectedCategoryId) await fetchCategoryDataWithDates(startDate, endDate);
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoading(false);
+      fetchedRef.current = true;
+    }
+  };
+
+  // Helper functions for fetchDataWithParams
+  const fetchServerDataWithDates = async (startDate, endDate) => {
+    const isPublic = isPublicMode;
+    const guildId = currentServer.id;
+    const roleFilterIds = selectedRoleId ? selectedRoleId : undefined;
+    const startTime = startDate?.toISOString();
+    const endTime = endDate?.toISOString();
+
+    const baseParams = { guild_id: guildId, role_filter_ids: roleFilterIds, start_time: startTime, end_time: endTime, limit: 100 };
+    const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
+    const creds = isPublic ? 'omit' : 'include';
+
+    setLoadingSummaryStats(true);
+    setLoadingTopSent(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/sent/server`, baseParams);
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatLeaderboardUsers(data, 'mention_count');
+        setTopSent(formatted);
+        const totalSent = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
+        setServerSummary(prev => ({ ...(prev || {}), totalSent, activeUsers: data.length }));
+      }
+    } catch (e) { console.error('Error fetching top sent:', e); } finally { setLoadingTopSent(false); }
+
+    setLoadingTopReceived(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/received/server`, baseParams);
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatLeaderboardUsers(data, 'mention_count');
+        setTopReceived(formatted);
+        const totalReceived = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
+        setServerSummary(prev => ({ ...(prev || {}), totalReceived }));
+      }
+    } catch (e) { console.error('Error fetching top received:', e); } finally { setLoadingTopReceived(false); }
+
+    setLoadingTopRatioHigh(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/server`, { ...baseParams, min_mentions_sent: 1 });
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatRatioLeaderboard(data);
+        setTopRatioHigh(formatted);
+        const validRatios = data.filter(d => d.ratio !== null && d.ratio !== undefined && !isNaN(d.ratio));
+        const avgRatio = validRatios.length > 0 ? (validRatios.reduce((acc, d) => acc + parseFloat(d.ratio), 0) / validRatios.length).toFixed(2) : 'N/A';
+        setServerSummary(prev => ({ ...(prev || {}), avgRatio }));
+      }
+    } catch (e) { console.error('Error fetching ratio high:', e); } finally { setLoadingTopRatioHigh(false); }
+
+    setLoadingTopRatioLow(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/server`, { ...baseParams, min_mentions_sent: 1 });
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const reversed = [...data].reverse();
+        const formatted = await formatRatioLeaderboard(reversed);
+        setTopRatioLow(formatted);
+      }
+    } catch (e) { console.error('Error fetching ratio low:', e); } finally { setLoadingTopRatioLow(false); }
+
+    setLoadingSummaryStats(false);
+  };
+
+  const fetchUserDataWithDates = async (startDate, endDate) => {
+    if (!selectedUserId) return;
+    const isPublic = isPublicMode;
+    const guildId = currentServer.id;
+    const startTime = startDate?.toISOString();
+    const endTime = endDate?.toISOString();
+    const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
+    const creds = isPublic ? 'omit' : 'include';
+
+    let scopeSuffix = 'server';
+    let extraParam = {};
+    if (userSubScope === 'channel' && userScopeChannelId) {
+      scopeSuffix = 'channel';
+      extraParam = { channel_id: userScopeChannelId };
+    } else if (userSubScope === 'category' && userScopeCategoryId) {
+      scopeSuffix = 'category';
+      extraParam = { category_id: userScopeCategoryId };
+    }
+
+    const baseParams = { guild_id: guildId, start_time: startTime, end_time: endTime, limit: 100, ...extraParam };
+
+    setLoadingSummaryStats(true);
+
+    try {
+      const url = buildUrl(`${prefix}/mentions/ratio/${scopeSuffix}`, { ...baseParams, user_id: selectedUserId });
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        setUserSummary({
+          mentionsSent: data.mentions_sent || 0,
+          mentionsReceived: data.mentions_received || 0,
+          ratio: data.ratio !== null && data.ratio !== undefined ? parseFloat(data.ratio).toFixed(2) : 'N/A'
+        });
+      }
+    } catch (e) { console.error('Error fetching user ratio:', e); }
+
+    setLoadingSummaryStats(false);
+
+    setLoadingUserMentionsTo(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/to-user/${scopeSuffix}`, { ...baseParams, source_user_id: selectedUserId });
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatLeaderboardUsers(data, 'mention_count');
+        setUserMentionsTo(formatted);
+      }
+    } catch (e) { console.error('Error fetching user mentions to:', e); } finally { setLoadingUserMentionsTo(false); }
+
+    setLoadingUserMentionsFrom(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/target-user/${scopeSuffix}`, { ...baseParams, target_user_id: selectedUserId });
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatLeaderboardUsers(data, 'mention_count');
+        setUserMentionsFrom(formatted);
+      }
+    } catch (e) { console.error('Error fetching user mentions from:', e); } finally { setLoadingUserMentionsFrom(false); }
+  };
+
+  const fetchChannelDataWithDates = async (startDate, endDate) => {
+    if (!selectedChannelId) return;
+    const isPublic = isPublicMode;
+    const guildId = currentServer.id;
+    const roleFilterIds = selectedRoleId ? selectedRoleId : undefined;
+    const startTime = startDate?.toISOString();
+    const endTime = endDate?.toISOString();
+    const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
+    const creds = isPublic ? 'omit' : 'include';
+    const baseParams = { guild_id: guildId, channel_id: selectedChannelId, role_filter_ids: roleFilterIds, start_time: startTime, end_time: endTime, limit: 100 };
+
+    setLoadingSummaryStats(true);
+
+    setLoadingChannelTopSent(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/sent/channel`, baseParams);
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatLeaderboardUsers(data, 'mention_count');
+        setChannelTopSent(formatted);
+        const totalSent = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
+        setChannelSummary(prev => ({ ...(prev || {}), totalSent, activeUsers: data.length }));
+      }
+    } catch (e) { console.error('Error fetching channel top sent:', e); } finally { setLoadingChannelTopSent(false); }
+
+    setLoadingChannelTopReceived(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/received/channel`, baseParams);
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatLeaderboardUsers(data, 'mention_count');
+        setChannelTopReceived(formatted);
+        const totalReceived = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
+        setChannelSummary(prev => ({ ...(prev || {}), totalReceived }));
+      }
+    } catch (e) { console.error('Error fetching channel top received:', e); } finally { setLoadingChannelTopReceived(false); }
+
+    setLoadingChannelTopRatioHigh(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/channel`, { ...baseParams, min_mentions_sent: 1 });
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatRatioLeaderboard(data);
+        setChannelTopRatioHigh(formatted);
+        const validRatios = data.filter(d => d.ratio !== null && !isNaN(d.ratio));
+        const avgRatio = validRatios.length > 0 ? (validRatios.reduce((acc, d) => acc + parseFloat(d.ratio), 0) / validRatios.length).toFixed(2) : 'N/A';
+        setChannelSummary(prev => ({ ...(prev || {}), avgRatio }));
+      }
+    } catch (e) { console.error('Error fetching channel ratio high:', e); } finally { setLoadingChannelTopRatioHigh(false); }
+
+    setLoadingChannelTopRatioLow(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/channel`, { ...baseParams, min_mentions_sent: 1 });
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const reversed = [...data].reverse();
+        const formatted = await formatRatioLeaderboard(reversed);
+        setChannelTopRatioLow(formatted);
+      }
+    } catch (e) { console.error('Error fetching channel ratio low:', e); } finally { setLoadingChannelTopRatioLow(false); }
+
+    setLoadingSummaryStats(false);
+  };
+
+  const fetchCategoryDataWithDates = async (startDate, endDate) => {
+    if (!selectedCategoryId) return;
+    const isPublic = isPublicMode;
+    const guildId = currentServer.id;
+    const roleFilterIds = selectedRoleId ? selectedRoleId : undefined;
+    const startTime = startDate?.toISOString();
+    const endTime = endDate?.toISOString();
+    const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
+    const creds = isPublic ? 'omit' : 'include';
+    const baseParams = { guild_id: guildId, category_id: selectedCategoryId, role_filter_ids: roleFilterIds, start_time: startTime, end_time: endTime, limit: 100 };
+
+    setLoadingSummaryStats(true);
+
+    setLoadingCategoryTopSent(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/sent/category`, baseParams);
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatLeaderboardUsers(data, 'mention_count');
+        setCategoryTopSent(formatted);
+        const totalSent = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
+        setCategorySummary(prev => ({ ...(prev || {}), totalSent, activeUsers: data.length }));
+      }
+    } catch (e) { console.error('Error fetching category top sent:', e); } finally { setLoadingCategoryTopSent(false); }
+
+    setLoadingCategoryTopReceived(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/received/category`, baseParams);
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatLeaderboardUsers(data, 'mention_count');
+        setCategoryTopReceived(formatted);
+        const totalReceived = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
+        setCategorySummary(prev => ({ ...(prev || {}), totalReceived }));
+      }
+    } catch (e) { console.error('Error fetching category top received:', e); } finally { setLoadingCategoryTopReceived(false); }
+
+    setLoadingCategoryTopRatioHigh(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/category`, { ...baseParams, min_mentions_sent: 1 });
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = await formatRatioLeaderboard(data);
+        setCategoryTopRatioHigh(formatted);
+        const validRatios = data.filter(d => d.ratio !== null && !isNaN(d.ratio));
+        const avgRatio = validRatios.length > 0 ? (validRatios.reduce((acc, d) => acc + parseFloat(d.ratio), 0) / validRatios.length).toFixed(2) : 'N/A';
+        setCategorySummary(prev => ({ ...(prev || {}), avgRatio }));
+      }
+    } catch (e) { console.error('Error fetching category ratio high:', e); } finally { setLoadingCategoryTopRatioHigh(false); }
+
+    setLoadingCategoryTopRatioLow(true);
+    try {
+      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/category`, { ...baseParams, min_mentions_sent: 1 });
+      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const data = await res.json();
+        const reversed = [...data].reverse();
+        const formatted = await formatRatioLeaderboard(reversed);
+        setCategoryTopRatioLow(formatted);
+      }
+    } catch (e) { console.error('Error fetching category ratio low:', e); } finally { setLoadingCategoryTopRatioLow(false); }
+
+    setLoadingSummaryStats(false);
+  };
+
+  // UPDATED: Fetch settings and apply time period, then fetch data immediately
+  useEffect(() => {
+    if (!currentServer) return;
+    
+    const fetchAndApplyTimePeriod = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const timeParams = applyServerTimePeriod(data);
+          await fetchDataWithParams(timeParams);
+        } else {
+          await fetchData();
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+        await fetchData();
+      }
+    };
+    
+    fetchAndApplyTimePeriod();
+  }, [currentServer]);
 
   const fetchUserBasicInfo = async (userId) => {
     if (!userId) return null;
@@ -1470,272 +1921,23 @@ const MentionsDashboard = () => {
   };
 
   const fetchServerData = async () => {
-    const isPublic = isPublicMode;
     const { startDate, endDate } = getDateRange();
-    const guildId = currentServer.id;
-    const roleFilterIds = selectedRoleId ? selectedRoleId : undefined;
-    const startTime = startDate?.toISOString();
-    const endTime = endDate?.toISOString();
-
-    const baseParams = { guild_id: guildId, role_filter_ids: roleFilterIds, start_time: startTime, end_time: endTime, limit: 100 };
-    const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
-    const creds = isPublic ? 'omit' : 'include';
-
-    setLoadingSummaryStats(true);
-
-    setLoadingTopSent(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/sent/server`, baseParams);
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatLeaderboardUsers(data, 'mention_count');
-        setTopSent(formatted);
-        const totalSent = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
-        setServerSummary(prev => ({ ...(prev || {}), totalSent, activeUsers: data.length }));
-      }
-    } catch (e) { console.error('Error fetching top sent:', e); } finally { setLoadingTopSent(false); }
-
-    setLoadingTopReceived(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/received/server`, baseParams);
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatLeaderboardUsers(data, 'mention_count');
-        setTopReceived(formatted);
-        const totalReceived = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
-        setServerSummary(prev => ({ ...(prev || {}), totalReceived }));
-      }
-    } catch (e) { console.error('Error fetching top received:', e); } finally { setLoadingTopReceived(false); }
-
-    setLoadingTopRatioHigh(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/server`, { ...baseParams, min_mentions_sent: 1 });
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatRatioLeaderboard(data);
-        setTopRatioHigh(formatted);
-        const validRatios = data.filter(d => d.ratio !== null && d.ratio !== undefined && !isNaN(d.ratio));
-        const avgRatio = validRatios.length > 0 ? (validRatios.reduce((acc, d) => acc + parseFloat(d.ratio), 0) / validRatios.length).toFixed(2) : 'N/A';
-        setServerSummary(prev => ({ ...(prev || {}), avgRatio }));
-      }
-    } catch (e) { console.error('Error fetching ratio high:', e); } finally { setLoadingTopRatioHigh(false); }
-
-    setLoadingTopRatioLow(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/server`, { ...baseParams, min_mentions_sent: 1 });
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const reversed = [...data].reverse();
-        const formatted = await formatRatioLeaderboard(reversed);
-        setTopRatioLow(formatted);
-      }
-    } catch (e) { console.error('Error fetching ratio low:', e); } finally { setLoadingTopRatioLow(false); }
-
-    setLoadingSummaryStats(false);
+    await fetchServerDataWithDates(startDate, endDate);
   };
 
   const fetchUserData = async () => {
-    if (!selectedUserId) return;
-    const isPublic = isPublicMode;
     const { startDate, endDate } = getDateRange();
-    const guildId = currentServer.id;
-    const startTime = startDate?.toISOString();
-    const endTime = endDate?.toISOString();
-    const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
-    const creds = isPublic ? 'omit' : 'include';
-
-    let scopeSuffix = 'server';
-    let extraParam = {};
-    if (userSubScope === 'channel' && userScopeChannelId) {
-      scopeSuffix = 'channel';
-      extraParam = { channel_id: userScopeChannelId };
-    } else if (userSubScope === 'category' && userScopeCategoryId) {
-      scopeSuffix = 'category';
-      extraParam = { category_id: userScopeCategoryId };
-    }
-
-    const baseParams = { guild_id: guildId, start_time: startTime, end_time: endTime, limit: 100, ...extraParam };
-
-    setLoadingSummaryStats(true);
-
-    try {
-      const url = buildUrl(`${prefix}/mentions/ratio/${scopeSuffix}`, { ...baseParams, user_id: selectedUserId });
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        setUserSummary({
-          mentionsSent: data.mentions_sent || 0,
-          mentionsReceived: data.mentions_received || 0,
-          ratio: data.ratio !== null && data.ratio !== undefined ? parseFloat(data.ratio).toFixed(2) : 'N/A'
-        });
-      }
-    } catch (e) { console.error('Error fetching user ratio:', e); }
-
-    setLoadingSummaryStats(false);
-
-    setLoadingUserMentionsTo(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/to-user/${scopeSuffix}`, { ...baseParams, source_user_id: selectedUserId });
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatLeaderboardUsers(data, 'mention_count');
-        setUserMentionsTo(formatted);
-      }
-    } catch (e) { console.error('Error fetching user mentions to:', e); } finally { setLoadingUserMentionsTo(false); }
-
-    setLoadingUserMentionsFrom(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/target-user/${scopeSuffix}`, { ...baseParams, target_user_id: selectedUserId });
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatLeaderboardUsers(data, 'mention_count');
-        setUserMentionsFrom(formatted);
-      }
-    } catch (e) { console.error('Error fetching user mentions from:', e); } finally { setLoadingUserMentionsFrom(false); }
+    await fetchUserDataWithDates(startDate, endDate);
   };
 
   const fetchChannelData = async () => {
-    if (!selectedChannelId) return;
-    const isPublic = isPublicMode;
     const { startDate, endDate } = getDateRange();
-    const guildId = currentServer.id;
-    const roleFilterIds = selectedRoleId ? selectedRoleId : undefined;
-    const startTime = startDate?.toISOString();
-    const endTime = endDate?.toISOString();
-    const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
-    const creds = isPublic ? 'omit' : 'include';
-    const baseParams = { guild_id: guildId, channel_id: selectedChannelId, role_filter_ids: roleFilterIds, start_time: startTime, end_time: endTime, limit: 100 };
-
-    setLoadingSummaryStats(true);
-
-    setLoadingChannelTopSent(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/sent/channel`, baseParams);
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatLeaderboardUsers(data, 'mention_count');
-        setChannelTopSent(formatted);
-        const totalSent = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
-        setChannelSummary(prev => ({ ...(prev || {}), totalSent, activeUsers: data.length }));
-      }
-    } catch (e) { console.error('Error fetching channel top sent:', e); } finally { setLoadingChannelTopSent(false); }
-
-    setLoadingChannelTopReceived(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/received/channel`, baseParams);
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatLeaderboardUsers(data, 'mention_count');
-        setChannelTopReceived(formatted);
-        const totalReceived = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
-        setChannelSummary(prev => ({ ...(prev || {}), totalReceived }));
-      }
-    } catch (e) { console.error('Error fetching channel top received:', e); } finally { setLoadingChannelTopReceived(false); }
-
-    setLoadingChannelTopRatioHigh(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/channel`, { ...baseParams, min_mentions_sent: 1 });
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatRatioLeaderboard(data);
-        setChannelTopRatioHigh(formatted);
-        const validRatios = data.filter(d => d.ratio !== null && !isNaN(d.ratio));
-        const avgRatio = validRatios.length > 0 ? (validRatios.reduce((acc, d) => acc + parseFloat(d.ratio), 0) / validRatios.length).toFixed(2) : 'N/A';
-        setChannelSummary(prev => ({ ...(prev || {}), avgRatio }));
-      }
-    } catch (e) { console.error('Error fetching channel ratio high:', e); } finally { setLoadingChannelTopRatioHigh(false); }
-
-    setLoadingChannelTopRatioLow(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/channel`, { ...baseParams, min_mentions_sent: 1 });
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const reversed = [...data].reverse();
-        const formatted = await formatRatioLeaderboard(reversed);
-        setChannelTopRatioLow(formatted);
-      }
-    } catch (e) { console.error('Error fetching channel ratio low:', e); } finally { setLoadingChannelTopRatioLow(false); }
-
-    setLoadingSummaryStats(false);
+    await fetchChannelDataWithDates(startDate, endDate);
   };
 
   const fetchCategoryData = async () => {
-    if (!selectedCategoryId) return;
-    const isPublic = isPublicMode;
     const { startDate, endDate } = getDateRange();
-    const guildId = currentServer.id;
-    const roleFilterIds = selectedRoleId ? selectedRoleId : undefined;
-    const startTime = startDate?.toISOString();
-    const endTime = endDate?.toISOString();
-    const prefix = isPublic ? `${API_BASE_URL}/api/public` : `${API_BASE_URL}/api`;
-    const creds = isPublic ? 'omit' : 'include';
-    const baseParams = { guild_id: guildId, category_id: selectedCategoryId, role_filter_ids: roleFilterIds, start_time: startTime, end_time: endTime, limit: 100 };
-
-    setLoadingSummaryStats(true);
-
-    setLoadingCategoryTopSent(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/sent/category`, baseParams);
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatLeaderboardUsers(data, 'mention_count');
-        setCategoryTopSent(formatted);
-        const totalSent = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
-        setCategorySummary(prev => ({ ...(prev || {}), totalSent, activeUsers: data.length }));
-      }
-    } catch (e) { console.error('Error fetching category top sent:', e); } finally { setLoadingCategoryTopSent(false); }
-
-    setLoadingCategoryTopReceived(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/received/category`, baseParams);
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatLeaderboardUsers(data, 'mention_count');
-        setCategoryTopReceived(formatted);
-        const totalReceived = data.reduce((acc, item) => acc + (item.mention_count || 0), 0);
-        setCategorySummary(prev => ({ ...(prev || {}), totalReceived }));
-      }
-    } catch (e) { console.error('Error fetching category top received:', e); } finally { setLoadingCategoryTopReceived(false); }
-
-    setLoadingCategoryTopRatioHigh(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/category`, { ...baseParams, min_mentions_sent: 1 });
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = await formatRatioLeaderboard(data);
-        setCategoryTopRatioHigh(formatted);
-        const validRatios = data.filter(d => d.ratio !== null && !isNaN(d.ratio));
-        const avgRatio = validRatios.length > 0 ? (validRatios.reduce((acc, d) => acc + parseFloat(d.ratio), 0) / validRatios.length).toFixed(2) : 'N/A';
-        setCategorySummary(prev => ({ ...(prev || {}), avgRatio }));
-      }
-    } catch (e) { console.error('Error fetching category ratio high:', e); } finally { setLoadingCategoryTopRatioHigh(false); }
-
-    setLoadingCategoryTopRatioLow(true);
-    try {
-      const url = buildUrl(`${prefix}/mentions/leaderboard/ratio/category`, { ...baseParams, min_mentions_sent: 1 });
-      const res = await fetch(url, { credentials: creds, headers: { 'Accept': 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        const reversed = [...data].reverse();
-        const formatted = await formatRatioLeaderboard(reversed);
-        setCategoryTopRatioLow(formatted);
-      }
-    } catch (e) { console.error('Error fetching category ratio low:', e); } finally { setLoadingCategoryTopRatioLow(false); }
-
-    setLoadingSummaryStats(false);
+    await fetchCategoryDataWithDates(startDate, endDate);
   };
 
   const handleTempRoleSelect = (role) => {

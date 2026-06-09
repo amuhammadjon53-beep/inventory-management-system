@@ -409,7 +409,7 @@ async def generate_invite_leaderboard_image(
     bot,
     guild: discord.Guild,
     leaderboard_data: list,
-    days_back,
+    display_text: str,
     role_id: str = None,
     role_name: str = None,
     invite_type_filter: str = "all",
@@ -609,10 +609,9 @@ async def generate_invite_leaderboard_image(
     draw_text_with_stroke(draw, (70, 424), role_text,
                           font_small, "white", "black", 1)
 
-    time_text = str(days_back) if isinstance(
-        days_back, str) else f"{days_back} days"
+    # Use display_text for time period
     draw_text_with_stroke(
-        draw, (630, 422), time_text, font_small, "white", "black", 1)
+        draw, (630, 422), display_text, font_small, "white", "black", 1)
     draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
         "%B %d, %Y"), font_small, "white", "black", 1)
 
@@ -793,7 +792,11 @@ class InviteLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
             await interaction.response.defer(thinking=True)
 
-            self.current_view.current_days = days
+            now = datetime.utcnow()
+            self.current_view.current_start_time = now - timedelta(days=days)
+            self.current_view.current_end_time = now
+            self.current_view.current_days_back_equiv = days
+            self.current_view.current_display_text = f"{days} days"
             self.current_view.using_server_default = False
             self.current_view.show_time_buttons = False
             self.current_view.page = 0
@@ -971,7 +974,7 @@ class InvitePageIndicator(discord.ui.Button):
 
         # Get total pages
         leaderboard_data = await view.cog._get_invite_leaderboard_data(
-            view.guild, view.current_days, view.selected_role_id, view.current_invite_type
+            view.guild, view.current_start_time, view.current_end_time, view.current_days_back_equiv, view.selected_role_id, view.current_invite_type
         )
         total_users = len(leaderboard_data)
         total_pages = max(
@@ -997,11 +1000,16 @@ class InviteRoleInputButton(discord.ui.Button):
 # INVITE LEADERBOARD VIEW
 
 class InviteLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, page: int = 0, selected_role_id: str = None, invite_type_filter: str = "all", using_server_default: bool = True):
+    def __init__(self, cog_instance, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = InviteConfig.DEFAULT_DAYS_BACK, display_text: str = f"{InviteConfig.DEFAULT_DAYS_BACK} days",
+                 page: int = 0, selected_role_id: str = None, invite_type_filter: str = "all", using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.page = page
         self.selected_role_id = selected_role_id
         self.current_invite_type = invite_type_filter
@@ -1041,7 +1049,7 @@ class InviteLeaderboardView(discord.ui.View):
         if self.show_time_buttons:
             row = 4
             all_time_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
                 custom_id="invite_all_time",
                 row=row
@@ -1051,7 +1059,7 @@ class InviteLeaderboardView(discord.ui.View):
 
             for days in InviteConfig.TIME_PERIODS:
                 days_button = discord.ui.Button(
-                    style=discord.ButtonStyle.primary if self.current_days == days else discord.ButtonStyle.secondary,
+                    style=discord.ButtonStyle.primary if self.current_days_back_equiv == days else discord.ButtonStyle.secondary,
                     label=f"{days} Days",
                     custom_id=f"invite_days_{days}",
                     row=row
@@ -1060,8 +1068,8 @@ class InviteLeaderboardView(discord.ui.View):
                 self.add_item(days_button)
 
             custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in InviteConfig.TIME_PERIODS and self.current_days != 999999 else "Custom",
+                style=discord.ButtonStyle.success if self.current_days_back_equiv not in InviteConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else discord.ButtonStyle.secondary,
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in InviteConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else "Custom",
                 custom_id="invite_custom_days",
                 row=row
             )
@@ -1070,11 +1078,13 @@ class InviteLeaderboardView(discord.ui.View):
 
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
-            await self.handle_time_period_change(interaction, days)
+            now = datetime.utcnow()
+            await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 999999)
+        now = datetime.utcnow()
+        await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
@@ -1083,7 +1093,8 @@ class InviteLeaderboardView(discord.ui.View):
         await self.handle_time_settings(interaction)
 
     async def custom_days_callback(self, interaction: discord.Interaction):
-        await self.handle_custom_days(interaction)
+        modal = InviteLeaderboardTimeModal(self.cog, self)
+        await interaction.response.send_modal(modal)
 
     async def handle_refresh(self, interaction: discord.Interaction):
 
@@ -1107,7 +1118,7 @@ class InviteLeaderboardView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+    async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
 
         if interaction.response.is_done():
             return
@@ -1115,17 +1126,15 @@ class InviteLeaderboardView(discord.ui.View):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
 
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.using_server_default = False
         self.show_time_buttons = False
         self.page = 0
 
         await self.update_message(interaction)
-
-    async def handle_custom_days(self, interaction: discord.Interaction):
-
-        modal = InviteLeaderboardTimeModal(self.cog, self)
-        await interaction.response.send_modal(modal)
 
     async def generate_image(self):
         # Get role name from database instead of Discord API
@@ -1147,18 +1156,18 @@ class InviteLeaderboardView(discord.ui.View):
 
         leaderboard_data = await self.cog._get_invite_leaderboard_data(
             self.guild,
-            self.current_days,
+            self.current_start_time,
+            self.current_end_time,
+            self.current_days_back_equiv,
             self.selected_role_id,
             self.current_invite_type
         )
-
-        display_days = "All Time" if self.current_days == 999999 else self.current_days
 
         return await generate_invite_leaderboard_image(
             bot=self.cog.bot,
             guild=self.guild,
             leaderboard_data=leaderboard_data,
-            days_back=display_days,
+            display_text=self.current_display_text,
             role_id=self.selected_role_id,
             role_name=role_name,
             invite_type_filter=self.current_invite_type,
@@ -1170,7 +1179,9 @@ class InviteLeaderboardView(discord.ui.View):
         try:
             leaderboard_data = await self.cog._get_invite_leaderboard_data(
                 self.guild,
-                self.current_days,
+                self.current_start_time,
+                self.current_end_time,
+                self.current_days_back_equiv,
                 self.selected_role_id,
                 self.current_invite_type
             )
@@ -1338,31 +1349,107 @@ class Invites(commands.Cog):
         self.db_stats = self.bot.get_cog('DatabaseStats')
         self.initialized = True
 
-    async def get_server_default_days(self, guild: discord.Guild) -> tuple:
-        """Get the default days back from server settings. Returns (days_back, display_text)"""
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
         try:
             settings_cog = self.bot.get_cog('Settings')
             if not settings_cog:
-                return (InviteConfig.DEFAULT_DAYS_BACK, f"{InviteConfig.DEFAULT_DAYS_BACK} days")
+                end = datetime.utcnow()
+                start = end - timedelta(days=InviteConfig.DEFAULT_DAYS_BACK)
+                return (start, end, f"{InviteConfig.DEFAULT_DAYS_BACK} days", InviteConfig.DEFAULT_DAYS_BACK)
 
             settings = await settings_cog.get_guild_settings(guild.id)
             mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.utcnow()
 
             if mode == 'all_time':
-                return (999999, "All Time")
+                return (None, now, "All Time", 999999)
+
             elif mode == 'days_back':
                 days = settings.get(
                     'default_days_back') or InviteConfig.DEFAULT_DAYS_BACK
-                return (days, f"{days} days")
-            else:
-                # For rolling window or date range, use default days as fallback but show "Custom"
-                return (InviteConfig.DEFAULT_DAYS_BACK, "Custom")
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Since the {rolling_value}{suffix}"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=InviteConfig.DEFAULT_DAYS_BACK)
+            return (start, end, f"{InviteConfig.DEFAULT_DAYS_BACK} days", InviteConfig.DEFAULT_DAYS_BACK)
 
         except Exception as e:
-            print(f"Error getting server default days: {e}")
-            return (InviteConfig.DEFAULT_DAYS_BACK, f"{InviteConfig.DEFAULT_DAYS_BACK} days")
+            import traceback
+            traceback.print_exc()
+            end = datetime.utcnow()
+            start = end - timedelta(days=InviteConfig.DEFAULT_DAYS_BACK)
+            return (start, end, f"{InviteConfig.DEFAULT_DAYS_BACK} days", InviteConfig.DEFAULT_DAYS_BACK)
 
-    async def _get_invite_leaderboard_data(self, guild: discord.Guild, days_back: int, role_id: str = None, invite_type_filter: str = "all"):
+    async def _get_invite_leaderboard_data(self, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                                           days_back_equiv: int = InviteConfig.DEFAULT_DAYS_BACK, role_id: str = None, invite_type_filter: str = "all"):
 
         if not self.db_stats or not self.db_stats.pool:
             print("⚠️ DatabaseStats not available for invite leaderboard")
@@ -1374,14 +1461,6 @@ class Invites(commands.Cog):
                 role = guild.get_role(int(role_id))
                 if role:
                     role_filter_ids = [role.id]
-
-            end_time = datetime.now(timezone.utc)
-
-            # Handle All Time (days_back == 999999)
-            if days_back == 999999:
-                start_time = None
-            else:
-                start_time = end_time - timedelta(days=days_back)
 
             leaderboard_data = await self.db_stats.q_invite_leaderboard(
                 guild_id=guild.id,
@@ -1400,18 +1479,12 @@ class Invites(commands.Cog):
             traceback.print_exc()
             return []
 
-    async def get_user_invite_stats(self, guild_id: int, user_id: int, days_back: int = None):
+    async def get_user_invite_stats(self, guild_id: int, user_id: int, start_time: datetime = None, end_time: datetime = None):
 
         if not self.db_stats:
             return None
 
         try:
-            start_time = None
-            end_time = None
-            if days_back:
-                end_time = datetime.now(timezone.utc)
-                start_time = end_time - timedelta(days=days_back)
-
             return await self.db_stats.q_user_invite_stats(
                 guild_id=guild_id,
                 user_id=user_id,
@@ -1538,7 +1611,8 @@ class Invites(commands.Cog):
                 return
 
             try:
-                stats = await self.get_user_invite_stats(guild.id, user.id)
+                start_time, end_time, _, _ = await self.get_server_default_time_range(guild)
+                stats = await self.get_user_invite_stats(guild.id, user.id, start_time, end_time)
 
                 if not stats:
                     if is_interaction:
@@ -1865,23 +1939,23 @@ class Invites(commands.Cog):
                 except:
                     pass
 
-            # Get server default days
-            default_days, time_display = await self.get_server_default_days(guild)
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild)
 
-            leaderboard_data = await self._get_invite_leaderboard_data(guild, default_days)
+            leaderboard_data = await self._get_invite_leaderboard_data(guild, start_time, end_time, days_back_equiv)
 
             img_bytes = await generate_invite_leaderboard_image(
                 bot=self.bot,
                 guild=guild,
                 leaderboard_data=leaderboard_data,
-                days_back=time_display,
+                display_text=display_text,
                 page=0
             )
 
             file = discord.File(img_bytes, filename="invite_leaderboard.png")
 
             view = InviteLeaderboardView(
-                self, guild, days_back=default_days, using_server_default=True
+                self, guild, start_time=start_time, end_time=end_time, days_back_equiv=days_back_equiv, display_text=display_text, using_server_default=True
             )
 
             msg = await send_method(file=file, view=view)

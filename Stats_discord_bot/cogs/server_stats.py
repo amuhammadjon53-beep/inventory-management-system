@@ -779,7 +779,7 @@ async def create_message_stats_image(guild, stats_data, display_text, role_id=No
         draw_text_centered(draw, current_date, (605, 45),
                            font_small, "white", max_width=150)
 
-        # Use the passed display_text instead of calculating from days_back
+        # Use the passed display_text
         stroke_width = 1
         for dx in [-stroke_width, 0, stroke_width]:
             for dy in [-stroke_width, 0, stroke_width]:
@@ -1729,7 +1729,7 @@ async def create_voice_stats_image(guild, stats_data, display_text, role_id=None
         draw_text_centered(draw, current_date, (605, 45),
                            font_small, "white")
 
-        # Use the passed display_text instead of calculating from days_back
+        # Use the passed display_text
         stroke_width = 1
         for dx in [-stroke_width, 0, stroke_width]:
             for dy in [-stroke_width, 0, stroke_width]:
@@ -2122,12 +2122,15 @@ class ServerTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
 
 class ServerStatsView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, display_text: str, selected_role_id: str = None, stat_type: str = "message", using_server_default: bool = True):
+    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, display_text: str, start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = None, selected_role_id: str = None, stat_type: str = "message", using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.current_days = days_back
-        self.current_display_text = display_text  # Store display text
+        self.current_days = days_back  # Keep for backward compatibility
+        self.current_display_text = display_text
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv if days_back_equiv is not None else days_back
         self.selected_role_id = selected_role_id
         self.current_stat_type = stat_type
         self.show_time_buttons = False
@@ -2180,7 +2183,7 @@ class ServerStatsView(discord.ui.View):
 
         if self.show_time_buttons:
             all_time_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
                 custom_id="server_all_time",
                 row=3
@@ -2189,7 +2192,7 @@ class ServerStatsView(discord.ui.View):
             self.add_item(all_time_button)
 
             days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
                 custom_id="server_days_7",
                 row=3
@@ -2198,7 +2201,7 @@ class ServerStatsView(discord.ui.View):
             self.add_item(days_7_button)
 
             days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 14 else discord.ButtonStyle.secondary,
                 label="14 Days",
                 custom_id="server_days_14",
                 row=3
@@ -2207,7 +2210,7 @@ class ServerStatsView(discord.ui.View):
             self.add_item(days_14_button)
 
             days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 30 else discord.ButtonStyle.secondary,
                 label="30 Days",
                 custom_id="server_days_30",
                 row=3
@@ -2216,7 +2219,7 @@ class ServerStatsView(discord.ui.View):
             self.add_item(days_30_button)
 
             # Use display text for custom button label
-            custom_label = self.current_display_text if self.current_days not in [
+            custom_label = self.current_display_text if self.current_days_back_equiv not in [
                 7, 14, 30, 999999] else "Custom"
             if len(custom_label) > 20:
                 custom_label = custom_label[:17] + "..."
@@ -2249,31 +2252,38 @@ class ServerStatsView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=999999, display_text="All Time")
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=now, display_text="All Time")
 
     async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=7, display_text="7 days")
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
     async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=14, display_text="14 days")
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
     async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=30, display_text="30 days")
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = ServerTimeModal(
             self.cog, interaction.message.id, self.guild, self)
         await interaction.response.send_modal(modal)
 
-    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, days: int = None, display_text: str = None):
+    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, days_back_equiv: int = None, start_time: datetime = None, end_time: datetime = None, display_text: str = None):
         try:
             if interaction.response.is_done():
                 await interaction.followup.edit_message(interaction.message.id)
             else:
                 await interaction.response.defer()
 
-            if days is not None:
-                self.current_days = days
+            if days_back_equiv is not None:
+                self.current_days = days_back_equiv
+                self.current_days_back_equiv = days_back_equiv
+                self.current_start_time = start_time
+                self.current_end_time = end_time
                 self.show_time_buttons = False
                 self.using_server_default = False
 
@@ -2288,7 +2298,7 @@ class ServerStatsView(discord.ui.View):
                     role_name = await db_cog.get_role_name_from_db(self.guild.id, int(self.selected_role_id))
 
             stats_data = await self.cog.get_server_stats(
-                self.guild.id, self.current_days, self.selected_role_id, self.current_stat_type
+                self.guild.id, self.current_start_time, self.current_end_time, self.current_days_back_equiv, self.selected_role_id, self.current_stat_type
             )
             if not stats_data:
                 await interaction.followup.send("❌ Error retrieving server statistics", ephemeral=True)
@@ -2372,91 +2382,101 @@ class ServerStats(commands.Cog):
         description="server statistics commands"
     )
 
-    async def get_server_default_days(self, guild: discord.Guild) -> tuple:
-        """Get the default days back from server settings. Returns (days_back, display_text)"""
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
         try:
             settings_cog = self.bot.get_cog('Settings')
             if not settings_cog:
-                return (14, "14 days")
+                end = datetime.utcnow()
+                start = end - timedelta(days=14)
+                return (start, end, "14 days", 14)
 
             settings = await settings_cog.get_guild_settings(guild.id)
             mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.utcnow()
 
             if mode == 'all_time':
-                return (999999, "All Time")
+                return (None, now, "All Time", 999999)
+
             elif mode == 'days_back':
                 days = settings.get('default_days_back') or 14
-                return (days, f"{days} days")
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
             elif mode == 'date_range':
-                from_date = settings.get('date_range_from')
-                to_date = settings.get('date_range_to')
-
-                if from_date:
-                    try:
-                        from_date_obj = datetime.fromisoformat(from_date)
-                        now = datetime.now()
-                        days_diff = (now - from_date_obj).days
-
-                        if to_date:
-                            to_date_obj = datetime.fromisoformat(to_date)
-                            display = f"{from_date_obj.strftime('%m-%d-%Y')} → {to_date_obj.strftime('%m-%d-%Y')}"
-                        else:
-                            display = f"{from_date_obj.strftime('%m-%d-%Y')} → now"
-
-                        return (days_diff, display)
-                    except:
-                        return (14, "Custom")
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
                 else:
-                    return (14, "Custom")
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
             elif mode == 'rolling_window':
-                window_type = settings.get('rolling_window_type', 'week')
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
 
-                if window_type == 'week':
-                    weekday = settings.get('rolling_weekday', 0)  # 0 = Monday
-                    weekday_names = ['Monday', 'Tuesday', 'Wednesday',
-                                     'Thursday', 'Friday', 'Saturday', 'Sunday']
-                    weekday_name = weekday_names[weekday] if 0 <= weekday < 7 else 'Monday'
-
-                    now = datetime.now()
-                    days_since = (now.weekday() - weekday) % 7
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
                     if days_since == 0:
                         days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
 
-                    return (days_since, f"Since last {weekday_name}")
-                elif window_type == 'month':
-                    day_of_month = settings.get('rolling_month_day', 1)
-                    now = datetime.now()
-
-                    if now.day >= day_of_month:
-                        days_since = now.day - day_of_month
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
                     else:
-                        # Go back to previous month
-                        from datetime import date
-                        prev_month = date(now.year, now.month,
-                                          1) - timedelta(days=1)
-                        days_in_prev_month = prev_month.day
-                        days_since = days_in_prev_month - day_of_month + now.day
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Since the {rolling_value}{suffix}"
+                    return (start, now, display, days_back)
 
-                    if days_since == 0:
-                        days_since = 30  # Approximate, for display purposes
-
-                    # Format day with ordinal suffix
-                    if 11 <= day_of_month <= 13:
-                        suffix = "th"
-                    else:
-                        suffix = {1: "st", 2: "nd", 3: "rd"}.get(
-                            day_of_month % 10, "th")
-
-                    return (days_since, f"Since the {day_of_month}{suffix}")
-                else:
-                    return (14, "14 days")
-            else:
-                # For rolling window or date range, use 14 days as fallback but show "Custom"
-                return (14, "Custom")
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=14)
+            return (start, end, "14 days", 14)
 
         except Exception as e:
-            print(f"Error getting server default days: {e}")
-            return (14, "14 days")
+            end = datetime.utcnow()
+            start = end - timedelta(days=14)
+            return (start, end, "14 days", 14)
 
     async def check_permission(self, interaction: discord.Interaction) -> bool:
         """Check if user has permission to use the command based on guild settings."""
@@ -2682,7 +2702,7 @@ class ServerStats(commands.Cog):
 
         return stats_data_image
 
-    async def get_server_stats(self, guild_id: int, days_back: int, role_id: str = None, stat_type: str = "message"):
+    async def get_server_stats(self, guild_id: int, start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 30, role_id: str = None, stat_type: str = "message"):
         """Get server statistics using aggregated tables"""
         db_cog = self._get_db_cog()
         if not db_cog:
@@ -2699,13 +2719,9 @@ class ServerStats(commands.Cog):
                     role_ids = None
                     print(f"Invalid role_id: {role_id}")
 
-            end_time = datetime.now(timezone.utc)
-
-            # Handle All Time (days_back = 999999)
-            if days_back == 999999:
-                start_time = None
-            else:
-                start_time = end_time - timedelta(days=days_back)
+            # If end_time not provided, use current time
+            if end_time is None:
+                end_time = datetime.now(timezone.utc)
 
             stats_data = {
                 'total_messages': 0,
@@ -2880,14 +2896,11 @@ class ServerStats(commands.Cog):
             if is_interaction:
                 await ctx_or_interaction.response.defer()
 
-            # Get server default days and display text
-            default_days, display_text = await self.get_server_default_days(guild)
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild)
 
-            # Use server default
-            days = default_days
-
-            # Get stats data
-            stats_data = await self.get_server_stats(guild.id, days, None, "message")
+            # Get stats data using the time range
+            stats_data = await self.get_server_stats(guild.id, start_time, end_time, days_back_equiv, None, "message")
             if not stats_data:
                 if is_interaction:
                     await ctx_or_interaction.followup.send("❌ Error retrieving server statistics from database.")
@@ -2895,7 +2908,7 @@ class ServerStats(commands.Cog):
                     await ctx_or_interaction.send("❌ Error retrieving server statistics from database.", delete_after=10)
                 return
 
-            # Generate stats image (no role filter on initial load) - Use async version
+            # Generate stats image (no role filter on initial load)
             image_stats_data = await self._convert_to_message_format_async(
                 stats_data, guild)
             image = await create_message_stats_image(guild, image_stats_data, display_text)
@@ -2905,9 +2918,11 @@ class ServerStats(commands.Cog):
             img_bytes.seek(0)
             file = discord.File(img_bytes, filename='server_stats.png')
 
-            # Create view with display_text
+            # Create view with time range parameters
             view = ServerStatsView(
-                self, guild, days_back=days, display_text=display_text, stat_type="message", using_server_default=True)
+                self, guild, days_back=days_back_equiv, display_text=display_text,
+                start_time=start_time, end_time=end_time, days_back_equiv=days_back_equiv,
+                stat_type="message", using_server_default=True)
 
             # Send the image
             if is_interaction:
@@ -2919,8 +2934,10 @@ class ServerStats(commands.Cog):
             self.active_sessions[msg.id] = {
                 'guild_id': guild.id,
                 'user_id': user.id,
-                'current_days': days,
+                'current_start_time': start_time,
+                'current_end_time': end_time,
                 'current_display_text': display_text,
+                'current_days_back_equiv': days_back_equiv,
                 'selected_role_id': None,
                 'stat_type': "message",
                 'view': view,

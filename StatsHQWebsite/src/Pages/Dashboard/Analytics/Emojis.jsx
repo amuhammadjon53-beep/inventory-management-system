@@ -664,6 +664,114 @@ const EmojiDashboard = () => {
     loadInitialData();
   }, []);
 
+  // FIXED: applyServerTimePeriod now returns computed values
+  const applyServerTimePeriod = (settings) => {
+    const mode = settings.default_time_mode || 'days_back';
+    const result = {};
+
+    if (mode === 'all_time') {
+      setTimePeriod('all');
+      result.timePeriod = 'all';
+    } else if (mode === 'days_back') {
+      const days = settings.default_days_back || 14;
+      const presets = ['7', '14', '30', '60', '90'];
+      if (presets.includes(String(days))) {
+        setTimePeriod(String(days));
+        result.timePeriod = String(days);
+      } else {
+        setTimePeriod('custom-lookback');
+        setCustomDaysBack(String(days));
+        result.timePeriod = 'custom-lookback';
+        result.customDaysBack = String(days);
+      }
+    } else if (mode === 'date_range') {
+      setTimePeriod('custom-range');
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      
+      let fromDate = null;
+      let toDate = null;
+      
+      if (settings.default_from_date) {
+        fromDate = settings.default_from_date.split('T')[0];
+        setCustomStartDate(fromDate);
+      }
+      if (settings.default_to_date) {
+        toDate = settings.default_to_date.split('T')[0];
+        setCustomEndDate(toDate);
+      }
+      
+      // Handle cases where one date is missing
+      if (fromDate && !toDate) {
+        toDate = formattedToday;
+        setCustomEndDate(toDate);
+      } else if (!fromDate && toDate) {
+        fromDate = '';
+        setCustomStartDate('');
+      }
+      
+      result.timePeriod = 'custom-range';
+      result.customStartDate = fromDate || '';
+      result.customEndDate = toDate || '';
+    } else if (mode === 'rolling_window') {
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      let startDate = null;
+      
+      if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
+        // weekday: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday
+        const targetWeekday = settings.default_rolling_value;
+        const currentWeekday = today.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+        
+        // Convert to Monday-based (0=Monday, 6=Sunday)
+        const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
+        
+        let daysToSubtract;
+        if (currentWeekdayMonday >= targetWeekday) {
+          daysToSubtract = currentWeekdayMonday - targetWeekday;
+        } else {
+          daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
+        }
+        
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - daysToSubtract);
+        
+      } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
+        const targetDay = settings.default_rolling_value; // 1-31
+        const currentDate = today.getDate();
+        
+        startDate = new Date(today);
+        
+        if (currentDate >= targetDay) {
+          // Use this month's target day
+          startDate.setDate(targetDay);
+        } else {
+          // Use previous month's target day
+          startDate.setMonth(today.getMonth() - 1);
+          // Handle month boundaries (e.g., Jan 31 -> Dec 31)
+          const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+          startDate.setDate(Math.min(targetDay, lastDayOfMonth));
+        }
+      }
+      
+      if (startDate) {
+        const formattedStartDate = startDate.toISOString().split('T')[0];
+        setTimePeriod('custom-range');
+        setCustomStartDate(formattedStartDate);
+        setCustomEndDate(formattedToday);
+        result.timePeriod = 'custom-range';
+        result.customStartDate = formattedStartDate;
+        result.customEndDate = formattedToday;
+      } else {
+        // Fallback to all time if rolling window calculation fails
+        setTimePeriod('all');
+        result.timePeriod = 'all';
+      }
+    }
+    
+    return result;
+  };
+
   const loadInitialData = async () => {
     setLoadingServers(true);
     setApiError(null);
@@ -792,6 +900,7 @@ const EmojiDashboard = () => {
     setLoading(false);
   };
 
+  // UPDATED: checkServerAccess now uses fetchDataWithParams
   const checkServerAccess = async (guildId, permissions, hasAdmin, hasManageServer) => {
     try {
       const settingsResponse = await fetch(`${API_BASE_URL}/api/settings/get`, {
@@ -825,7 +934,11 @@ const EmojiDashboard = () => {
         }
      
         setHasAccess(hasAccessFlag);
+        const timeParams = applyServerTimePeriod(settingsData);
         setLoading(false);
+        
+        // Fetch data immediately with the computed params
+        await fetchDataWithParams(timeParams);
         
       } else {
         console.error('Failed to get settings for guild:', guildId);
@@ -838,6 +951,109 @@ const EmojiDashboard = () => {
       setLoading(false);
     }
   };
+
+  // NEW: fetchDataWithParams - uses overrides instead of state
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer || !hasAccess) return;
+    
+    setLoading(true);
+    setApiError(null);
+    
+    // Use overrides or current state
+    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+    const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+    
+    // Compute days back and date range directly
+    let daysBack = 30;
+    let startDate = null;
+    let endDate = null;
+    
+    if (effectiveTimePeriod === "all") {
+      daysBack = 2000;
+    } else if (effectiveTimePeriod === "custom-lookback") {
+      if (effectiveCustomDaysBack && parseInt(effectiveCustomDaysBack) > 0) {
+        daysBack = parseInt(effectiveCustomDaysBack);
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - daysBack);
+      }
+    } else if (effectiveTimePeriod === "custom-range") {
+      if (effectiveCustomStartDate && effectiveCustomEndDate) {
+        startDate = new Date(effectiveCustomStartDate);
+        endDate = new Date(effectiveCustomEndDate);
+        daysBack = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+      }
+    } else {
+      daysBack = parseInt(effectiveTimePeriod);
+      endDate = new Date();
+      startDate = new Date();
+      startDate.setDate(startDate.getDate() - daysBack);
+    }
+    
+    const daysInPeriod = daysBack === 2000 ? 2000 : daysBack;
+    
+    try {
+      const roleFilterArray = (selectedView === 'server' || selectedView === 'channel' || selectedView === 'category') && selectedRoleId ? [String(selectedRoleId)] : null;
+      
+      const baseRequestBody = {
+        guild_id: currentServer.id,
+        role_filter_ids: roleFilterArray,
+        usage_type: usageType === 'all' ? null : usageType,
+        time_period: effectiveTimePeriod,
+        days_back: daysBack
+      };
+      
+      if (startDate) baseRequestBody.start_time = startDate.toISOString();
+      if (endDate) baseRequestBody.end_time = endDate.toISOString();
+      
+      if (selectedView === 'server') await fetchServerData(baseRequestBody, daysInPeriod);
+      else if (selectedView === 'user' && selectedUserId) await fetchUserData(baseRequestBody, daysInPeriod);
+      else if (selectedView === 'channel' && selectedChannelId) await fetchChannelData(baseRequestBody, daysInPeriod);
+      else if (selectedView === 'category' && selectedCategoryId) await fetchCategoryData(baseRequestBody, daysInPeriod);
+      
+      await fetchTimeseriesData(baseRequestBody);
+      
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoading(false);
+      fetchedRef.current = true;
+    }
+  };
+
+  // UPDATED: Fetch settings and apply time period, then fetch data immediately
+  useEffect(() => {
+    if (!currentServer) return;
+    
+    const fetchAndApplyTimePeriod = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const timeParams = applyServerTimePeriod(data);
+          // Fetch data immediately with the computed params
+          await fetchDataWithParams(timeParams);
+        } else {
+          // If settings fetch fails, still fetch data with current state
+          await fetchData();
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+        // Fallback: fetch data with current state
+        await fetchData();
+      }
+    };
+    
+    fetchAndApplyTimePeriod();
+  }, [currentServer]);
 
   // ============================================
   // FETCH ALL ROLES
@@ -1086,8 +1302,6 @@ const EmojiDashboard = () => {
         const data = await response.json();
         
         if (data.channel_ids && data.channel_ids.length > 0) {
-          // FIX: always use /api/server/real-channels — it already handles
-          // unauthenticated requests for StatsHQ, so no separate public URL needed.
           const channelsUrl = `${API_BASE_URL}/api/server/real-channels?guild_id=${currentServer.id}`;
           
           const channelsResponse = await fetch(channelsUrl, {
@@ -1213,8 +1427,6 @@ const EmojiDashboard = () => {
         const data = await response.json();
         
         if (data.category_ids && data.category_ids.length > 0) {
-          // FIX: always use /api/server/real-categories — it already handles
-          // unauthenticated requests for StatsHQ, so no separate public URL needed.
           const categoriesUrl = `${API_BASE_URL}/api/server/real-categories?guild_id=${currentServer.id}`;
           
           const categoriesResponse = await fetch(categoriesUrl, {

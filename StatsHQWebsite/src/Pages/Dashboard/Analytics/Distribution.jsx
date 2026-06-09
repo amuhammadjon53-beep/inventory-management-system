@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
-import TimezonePieChart from "../../../Components/PieChart.jsx";
 import ActivityHeatmap from "../../../Components/ActivityHeatmap.jsx";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
@@ -167,8 +166,6 @@ const DistributionDashboard = () => {
   const [selectedRoleId, setSelectedRoleId]     = useState('');
 
   // ── Heatmap view — lifted up so we can trigger the right fetch ─────────────
-  // autoHeatmapView: what getHeatmapView() computes (drives AUTO badge)
-  // activeHeatmapView: what the user actually sees (may be overridden)
   const autoHeatmapView   = getHeatmapView(timePeriod, customDaysBack);
   const [activeHeatmapView, setActiveHeatmapView] = useState(autoHeatmapView);
 
@@ -238,7 +235,105 @@ const DistributionDashboard = () => {
     fetchTz();
   }, [currentServer, isPublicMode]);
 
-  useEffect(() => { loadInitialData(); }, []);
+  // FIXED: applyServerTimePeriod now returns computed values
+  const applyServerTimePeriod = (settings) => {
+    const mode = settings.default_time_mode || 'days_back';
+    const result = {};
+
+    if (mode === 'all_time') {
+      setTimePeriod('all');
+      result.timePeriod = 'all';
+    } else if (mode === 'days_back') {
+      const days = settings.default_days_back || 14;
+      const presets = ['7', '14', '30', '60', '90'];
+      if (presets.includes(String(days))) {
+        setTimePeriod(String(days));
+        result.timePeriod = String(days);
+      } else {
+        setTimePeriod('custom-lookback');
+        setCustomDaysBack(String(days));
+        result.timePeriod = 'custom-lookback';
+        result.customDaysBack = String(days);
+      }
+    } else if (mode === 'date_range') {
+      setTimePeriod('custom-range');
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      
+      let fromDate = null;
+      let toDate = null;
+      
+      if (settings.default_from_date) {
+        fromDate = settings.default_from_date.split('T')[0];
+        setCustomStartDate(fromDate);
+      }
+      if (settings.default_to_date) {
+        toDate = settings.default_to_date.split('T')[0];
+        setCustomEndDate(toDate);
+      }
+      
+      if (fromDate && !toDate) {
+        toDate = formattedToday;
+        setCustomEndDate(toDate);
+      } else if (!fromDate && toDate) {
+        fromDate = '';
+        setCustomStartDate('');
+      }
+      
+      result.timePeriod = 'custom-range';
+      result.customStartDate = fromDate || '';
+      result.customEndDate = toDate || '';
+    } else if (mode === 'rolling_window') {
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      let startDate = null;
+      
+      if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
+        const targetWeekday = settings.default_rolling_value;
+        const currentWeekday = today.getDay();
+        const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
+        
+        let daysToSubtract;
+        if (currentWeekdayMonday >= targetWeekday) {
+          daysToSubtract = currentWeekdayMonday - targetWeekday;
+        } else {
+          daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
+        }
+        
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - daysToSubtract);
+        
+      } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
+        const targetDay = settings.default_rolling_value;
+        const currentDate = today.getDate();
+        
+        startDate = new Date(today);
+        
+        if (currentDate >= targetDay) {
+          startDate.setDate(targetDay);
+        } else {
+          startDate.setMonth(today.getMonth() - 1);
+          const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+          startDate.setDate(Math.min(targetDay, lastDayOfMonth));
+        }
+      }
+      
+      if (startDate) {
+        const formattedStartDate = startDate.toISOString().split('T')[0];
+        setTimePeriod('custom-range');
+        setCustomStartDate(formattedStartDate);
+        setCustomEndDate(formattedToday);
+        result.timePeriod = 'custom-range';
+        result.customStartDate = formattedStartDate;
+        result.customEndDate = formattedToday;
+      } else {
+        setTimePeriod('all');
+        result.timePeriod = 'all';
+      }
+    }
+    
+    return result;
+  };
 
   const fallbackPublic = () => {
     setIsAuthenticated(false); setIsPublicMode(true); setHasAccess(true);
@@ -272,6 +367,7 @@ const DistributionDashboard = () => {
     setLoadingServers(false);
   };
 
+  // UPDATED: checkServerAccess now uses fetchDataWithParams
   const checkServerAccess = async (guildId, hasAdmin, hasManageServer) => {
     try {
       const r = await fetch(`${API_BASE_URL}/api/settings/get`, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'include', body: JSON.stringify({ guild_id: guildId }) });
@@ -281,8 +377,203 @@ const DistributionDashboard = () => {
       setDashboardAccessLevel(lvl);
       const access = (lvl === 'Public' || lvl === 'Member') ? true : lvl === 'Moderator' ? (hasAdmin || hasManageServer) : lvl === 'Admin' ? hasAdmin : true;
       setHasAccess(access);
+      const timeParams = applyServerTimePeriod(d);
+      setLoadingServers(false);
+      
+      // Fetch data immediately with the computed params
+      await fetchDataWithParams(timeParams);
     } catch { setHasAccess(false); }
   };
+
+  // NEW: fetchDataWithParams - uses overrides instead of state
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer || !hasAccess) return;
+    
+    setLoadingPieChart(true);
+    
+    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+    const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+    
+    // Compute date range directly
+    let startDate = null;
+    let endDate = null;
+    
+    if (effectiveTimePeriod === "all") {
+      // No date range
+    } else if (effectiveTimePeriod === "custom-lookback") {
+      if (effectiveCustomDaysBack && parseInt(effectiveCustomDaysBack) > 0) {
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - parseInt(effectiveCustomDaysBack));
+      }
+    } else if (effectiveTimePeriod === "custom-range") {
+      if (effectiveCustomStartDate && effectiveCustomEndDate) {
+        startDate = new Date(effectiveCustomStartDate);
+        endDate = new Date(effectiveCustomEndDate);
+      }
+    } else {
+      endDate = new Date();
+      startDate = new Date();
+      startDate.setDate(startDate.getDate() - parseInt(effectiveTimePeriod));
+    }
+    
+    try {
+      const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
+      if (!statConf) return;
+      
+      const roleFilterArray = selectedRoleId && statConf.hasRoleFilter ? [String(selectedRoleId)] : null;
+      
+      const body = { guild_id: currentServer.id, timezone_str: serverTimezone };
+      if (startDate) body.start_time = startDate.toISOString();
+      if (endDate) { const e = new Date(endDate); e.setHours(23, 59, 59, 999); body.end_time = e.toISOString(); }
+      if (roleFilterArray) body.role_filter_ids = roleFilterArray;
+      if (selectedView === 'user') body.user_id = selectedUserId;
+      if (selectedView === 'channel') body.channel_id = selectedChannelId;
+      if (selectedView === 'category') body.category_id = selectedCategoryId;
+      
+      const distEndpoint = isPublicMode
+        ? `${API_BASE_URL}/api/public/${selectedView}/distribution/${statConf.endpoint}`
+        : `${API_BASE_URL}/api/${selectedView}/distribution/${statConf.endpoint}`;
+      
+      const r = await fetch(distEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublicMode ? 'omit' : 'include',
+        body: JSON.stringify(body),
+      });
+      
+      if (r.ok) {
+        const data = await r.json();
+        const hourly = Array.from({ length: 24 }, (_, i) => {
+          const v = data[`hour_${i}`];
+          return (v !== undefined && v !== null) ? Number(v) : 0;
+        });
+        setHourlyData(hourly);
+      }
+      
+      // Also fetch heatmap data with the computed params
+      await fetchDailyHeatmapDataWithParams(activeHeatmapView, startDate, endDate, effectiveTimePeriod);
+      
+    } catch (e) {
+      console.error('fetchDataWithParams error:', e);
+    } finally {
+      setLoadingPieChart(false);
+    }
+  };
+
+  // Helper for heatmap fetch with params
+  const fetchDailyHeatmapDataWithParams = async (heatmapView, startDate, endDate, effectiveTimePeriod) => {
+    if (!currentServer || !hasAccess) return;
+    if (selectedView === 'user' && !selectedUserId) return;
+    if (selectedView === 'channel' && !selectedChannelId) return;
+    if (selectedView === 'category' && !selectedCategoryId) return;
+
+    const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
+    if (!statConf) return;
+
+    setLoadingHeatmap(true);
+    setHeatmapData({});
+
+    const roleFilterArray = selectedRoleId && statConf.hasRoleFilter ? [String(selectedRoleId)] : null;
+    
+    const body = { guild_id: currentServer.id, timezone_str: serverTimezone };
+    if (startDate) body.start_time = startDate.toISOString();
+    if (endDate) { const e = new Date(endDate); e.setHours(23, 59, 59, 999); body.end_time = e.toISOString(); }
+    if (roleFilterArray) body.role_filter_ids = roleFilterArray;
+    if (selectedView === 'user') body.user_id = selectedUserId;
+    if (selectedView === 'channel') body.channel_id = selectedChannelId;
+    if (selectedView === 'category') body.category_id = selectedCategoryId;
+
+    if (heatmapView === 'weekly') {
+      const weeklyEndpoint = isPublicMode
+        ? `${API_BASE_URL}/api/public/${selectedView}/distribution-weekly/${statConf.endpoint}`
+        : `${API_BASE_URL}/api/${selectedView}/distribution-weekly/${statConf.endpoint}`;
+
+      try {
+        const r = await fetch(weeklyEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify(body),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          const map = {};
+          for (const [key, value] of Object.entries(data)) {
+            if (typeof value === 'number') map[key] = value;
+          }
+          setHeatmapData(map);
+        }
+      } catch (e) {
+        console.error('fetchDailyHeatmapDataWithParams (weekly) error:', e);
+      } finally {
+        setLoadingHeatmap(false);
+      }
+      return;
+    }
+
+    const dailyEndpoint = isPublicMode
+      ? `${API_BASE_URL}/api/public/${selectedView}/timeseries/${statConf.endpoint}`
+      : `${API_BASE_URL}/api/${selectedView}/timeseries/${statConf.endpoint}`;
+
+    try {
+      const r = await fetch(dailyEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublicMode ? 'omit' : 'include',
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const map = {};
+        if (data.data && Array.isArray(data.data)) {
+          for (const item of data.data) {
+            const value = item.value ?? item.count ?? item.total ?? item.total_seconds ?? 0;
+            if (item.date && typeof value === 'number') map[item.date] = value;
+          }
+        } else if (data && typeof data === 'object') {
+          const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+          for (const [key, value] of Object.entries(data)) {
+            if (dateRegex.test(key) && typeof value === 'number') map[key] = value;
+          }
+        }
+        setHeatmapData(map);
+      }
+    } catch (e) {
+      console.error('fetchDailyHeatmapDataWithParams error:', e);
+    } finally {
+      setLoadingHeatmap(false);
+    }
+  };
+
+  // UPDATED: Fetch settings and apply time period, then fetch data immediately
+  useEffect(() => {
+    if (!currentServer) return;
+    const fetchAndApplyTimePeriod = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const timeParams = applyServerTimePeriod(data);
+          // Fetch data immediately with the computed params
+          await fetchDataWithParams(timeParams);
+        } else {
+          await fetchDistributionData();
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+        await fetchDistributionData();
+      }
+    };
+    fetchAndApplyTimePeriod();
+  }, [currentServer]);
 
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
@@ -532,13 +823,6 @@ const DistributionDashboard = () => {
   };
 
   // ── FETCH 2: Heatmap data — endpoint depends on requested view ────────────
-  //
-  //  'weekly'  → distribution-weekly endpoint  → keys: 'YYYY-MM-DD-H'
-  //  'month'   → timeseries endpoint           → keys: 'YYYY-MM-DD'
-  //  'yearly'  → timeseries endpoint           → keys: 'YYYY-MM-DD'
-  //
-  // The view parameter comes from the caller (activeHeatmapView) so that
-  // manual overrides from the toggle also hit the right endpoint.
 
   const fetchDailyHeatmapData = async (heatmapView) => {
     if (!currentServer || !hasAccess) return;
@@ -552,7 +836,6 @@ const DistributionDashboard = () => {
     setLoadingHeatmap(true);
     setHeatmapData({});
 
-    // ── Weekly: per-day-per-hour endpoint ────────────────────────────────
     if (heatmapView === 'weekly') {
       const weeklyEndpoint = isPublicMode
         ? `${API_BASE_URL}/api/public/${selectedView}/distribution-weekly/${statConf.endpoint}`
@@ -580,7 +863,6 @@ const DistributionDashboard = () => {
       return;
     }
 
-    // ── Month / Yearly: daily timeseries endpoint ─────────────────────────
     const dailyEndpoint = isPublicMode
       ? `${API_BASE_URL}/api/public/${selectedView}/timeseries/${statConf.endpoint}`
       : `${API_BASE_URL}/api/${selectedView}/timeseries/${statConf.endpoint}`;
@@ -615,11 +897,8 @@ const DistributionDashboard = () => {
   };
 
   // ── Handle manual view change from the heatmap toggle ────────────────────
-  // When the user clicks a different view in the toggle, we update activeHeatmapView
-  // which triggers the useEffect above to refetch with the correct endpoint.
   const handleHeatmapViewChange = (newView) => {
     setActiveHeatmapView(newView);
-    // fetchDailyHeatmapData will be called by the useEffect that depends on activeHeatmapView
   };
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -839,13 +1118,13 @@ const DistributionDashboard = () => {
             {loadingPieChart ? (
               <LoadingSpinner size="large" text="Loading distribution data..." />
             ) : hasData ? (
-              <TimezonePieChart
+              <ActivityHeatmap
                 hourlyData={hourlyData}
-                timezone={serverTimezone}
-                activityType={statLabel}
-                guildName={currentServer?.name || 'Server'}
-                daysBack={getTimePeriodLabel()}
+                view="hourly"
                 valueFormatter={valueFormatter}
+                title={`${statLabel} — Hourly Distribution`}
+                subtitle={`${currentServer?.name || 'Server'} • ${timePeriodSubtitle}`}
+                isPieChart={true}
               />
             ) : (
               <div className="no-chart-data">No {statLabel.toLowerCase()} data available for this period</div>

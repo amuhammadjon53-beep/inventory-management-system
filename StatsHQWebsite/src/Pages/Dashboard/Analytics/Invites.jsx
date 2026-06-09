@@ -356,6 +356,106 @@ const InviteDashboard = () => {
     loadInitialData();
   }, []);
 
+  // FIXED: applyServerTimePeriod now returns computed values
+  const applyServerTimePeriod = (settings) => {
+    const mode = settings.default_time_mode || 'days_back';
+    const result = {};
+
+    if (mode === 'all_time') {
+      setTimePeriod('all');
+      result.timePeriod = 'all';
+    } else if (mode === 'days_back') {
+      const days = settings.default_days_back || 14;
+      const presets = ['7', '14', '30', '60', '90'];
+      if (presets.includes(String(days))) {
+        setTimePeriod(String(days));
+        result.timePeriod = String(days);
+      } else {
+        setTimePeriod('custom-lookback');
+        setCustomDaysBack(String(days));
+        result.timePeriod = 'custom-lookback';
+        result.customDaysBack = String(days);
+      }
+    } else if (mode === 'date_range') {
+      setTimePeriod('custom-range');
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      
+      let fromDate = null;
+      let toDate = null;
+      
+      if (settings.default_from_date) {
+        fromDate = settings.default_from_date.split('T')[0];
+        setCustomStartDate(fromDate);
+      }
+      if (settings.default_to_date) {
+        toDate = settings.default_to_date.split('T')[0];
+        setCustomEndDate(toDate);
+      }
+      
+      if (fromDate && !toDate) {
+        toDate = formattedToday;
+        setCustomEndDate(toDate);
+      } else if (!fromDate && toDate) {
+        fromDate = '';
+        setCustomStartDate('');
+      }
+      
+      result.timePeriod = 'custom-range';
+      result.customStartDate = fromDate || '';
+      result.customEndDate = toDate || '';
+    } else if (mode === 'rolling_window') {
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      let startDate = null;
+      
+      if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
+        const targetWeekday = settings.default_rolling_value;
+        const currentWeekday = today.getDay();
+        const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
+        
+        let daysToSubtract;
+        if (currentWeekdayMonday >= targetWeekday) {
+          daysToSubtract = currentWeekdayMonday - targetWeekday;
+        } else {
+          daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
+        }
+        
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - daysToSubtract);
+        
+      } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
+        const targetDay = settings.default_rolling_value;
+        const currentDate = today.getDate();
+        
+        startDate = new Date(today);
+        
+        if (currentDate >= targetDay) {
+          startDate.setDate(targetDay);
+        } else {
+          startDate.setMonth(today.getMonth() - 1);
+          const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+          startDate.setDate(Math.min(targetDay, lastDayOfMonth));
+        }
+      }
+      
+      if (startDate) {
+        const formattedStartDate = startDate.toISOString().split('T')[0];
+        setTimePeriod('custom-range');
+        setCustomStartDate(formattedStartDate);
+        setCustomEndDate(formattedToday);
+        result.timePeriod = 'custom-range';
+        result.customStartDate = formattedStartDate;
+        result.customEndDate = formattedToday;
+      } else {
+        setTimePeriod('all');
+        result.timePeriod = 'all';
+      }
+    }
+    
+    return result;
+  };
+
   // ============================================
   // FIXED USERNAME FETCHING FUNCTIONS
   // ============================================
@@ -534,7 +634,6 @@ const InviteDashboard = () => {
     }
     
     try {
-      // ✅ FIXED: Build URL directly with query parameter
       const url = isPublic 
         ? `${API_BASE_URL}/api/public/server/real-roles?guild_id=${currentServer.id}`
         : `${API_BASE_URL}/api/server/real-roles?guild_id=${currentServer.id}`;
@@ -750,7 +849,11 @@ const InviteDashboard = () => {
         }
         
         setHasAccess(hasAccessFlag);
+        const timeParams = applyServerTimePeriod(settingsData);
         setLoading(false);
+        
+        // Fetch data immediately with the computed params
+        await fetchDataWithParams(timeParams);
         
       } else {
         console.error('Failed to get settings for guild:', guildId);
@@ -763,6 +866,373 @@ const InviteDashboard = () => {
       setLoading(false);
     }
   };
+
+  // NEW: fetchDataWithParams - uses overrides instead of state
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer || !hasAccess) return;
+    
+    setLoading(true);
+    setApiError(null);
+    
+    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+    const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+    
+    let startDate = null;
+    let endDate = null;
+    let daysBack = 30;
+    
+    if (effectiveTimePeriod === "all") {
+      daysBack = 2000;
+    } else if (effectiveTimePeriod === "custom-lookback") {
+      if (effectiveCustomDaysBack && parseInt(effectiveCustomDaysBack) > 0) {
+        daysBack = parseInt(effectiveCustomDaysBack);
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - daysBack);
+      }
+    } else if (effectiveTimePeriod === "custom-range") {
+      if (effectiveCustomStartDate && effectiveCustomEndDate) {
+        startDate = new Date(effectiveCustomStartDate);
+        endDate = new Date(effectiveCustomEndDate);
+        daysBack = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+      }
+    } else {
+      daysBack = parseInt(effectiveTimePeriod);
+      endDate = new Date();
+      startDate = new Date();
+      startDate.setDate(startDate.getDate() - daysBack);
+    }
+    
+    try {
+      const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
+      
+      await Promise.all([
+        fetchTotalStatsWithDates(roleFilterArray, startDate, endDate, daysBack),
+        fetchUserLeaderboardWithDates(roleFilterArray, startDate, endDate, daysBack),
+        fetchCodeLeaderboardWithDates(roleFilterArray, startDate, endDate, daysBack),
+        fetchTimeseriesDataWithDates(roleFilterArray, startDate, endDate, daysBack)
+      ]);
+      
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoading(false);
+      fetchedRef.current = true;
+    }
+  };
+
+  // Helper functions for fetchDataWithParams
+  const fetchTotalStatsWithDates = async (roleFilterArray, startDate, endDate, daysBack) => {
+    setLoadingSummaryStats(true);
+    setLoadingAverages(true);
+    
+    const isPublic = isPublicMode;
+    const daysInPeriod = daysBack;
+    
+    try {
+      const filterTypeString = String(selectedFilterType);
+      
+      const requestBody = {
+        guild_id: currentServer.id,
+        filter_type: filterTypeString,
+        days: daysBack
+      };
+      
+      if (currentUserId && !isPublic) {
+        requestBody.user_id = currentUserId;
+      }
+      
+      if (roleFilterArray && roleFilterArray.length > 0) {
+        requestBody.role_filter_ids = roleFilterArray;
+      }
+      
+      if (startDate) {
+        requestBody.start_time = startDate.toISOString();
+      }
+      if (endDate) {
+        requestBody.end_time = endDate.toISOString();
+      }
+      
+      const endpoint = isPublic 
+        ? `${API_BASE_URL}/api/public/invite/stats/total`
+        : `${API_BASE_URL}/api/invite/stats/total`;
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      const stats = await response.json();
+      
+      setInviteStats(stats);
+      
+      const averages = {
+        avgPerInviter: stats.unique_inviters > 0 ? stats.total_invites / stats.unique_inviters : 0,
+        avgPerDay: daysInPeriod > 0 ? stats.total_invites / daysInPeriod : 0,
+        avgPerMonth: daysInPeriod > 0 ? (stats.total_invites / daysInPeriod) * 30 : 0,
+        avgPerYear: daysInPeriod > 0 ? (stats.total_invites / daysInPeriod) * 365 : 0,
+        daysInPeriod: daysInPeriod
+      };
+      
+      setAveragesData(averages);
+    } catch (error) {
+      console.error('Error fetching total stats:', error);
+    } finally {
+      setLoadingSummaryStats(false);
+      setLoadingAverages(false);
+    }
+  };
+
+  const fetchUserLeaderboardWithDates = async (roleFilterArray, startDate, endDate, daysBack) => {
+    setLoadingUserLeaderboard(true);
+    
+    const isPublic = isPublicMode;
+    
+    try {
+      const filterTypeString = String(selectedFilterType);
+      
+      const requestBody = {
+        guild_id: currentServer.id,
+        filter_type: filterTypeString,
+        days: daysBack,
+        limit: 100000000000
+      };
+      
+      if (roleFilterArray && roleFilterArray.length > 0) {
+        requestBody.role_filter_ids = roleFilterArray;
+      }
+      
+      if (startDate) {
+        requestBody.start_time = startDate.toISOString();
+      }
+      if (endDate) {
+        requestBody.end_time = endDate.toISOString();
+      }
+      
+      const endpoint = isPublic 
+        ? `${API_BASE_URL}/api/public/invite/leaderboard/users`
+        : `${API_BASE_URL}/api/invite/leaderboard/users`;
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (!response.ok) {
+        console.error('Failed to fetch user leaderboard:', response.status);
+        setLoadingUserLeaderboard(false);
+        return;
+      }
+      
+      const data = await response.json();
+      
+      const allUserIds = data.map(user => String(user.user_id));
+      const userInfoMap = await batchFetchUserBasicInfo(currentServer.id, allUserIds);
+      
+      const formattedUsers = await Promise.all(data.map(async (user, index) => {
+        const userId = String(user.user_id);
+        const isTop3 = index < 3;
+        const userInfo = userInfoMap[userId] || { name: `User ${userId.slice(-4)}` };
+        
+        let avatar = null;
+        if (isTop3) {
+          avatar = await fetchUserAvatar(userId);
+        }
+        
+        return {
+          userId: userId,
+          name: userInfo.name,
+          value: user.total_invites || 0,
+          validInvites: user.valid_invites || 0,
+          suspiciousInvites: user.suspicious_invites || 0,
+          leftInvites: user.left_invites || 0,
+          percentageValid: user.percentage_valid || 0,
+          rank: index + 1,
+          avatar: avatar
+        };
+      }));
+      
+      setTopUsers(formattedUsers);
+    } catch (error) {
+      console.error('Error fetching user leaderboard:', error);
+    } finally {
+      setLoadingUserLeaderboard(false);
+    }
+  };
+
+  const fetchCodeLeaderboardWithDates = async (roleFilterArray, startDate, endDate, daysBack) => {
+    setLoadingCodeLeaderboard(true);
+    
+    const isPublic = isPublicMode;
+    
+    try {
+      const filterTypeString = String(selectedFilterType);
+      
+      const requestBody = {
+        guild_id: currentServer.id,
+        filter_type: filterTypeString,
+        days: daysBack,
+        limit: 100000000000
+      };
+      
+      if (roleFilterArray && roleFilterArray.length > 0) {
+        requestBody.role_filter_ids = roleFilterArray;
+      }
+      
+      if (startDate) {
+        requestBody.start_time = startDate.toISOString();
+      }
+      if (endDate) {
+        requestBody.end_time = endDate.toISOString();
+      }
+      
+      const endpoint = isPublic 
+        ? `${API_BASE_URL}/api/public/invite/leaderboard/codes`
+        : `${API_BASE_URL}/api/invite/leaderboard/codes`;
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (!response.ok) {
+        console.error('Failed to fetch code leaderboard:', response.status);
+        setLoadingCodeLeaderboard(false);
+        return;
+      }
+      
+      const data = await response.json();
+      
+      const formattedCodes = data.map((code, index) => {
+        const inviterId = code.inviter_id;
+        
+        return {
+          id: code.invite_code,
+          name: code.invite_code,
+          inviterName: code.inviter_name || (inviterId ? `User ${inviterId}` : 'Unknown'),
+          inviterId: inviterId,
+          value: code.total_uses || 0,
+          validUses: code.valid_uses || 0,
+          suspiciousUses: code.suspicious_uses || 0,
+          leftUses: code.left_uses || 0,
+          percentageValid: code.percentage_valid || 0,
+          created_at: code.created_at,
+          last_used: code.last_used,
+          rank: index + 1
+        };
+      });
+      
+      setTopInviteCodes(formattedCodes);
+    } catch (error) {
+      console.error('Error fetching code leaderboard:', error);
+    } finally {
+      setLoadingCodeLeaderboard(false);
+    }
+  };
+
+  const fetchTimeseriesDataWithDates = async (roleFilterArray, startDate, endDate, daysBack) => {
+    setLoadingChart(true);
+    
+    const isPublic = isPublicMode;
+    
+    try {
+      const filterTypeString = String(selectedFilterType);
+      
+      const requestBody = {
+        guild_id: currentServer.id,
+        filter_type: filterTypeString,
+        days: daysBack,
+        interval: "day"
+      };
+      
+      if (roleFilterArray && roleFilterArray.length > 0) {
+        requestBody.role_filter_ids = roleFilterArray;
+      }
+      
+      if (startDate) {
+        requestBody.start_time = startDate.toISOString();
+      }
+      if (endDate) {
+        requestBody.end_time = endDate.toISOString();
+      }
+      
+      const endpoint = isPublic 
+        ? `${API_BASE_URL}/api/public/invite/timeseries`
+        : `${API_BASE_URL}/api/invite/timeseries`;
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (!response.ok) {
+        console.error('Failed to fetch timeseries data:', response.status);
+        setTimeseriesData([]);
+        setLoadingChart(false);
+        return;
+      }
+      
+      const data = await response.json();
+      
+      const chartData = data.map(item => ({
+        date: item.date,
+        value: item.total_invites,
+        valid: item.valid_invites,
+        suspicious: item.suspicious_invites,
+        left: item.left_invites
+      })).sort((a, b) => new Date(a.date) - new Date(b.date));
+      
+      setTimeseriesData(chartData);
+    } catch (error) {
+      console.error('Error fetching timeseries data:', error);
+      setTimeseriesData([]);
+    } finally {
+      setLoadingChart(false);
+    }
+  };
+
+  // UPDATED: Fetch settings and apply time period, then fetch data immediately
+  useEffect(() => {
+    if (!currentServer) return;
+    
+    const fetchAndApplyTimePeriod = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const timeParams = applyServerTimePeriod(data);
+          await fetchDataWithParams(timeParams);
+        } else {
+          await fetchData();
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+        await fetchData();
+      }
+    };
+    
+    fetchAndApplyTimePeriod();
+  }, [currentServer]);
 
   // Helper function to get role name from ID
   const getRoleName = (roleId) => {
@@ -1016,7 +1486,6 @@ const InviteDashboard = () => {
         requestBody.end_time = endDate.toISOString();
       }
       
-      // ✅ FIXED: Build URL directly for POST request
       const endpoint = isPublic 
         ? `${API_BASE_URL}/api/public/invite/stats/total`
         : `${API_BASE_URL}/api/invite/stats/total`;
@@ -1092,7 +1561,6 @@ const InviteDashboard = () => {
         requestBody.end_time = endDate.toISOString();
       }
       
-      // ✅ FIXED: Build URL directly for POST request
       const endpoint = isPublic 
         ? `${API_BASE_URL}/api/public/invite/leaderboard/users`
         : `${API_BASE_URL}/api/invite/leaderboard/users`;
@@ -1183,7 +1651,6 @@ const InviteDashboard = () => {
         requestBody.end_time = endDate.toISOString();
       }
       
-      // ✅ FIXED: Build URL directly for POST request
       const endpoint = isPublic 
         ? `${API_BASE_URL}/api/public/invite/leaderboard/codes`
         : `${API_BASE_URL}/api/invite/leaderboard/codes`;
@@ -1267,7 +1734,6 @@ const InviteDashboard = () => {
         requestBody.end_time = endDate.toISOString();
       }
       
-      // ✅ FIXED: Build URL directly for POST request
       const endpoint = isPublic 
         ? `${API_BASE_URL}/api/public/invite/timeseries`
         : `${API_BASE_URL}/api/invite/timeseries`;

@@ -835,11 +835,27 @@ class SettingsResponse(BaseModel):
     guild_id: str
     prefix: str
     timezone: str
-    voice_states: List[str]
+    voice_states: list
     permission_level: str
     bot_filter: bool
     dashboard_access_level: str
-    created_at: Optional[datetime] = None
+    created_at: Optional[datetime]
+    default_time_mode: Optional[str] = "days_back"
+    default_days_back: Optional[int] = 14
+    default_from_date: Optional[datetime] = None
+    default_to_date: Optional[datetime] = None
+    default_rolling_type: Optional[str] = None
+    default_rolling_value: Optional[int] = None
+
+
+class TimePeriodUpdateRequest(BaseModel):
+    guild_id: str
+    default_time_mode: str  # 'all_time' | 'days_back' | 'date_range' | 'rolling_window'
+    default_days_back: Optional[int] = None
+    default_from_date: Optional[datetime] = None
+    default_to_date: Optional[datetime] = None
+    default_rolling_type: Optional[str] = None  # 'weekday' | 'monthly'
+    default_rolling_value: Optional[int] = None
 
 # ============================================
 # NEW INVITE TRACKING REQUEST MODELS
@@ -38920,7 +38936,6 @@ async def settings_get(request: SettingsGetRequest):
     """Get guild settings"""
     try:
         if not db_stats.db_connected:
-            # Return default settings
             return SettingsResponse(
                 guild_id=request.guild_id,
                 prefix="s!",
@@ -38929,11 +38944,15 @@ async def settings_get(request: SettingsGetRequest):
                 permission_level="Default",
                 bot_filter=False,
                 dashboard_access_level="Member",
-                created_at=None
+                created_at=None,
+                default_time_mode="days_back",
+                default_days_back=14,
+                default_from_date=None,
+                default_to_date=None,
+                default_rolling_type=None,
+                default_rolling_value=None
             )
-
         settings = await db_stats.get_guild_settings(request.guild_id)
-
         if not settings:
             return SettingsResponse(
                 guild_id=request.guild_id,
@@ -38943,10 +38962,14 @@ async def settings_get(request: SettingsGetRequest):
                 permission_level="Default",
                 bot_filter=False,
                 dashboard_access_level="Member",
-                created_at=None
+                created_at=None,
+                default_time_mode="days_back",
+                default_days_back=14,
+                default_from_date=None,
+                default_to_date=None,
+                default_rolling_type=None,
+                default_rolling_value=None
             )
-
-        # Convert guild_id to string to match the model
         return SettingsResponse(
             guild_id=str(settings['guild_id']),
             prefix=settings['prefix'],
@@ -38956,11 +38979,16 @@ async def settings_get(request: SettingsGetRequest):
             bot_filter=settings['bot_filter'],
             dashboard_access_level=settings.get(
                 'dashboard_access_level', 'Member'),
-            created_at=settings.get('created_at')
+            created_at=settings.get('created_at'),
+            default_time_mode=settings.get('default_time_mode', 'days_back'),
+            default_days_back=settings.get('default_days_back', 14),
+            default_from_date=settings.get('default_from_date'),
+            default_to_date=settings.get('default_to_date'),
+            default_rolling_type=settings.get('default_rolling_type'),
+            default_rolling_value=settings.get('default_rolling_value')
         )
     except DatabaseError as e:
         logger.error(f"Database error in settings_get: {e}")
-        # Return default settings on error
         return SettingsResponse(
             guild_id=request.guild_id,
             prefix="s!",
@@ -38969,7 +38997,13 @@ async def settings_get(request: SettingsGetRequest):
             permission_level="Default",
             bot_filter=False,
             dashboard_access_level="Member",
-            created_at=None
+            created_at=None,
+            default_time_mode="days_back",
+            default_days_back=14,
+            default_from_date=None,
+            default_to_date=None,
+            default_rolling_type=None,
+            default_rolling_value=None
         )
     except Exception as e:
         logger.error(f"Unexpected error in settings_get: {e}")
@@ -39126,6 +39160,92 @@ async def settings_bot_filter_update(request: BotFilterUpdateRequest):
         logger.error(f"Unexpected error in settings_bot_filter_update: {e}")
         return {"success": False, "message": f"Unexpected error: {str(e)}"}
 
+
+@app.post("/api/settings/time-period/update")
+async def settings_time_period_update(request: TimePeriodUpdateRequest):
+    """Update guild time period settings"""
+    try:
+        if not db_stats.db_connected:
+            return {"success": False, "message": "Database not connected"}
+
+        # Validate time_mode
+        valid_modes = ['all_time', 'days_back', 'date_range', 'rolling_window']
+        if request.default_time_mode not in valid_modes:
+            return {"success": False, "message": f"Invalid time mode. Must be one of: {', '.join(valid_modes)}"}
+
+        # Validate based on mode
+        if request.default_time_mode == 'days_back':
+            if request.default_days_back is None:
+                return {"success": False, "message": "Days back value is required for days_back mode"}
+            if not 1 <= request.default_days_back <= 3650:
+                return {"success": False, "message": "Days back must be between 1 and 3650"}
+
+        elif request.default_time_mode == 'date_range':
+            # At least one date should be provided
+            if request.default_from_date is None and request.default_to_date is None:
+                return {"success": False, "message": "At least one date (from or to) must be provided for date range mode"}
+            
+            # If both dates are provided, validate from < to
+            if request.default_from_date and request.default_to_date:
+                if request.default_from_date >= request.default_to_date:
+                    return {"success": False, "message": "From date must be before to date"}
+
+        elif request.default_time_mode == 'rolling_window':
+            if request.default_rolling_type is None:
+                return {"success": False, "message": "Rolling type is required for rolling_window mode"}
+            
+            if request.default_rolling_type not in ['weekday', 'monthly']:
+                return {"success": False, "message": "Rolling type must be 'weekday' or 'monthly'"}
+            
+            if request.default_rolling_value is None:
+                return {"success": False, "message": "Rolling value is required for rolling_window mode"}
+            
+            if request.default_rolling_type == 'weekday':
+                if not 0 <= request.default_rolling_value <= 6:
+                    return {"success": False, "message": "Weekday value must be between 0 (Monday) and 6 (Sunday)"}
+            else:  # monthly
+                if not 1 <= request.default_rolling_value <= 31:
+                    return {"success": False, "message": "Day of month must be between 1 and 31"}
+
+        # Convert guild_id to integer (Discord snowflake)
+        guild_id_int = int(request.guild_id)
+        
+        # Update all time period settings in one query
+        query = """
+            UPDATE settings SET
+                default_time_mode = $1,
+                default_days_back = $2,
+                default_from_date = $3,
+                default_to_date = $4,
+                default_rolling_type = $5,
+                default_rolling_value = $6
+            WHERE guild_id = $7
+        """
+        
+        async with db_stats.pool.acquire() as conn:
+            await conn.execute(
+                query,
+                request.default_time_mode,
+                request.default_days_back,
+                request.default_from_date,
+                request.default_to_date,
+                request.default_rolling_type,
+                request.default_rolling_value,
+                guild_id_int  # Use integer version
+            )
+        
+        logger.info(f"Successfully updated time period settings for guild {request.guild_id}")
+        return {"success": True, "message": "Successfully updated time period settings"}
+        
+    except DatabaseError as e:
+        logger.error(f"Database error in settings_time_period_update: {e}")
+        return {"success": False, "message": f"Database error: {str(e)}"}
+    except ValueError as e:
+        logger.error(f"Value conversion error in settings_time_period_update: {e}")
+        return {"success": False, "message": f"Invalid guild ID format: {str(e)}"}
+    except Exception as e:
+        logger.error(f"Unexpected error in settings_time_period_update: {e}")
+        return {"success": False, "message": f"Unexpected error: {str(e)}"}
 # ============================================
 # USER STATS ENDPOINTS (with error handling)
 # ============================================

@@ -10,6 +10,7 @@ import aiohttp
 from pathlib import Path
 import asyncio
 import gc
+import re
 from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
 
 
@@ -62,7 +63,9 @@ class TimePeriodSelect(discord.ui.Select):
                 if hasattr(view, 'is_user_stats') and view.is_user_stats:
                     image_file = await view.cog.generate_user_stats_image(
                         interaction,
-                        view.current_days,
+                        view.current_start_time,
+                        view.current_end_time,
+                        view.current_days_back_equiv,
                         view.user_id,
                         view.selected_period,
                         view.current_display_text
@@ -70,7 +73,9 @@ class TimePeriodSelect(discord.ui.Select):
                 else:
                     image_file = await view.cog.generate_server_stats_image(
                         interaction,
-                        view.current_days,
+                        view.current_start_time,
+                        view.current_end_time,
+                        view.current_days_back_equiv,
                         view.selected_role_id,
                         view.selected_period,
                         view.current_display_text
@@ -89,11 +94,13 @@ class TimePeriodSelect(discord.ui.Select):
 # ROLE MODAL
 
 class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
-    def __init__(self, cog_instance, current_days: int, current_display_text: str, selected_period: str = "day", view=None):
+    def __init__(self, cog_instance, start_time: datetime, end_time: datetime, days_back_equiv: int, display_text: str, selected_period: str = "day", view=None):
         super().__init__(timeout=300)
         self.cog = cog_instance
-        self.current_days = current_days
-        self.current_display_text = current_display_text
+        self.start_time = start_time
+        self.end_time = end_time
+        self.days_back_equiv = days_back_equiv
+        self.display_text = display_text
         self.selected_period = selected_period
         self.view = view
 
@@ -161,27 +168,33 @@ class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
                 self.view._update_buttons()
                 image_file = await self.cog.generate_server_stats_image(
                     interaction,
-                    self.current_days,
+                    self.start_time,
+                    self.end_time,
+                    self.days_back_equiv,
                     role_id,
                     self.selected_period,
-                    self.current_display_text
+                    self.display_text
                 )
                 await interaction.edit_original_response(attachments=[image_file], view=self.view)
             else:
                 view = AverageServerStatsView(
                     self.cog,
-                    self.current_days,
-                    self.current_display_text,
+                    self.start_time,
+                    self.end_time,
+                    self.days_back_equiv,
+                    self.display_text,
                     role_id,
                     self.selected_period,
                     using_server_default=False
                 )
                 image_file = await self.cog.generate_server_stats_image(
                     interaction,
-                    self.current_days,
+                    self.start_time,
+                    self.end_time,
+                    self.days_back_equiv,
                     role_id,
                     self.selected_period,
-                    self.current_display_text
+                    self.display_text
                 )
                 await interaction.edit_original_response(attachments=[image_file], view=view)
 
@@ -193,11 +206,13 @@ class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
 
 
 class AverageTimeModal(discord.ui.Modal, title='Custom Time Period'):
-    def __init__(self, cog_instance, current_days: int, current_display_text: str, selected_role_id: str = None, selected_period: str = "day", is_user_stats: bool = False, user_id: int = None, view=None):
+    def __init__(self, cog_instance, start_time: datetime, end_time: datetime, days_back_equiv: int, display_text: str, selected_role_id: str = None, selected_period: str = "day", is_user_stats: bool = False, user_id: int = None, view=None):
         super().__init__(timeout=300)
         self.cog = cog_instance
-        self.current_days = current_days
-        self.current_display_text = current_display_text
+        self.start_time = start_time
+        self.end_time = end_time
+        self.days_back_equiv = days_back_equiv
+        self.display_text = display_text
         self.selected_role_id = selected_role_id
         self.selected_period = selected_period
         self.is_user_stats = is_user_stats
@@ -222,33 +237,40 @@ class AverageTimeModal(discord.ui.Modal, title='Custom Time Period'):
             # Determine display text based on days
             if days == 999999:
                 new_display_text = "All Time"
+                new_start_time = None
             else:
                 new_display_text = f"{days} days"
+                new_start_time = datetime.utcnow() - timedelta(days=days)
+
+            new_end_time = datetime.utcnow()
+            new_days_back_equiv = days
 
             await interaction.response.defer()
 
             if self.view:
-                self.view.current_days = days
+                self.view.current_start_time = new_start_time
+                self.view.current_end_time = new_end_time
+                self.view.current_days_back_equiv = new_days_back_equiv
                 self.view.current_display_text = new_display_text
                 self.view.using_server_default = False
                 self.view.show_time_buttons = False
 
                 if self.is_user_stats:
-                    image_file = await self.cog.generate_user_stats_image(interaction, days, self.user_id, self.selected_period, new_display_text)
+                    image_file = await self.cog.generate_user_stats_image(interaction, new_start_time, new_end_time, new_days_back_equiv, self.user_id, self.selected_period, new_display_text)
                 else:
-                    image_file = await self.cog.generate_server_stats_image(interaction, days, self.selected_role_id, self.selected_period, new_display_text)
+                    image_file = await self.cog.generate_server_stats_image(interaction, new_start_time, new_end_time, new_days_back_equiv, self.selected_role_id, self.selected_period, new_display_text)
 
                 self.view._update_buttons()
                 await interaction.edit_original_response(attachments=[image_file], view=self.view)
             else:
                 if self.is_user_stats:
-                    image_file = await self.cog.generate_user_stats_image(interaction, days, self.user_id, self.selected_period, new_display_text)
+                    image_file = await self.cog.generate_user_stats_image(interaction, new_start_time, new_end_time, new_days_back_equiv, self.user_id, self.selected_period, new_display_text)
                     view = AverageUserStatsView(
-                        self.cog, days, new_display_text, self.user_id, self.selected_period, using_server_default=False)
+                        self.cog, new_start_time, new_end_time, new_days_back_equiv, new_display_text, self.user_id, self.selected_period, using_server_default=False)
                 else:
-                    image_file = await self.cog.generate_server_stats_image(interaction, days, self.selected_role_id, self.selected_period, new_display_text)
+                    image_file = await self.cog.generate_server_stats_image(interaction, new_start_time, new_end_time, new_days_back_equiv, self.selected_role_id, self.selected_period, new_display_text)
                     view = AverageServerStatsView(
-                        self.cog, days, new_display_text, self.selected_role_id, self.selected_period, using_server_default=False)
+                        self.cog, new_start_time, new_end_time, new_days_back_equiv, new_display_text, self.selected_role_id, self.selected_period, using_server_default=False)
 
                 await interaction.edit_original_response(attachments=[image_file], view=view)
 
@@ -262,11 +284,15 @@ class AverageTimeModal(discord.ui.Modal, title='Custom Time Period'):
 # SERVER STATS VIEW
 
 class AverageServerStatsView(discord.ui.View):
-    def __init__(self, cog_instance, current_days: int, current_display_text: str, selected_role_id: str = None, selected_period: str = "day", using_server_default: bool = True):
+    def __init__(self, cog_instance, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = 30, display_text: str = "30 days", selected_role_id: str = None,
+                 selected_period: str = "day", using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
-        self.current_days = current_days
-        self.current_display_text = current_display_text
+        self.current_start_time = start_time
+        self.current_end_time = end_time if end_time else datetime.utcnow()
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.selected_role_id = selected_role_id
         self.selected_period = selected_period
         self.show_time_buttons = False
@@ -307,7 +333,7 @@ class AverageServerStatsView(discord.ui.View):
 
         if self.show_time_buttons:
             all_time_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
                 custom_id="average_all_time"
             )
@@ -315,28 +341,28 @@ class AverageServerStatsView(discord.ui.View):
             self.add_item(all_time_button)
 
             days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
                 custom_id="average_days_7"
             )
-            days_7_button.callback = self.create_days_callback(7, "7 days")
+            days_7_button.callback = self.days_7_callback
 
             days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 14 else discord.ButtonStyle.secondary,
                 label="14 Days",
                 custom_id="average_days_14"
             )
-            days_14_button.callback = self.create_days_callback(14, "14 days")
+            days_14_button.callback = self.days_14_callback
 
             days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 30 else discord.ButtonStyle.secondary,
                 label="30 Days",
                 custom_id="average_days_30"
             )
-            days_30_button.callback = self.create_days_callback(30, "30 days")
+            days_30_button.callback = self.days_30_callback
 
             # Use display text for custom button label
-            custom_label = self.current_display_text if self.current_days not in [
+            custom_label = self.current_display_text if self.current_days_back_equiv not in [
                 7, 14, 30, 999999] else "Custom"
             if len(custom_label) > 20:
                 custom_label = custom_label[:17] + "..."
@@ -354,24 +380,49 @@ class AverageServerStatsView(discord.ui.View):
 
     async def role_id_callback(self, interaction: discord.Interaction):
         try:
-            modal = RoleIdModal(self.cog, self.current_days,
-                                self.current_display_text, self.selected_period, self)
+            modal = RoleIdModal(self.cog, self.current_start_time, self.current_end_time,
+                                self.current_days_back_equiv, self.current_display_text,
+                                self.selected_period, self)
             await interaction.response.send_modal(modal)
         except Exception as e:
             print(f"Error handling role id button: {e}")
             await interaction.followup.send("❌ An error occurred while opening role id modal.", ephemeral=True)
 
-    def create_days_callback(self, days: int, display_text: str):
-        async def callback(interaction: discord.Interaction):
-            self.current_days = days
-            self.current_display_text = display_text
-            self.using_server_default = False
-            self.show_time_buttons = False
-            await self.update_message(interaction)
-        return callback
+    async def days_7_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        self.current_start_time = now - timedelta(days=7)
+        self.current_end_time = now
+        self.current_days_back_equiv = 7
+        self.current_display_text = "7 days"
+        self.using_server_default = False
+        self.show_time_buttons = False
+        await self.update_message(interaction)
+
+    async def days_14_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        self.current_start_time = now - timedelta(days=14)
+        self.current_end_time = now
+        self.current_days_back_equiv = 14
+        self.current_display_text = "14 days"
+        self.using_server_default = False
+        self.show_time_buttons = False
+        await self.update_message(interaction)
+
+    async def days_30_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        self.current_start_time = now - timedelta(days=30)
+        self.current_end_time = now
+        self.current_days_back_equiv = 30
+        self.current_display_text = "30 days"
+        self.using_server_default = False
+        self.show_time_buttons = False
+        await self.update_message(interaction)
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        self.current_days = 999999
+        now = datetime.utcnow()
+        self.current_start_time = None
+        self.current_end_time = now
+        self.current_days_back_equiv = 999999
         self.current_display_text = "All Time"
         self.using_server_default = False
         self.show_time_buttons = False
@@ -397,7 +448,8 @@ class AverageServerStatsView(discord.ui.View):
     async def custom_days_callback(self, interaction: discord.Interaction):
         try:
             modal = AverageTimeModal(
-                self.cog, self.current_days, self.current_display_text, self.selected_role_id, self.selected_period, False, None, self)
+                self.cog, self.current_start_time, self.current_end_time, self.current_days_back_equiv,
+                self.current_display_text, self.selected_role_id, self.selected_period, False, None, self)
             await interaction.response.send_modal(modal)
         except Exception as e:
             print(f"Error handling custom days: {e}")
@@ -406,7 +458,8 @@ class AverageServerStatsView(discord.ui.View):
     async def update_message(self, interaction: discord.Interaction):
         try:
             image_file = await self.cog.generate_server_stats_image(
-                interaction, self.current_days, self.selected_role_id, self.selected_period, self.current_display_text
+                interaction, self.current_start_time, self.current_end_time, self.current_days_back_equiv,
+                self.selected_role_id, self.selected_period, self.current_display_text
             )
             self._update_buttons()
 
@@ -423,11 +476,15 @@ class AverageServerStatsView(discord.ui.View):
 # USER STATS VIEW
 
 class AverageUserStatsView(discord.ui.View):
-    def __init__(self, cog_instance, current_days: int, current_display_text: str, user_id: int, selected_period: str = "day", using_server_default: bool = True):
+    def __init__(self, cog_instance, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = 30, display_text: str = "30 days", user_id: int = None,
+                 selected_period: str = "day", using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
-        self.current_days = current_days
-        self.current_display_text = current_display_text
+        self.current_start_time = start_time
+        self.current_end_time = end_time if end_time else datetime.utcnow()
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.user_id = user_id
         self.selected_period = selected_period
         self.show_time_buttons = False
@@ -460,7 +517,7 @@ class AverageUserStatsView(discord.ui.View):
 
         if self.show_time_buttons:
             all_time_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 999999 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
                 custom_id="average_all_time"
             )
@@ -468,28 +525,28 @@ class AverageUserStatsView(discord.ui.View):
             self.add_item(all_time_button)
 
             days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
                 custom_id="average_days_7"
             )
-            days_7_button.callback = self.create_days_callback(7, "7 days")
+            days_7_button.callback = self.days_7_callback
 
             days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 14 else discord.ButtonStyle.secondary,
                 label="14 Days",
                 custom_id="average_days_14"
             )
-            days_14_button.callback = self.create_days_callback(14, "14 days")
+            days_14_button.callback = self.days_14_callback
 
             days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 30 else discord.ButtonStyle.secondary,
                 label="30 Days",
                 custom_id="average_days_30"
             )
-            days_30_button.callback = self.create_days_callback(30, "30 days")
+            days_30_button.callback = self.days_30_callback
 
             # Use display text for custom button label
-            custom_label = self.current_display_text if self.current_days not in [
+            custom_label = self.current_display_text if self.current_days_back_equiv not in [
                 7, 14, 30, 999999] else "Custom"
             if len(custom_label) > 20:
                 custom_label = custom_label[:17] + "..."
@@ -505,17 +562,41 @@ class AverageUserStatsView(discord.ui.View):
             self.add_item(days_30_button)
             self.add_item(custom_button)
 
-    def create_days_callback(self, days: int, display_text: str):
-        async def callback(interaction: discord.Interaction):
-            self.current_days = days
-            self.current_display_text = display_text
-            self.using_server_default = False
-            self.show_time_buttons = False
-            await self.update_message(interaction)
-        return callback
+    async def days_7_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        self.current_start_time = now - timedelta(days=7)
+        self.current_end_time = now
+        self.current_days_back_equiv = 7
+        self.current_display_text = "7 days"
+        self.using_server_default = False
+        self.show_time_buttons = False
+        await self.update_message(interaction)
+
+    async def days_14_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        self.current_start_time = now - timedelta(days=14)
+        self.current_end_time = now
+        self.current_days_back_equiv = 14
+        self.current_display_text = "14 days"
+        self.using_server_default = False
+        self.show_time_buttons = False
+        await self.update_message(interaction)
+
+    async def days_30_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        self.current_start_time = now - timedelta(days=30)
+        self.current_end_time = now
+        self.current_days_back_equiv = 30
+        self.current_display_text = "30 days"
+        self.using_server_default = False
+        self.show_time_buttons = False
+        await self.update_message(interaction)
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        self.current_days = 999999
+        now = datetime.utcnow()
+        self.current_start_time = None
+        self.current_end_time = now
+        self.current_days_back_equiv = 999999
         self.current_display_text = "All Time"
         self.using_server_default = False
         self.show_time_buttons = False
@@ -541,7 +622,8 @@ class AverageUserStatsView(discord.ui.View):
     async def custom_days_callback(self, interaction: discord.Interaction):
         try:
             modal = AverageTimeModal(
-                self.cog, self.current_days, self.current_display_text, None, self.selected_period, True, self.user_id, self)
+                self.cog, self.current_start_time, self.current_end_time, self.current_days_back_equiv,
+                self.current_display_text, None, self.selected_period, True, self.user_id, self)
             await interaction.response.send_modal(modal)
         except Exception as e:
             print(f"Error handling custom days: {e}")
@@ -550,7 +632,8 @@ class AverageUserStatsView(discord.ui.View):
     async def update_message(self, interaction: discord.Interaction):
         try:
             image_file = await self.cog.generate_user_stats_image(
-                interaction, self.current_days, self.user_id, self.selected_period, self.current_display_text
+                interaction, self.current_start_time, self.current_end_time, self.current_days_back_equiv,
+                self.user_id, self.selected_period, self.current_display_text
             )
             self._update_buttons()
 
@@ -605,91 +688,103 @@ class AverageStats(commands.Cog):
             print(
                 "⚠️ ActivityTracker cog not found! Activity stats will not work properly.")
 
-    # GET SERVER DEFAULT DAYS
-    async def get_server_default_days(self, guild_id: int) -> tuple:
-        """Get the default days back from server settings. Returns (days_back, display_text)"""
+    # GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild_id: int) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
         try:
             settings_cog = self.bot.get_cog('Settings')
             if not settings_cog:
-                return (30, "30 days")
+                end = datetime.utcnow()
+                start = end - timedelta(days=30)
+                return (start, end, "30 days", 30)
 
             settings = await settings_cog.get_guild_settings(guild_id)
             mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.utcnow()
 
             if mode == 'all_time':
-                return (999999, "All Time")
+                return (None, now, "All Time", 999999)
+
             elif mode == 'days_back':
                 days = settings.get('default_days_back') or 30
-                return (days, f"{days} days")
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
             elif mode == 'date_range':
-                from_date = settings.get('date_range_from')
-                to_date = settings.get('date_range_to')
-
-                if from_date:
-                    try:
-                        from_date_obj = datetime.fromisoformat(from_date)
-                        now = datetime.now()
-                        days_diff = (now - from_date_obj).days
-
-                        if to_date:
-                            to_date_obj = datetime.fromisoformat(to_date)
-                            display = f"{from_date_obj.strftime('%m-%d-%Y')} → {to_date_obj.strftime('%m-%d-%Y')}"
-                        else:
-                            display = f"{from_date_obj.strftime('%m-%d-%Y')} → now"
-
-                        return (days_diff, display)
-                    except:
-                        return (30, "Custom")
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
                 else:
-                    return (30, "Custom")
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
             elif mode == 'rolling_window':
-                window_type = settings.get('rolling_window_type', 'week')
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
 
-                if window_type == 'week':
-                    weekday = settings.get('rolling_weekday', 0)  # 0 = Monday
-                    weekday_names = ['Monday', 'Tuesday', 'Wednesday',
-                                     'Thursday', 'Friday', 'Saturday', 'Sunday']
-                    weekday_name = weekday_names[weekday] if 0 <= weekday < 7 else 'Monday'
-
-                    now = datetime.now()
-                    days_since = (now.weekday() - weekday) % 7
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
                     if days_since == 0:
                         days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
 
-                    return (days_since, f"Since last {weekday_name}")
-                elif window_type == 'month':
-                    day_of_month = settings.get('rolling_month_day', 1)
-                    now = datetime.now()
-
-                    if now.day >= day_of_month:
-                        days_since = now.day - day_of_month
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
                     else:
-                        # Go back to previous month
-                        from datetime import date
-                        prev_month = date(now.year, now.month,
-                                          1) - timedelta(days=1)
-                        days_in_prev_month = prev_month.day
-                        days_since = days_in_prev_month - day_of_month + now.day
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Since the {rolling_value}{suffix}"
+                    return (start, now, display, days_back)
 
-                    if days_since == 0:
-                        days_since = 30  # Approximate, for display purposes
-
-                    # Format day with ordinal suffix
-                    if 11 <= day_of_month <= 13:
-                        suffix = "th"
-                    else:
-                        suffix = {1: "st", 2: "nd", 3: "rd"}.get(
-                            day_of_month % 10, "th")
-
-                    return (days_since, f"Since the {day_of_month}{suffix}")
-                else:
-                    return (30, "30 days")
-            else:
-                return (30, "Custom")
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=30)
+            return (start, end, "30 days", 30)
 
         except Exception as e:
-            print(f"Error getting server default days: {e}")
-            return (30, "30 days")
+            import traceback
+            traceback.print_exc()
+            end = datetime.utcnow()
+            start = end - timedelta(days=30)
+            return (start, end, "30 days", 30)
 
     # =========================================================
     # INTERNAL FUNCTION FOR BOTH USER COMMAND TYPES
@@ -755,9 +850,8 @@ class AverageStats(commands.Cog):
                         )
                     return
 
-            # Get server default days and display text
-            default_days, display_text = await self.get_server_default_days(guild.id)
-            days = default_days
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
             period = "day"
 
             if is_interaction:
@@ -766,7 +860,7 @@ class AverageStats(commands.Cog):
             # Generate stats image
             try:
                 if is_interaction:
-                    image_file = await self.generate_user_stats_image(ctx_or_interaction, days, user.id, period, display_text)
+                    image_file = await self.generate_user_stats_image(ctx_or_interaction, start_time, end_time, days_back_equiv, user.id, period, display_text)
                 else:
                     # Create a mock interaction for context
                     class MockInteraction:
@@ -777,10 +871,10 @@ class AverageStats(commands.Cog):
                                                  'is_done': lambda: False})()
 
                     mock_interaction = MockInteraction(guild, author)
-                    image_file = await self.generate_user_stats_image(mock_interaction, days, user.id, period, display_text)
+                    image_file = await self.generate_user_stats_image(mock_interaction, start_time, end_time, days_back_equiv, user.id, period, display_text)
 
                 view = AverageUserStatsView(
-                    self, days, display_text, user.id, period, using_server_default=True)
+                    self, start_time, end_time, days_back_equiv, display_text, user.id, period, using_server_default=True)
 
                 # Send the image
                 if is_interaction:
@@ -872,9 +966,8 @@ class AverageStats(commands.Cog):
                         )
                     return
 
-            # Get server default days and display text
-            default_days, display_text = await self.get_server_default_days(guild.id)
-            days = default_days
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
             role_id = None
             period = "day"
 
@@ -884,7 +977,7 @@ class AverageStats(commands.Cog):
             # Generate stats image
             try:
                 if is_interaction:
-                    image_file = await self.generate_server_stats_image(ctx_or_interaction, days, role_id, period, display_text)
+                    image_file = await self.generate_server_stats_image(ctx_or_interaction, start_time, end_time, days_back_equiv, role_id, period, display_text)
                 else:
                     # Create a mock interaction for context
                     class MockInteraction:
@@ -895,10 +988,10 @@ class AverageStats(commands.Cog):
                                                  'is_done': lambda: False})()
 
                     mock_interaction = MockInteraction(guild, author)
-                    image_file = await self.generate_server_stats_image(mock_interaction, days, role_id, period, display_text)
+                    image_file = await self.generate_server_stats_image(mock_interaction, start_time, end_time, days_back_equiv, role_id, period, display_text)
 
                 view = AverageServerStatsView(
-                    self, days, display_text, role_id, period, using_server_default=True)
+                    self, start_time, end_time, days_back_equiv, display_text, role_id, period, using_server_default=True)
 
                 # Send the image
                 if is_interaction:
@@ -1285,23 +1378,18 @@ class AverageStats(commands.Cog):
             gc.collect()
 
     # QUERY FUNCTIONS
-    async def generate_server_stats_image(self, interaction: discord.Interaction, days_back: int, role_id: str = None, period: str = "day", display_text: str = None) -> discord.File:
+    async def generate_server_stats_image(self, interaction: discord.Interaction, start_time: datetime = None, end_time: datetime = None,
+                                          days_back_equiv: int = 30, role_id: str = None, period: str = "day", display_text: str = None) -> discord.File:
         guild_id = interaction.guild.id
         self.current_guild = interaction.guild
         now = datetime.utcnow()
 
-        # Use the provided display_text, or fall back to days_back if not provided
+        # Use the provided display_text, or create from days_back_equiv
         if display_text is None:
-            if days_back == 999999:
+            if days_back_equiv == 999999:
                 display_text = "All Time"
             else:
-                display_text = f"{days_back} days"
-
-        # Handle All Time (days_back == 999999)
-        if days_back == 999999:
-            start_date = None
-        else:
-            start_date = now - timedelta(days=days_back)
+                display_text = f"{days_back_equiv} days"
 
         role_filter_ids = None
         if role_id and role_id != "none":
@@ -1328,9 +1416,9 @@ class AverageStats(commands.Cog):
 
         try:
             # Calculate effective days for averaging (for All Time, we need to get the actual date range from data)
-            if days_back == 999999:
-                # For All Time, we'll calculate effective days based on the actual data range
-                effective_days = 30  # Fallback
+            effective_days = days_back_equiv
+            if days_back_equiv == 999999:
+                # For All Time, calculate based on actual data range
                 try:
                     async with self.db_cog.pool.acquire() as conn:
                         # Get the oldest recorded date for this guild
@@ -1342,15 +1430,13 @@ class AverageStats(commands.Cog):
                             effective_days = max(1, (now - oldest).days)
                 except:
                     pass
-            else:
-                effective_days = days_back
 
             # Messages - using hourly aggregated table
             messages_result = await self.db_cog.q_server_total_messages(
                 guild_id=guild_id,
                 role_filter_ids=role_filter_ids,
-                start_time=start_date,
-                end_time=now
+                start_time=start_time,
+                end_time=end_time
             )
             total_messages = messages_result.get('total_messages', 0)
             avg_messages_per_day = total_messages / \
@@ -1360,8 +1446,8 @@ class AverageStats(commands.Cog):
             emojis_result = await self.db_cog.q_emoji_server_leaderboard(
                 guild_id=guild_id,
                 role_filter_ids=role_filter_ids,
-                start_time=start_date,
-                end_time=now,
+                start_time=start_time,
+                end_time=end_time,
                 limit=100
             )
             total_emojis = sum(emoji['usage_count'] for emoji in emojis_result)
@@ -1371,8 +1457,8 @@ class AverageStats(commands.Cog):
             voice_result = await self.db_cog.q_server_total_voice(
                 guild_id=guild_id,
                 role_filter_ids=role_filter_ids,
-                start_time=start_date,
-                end_time=now
+                start_time=start_time,
+                end_time=end_time
             )
             total_voice_minutes = voice_result.get('total_seconds', 0) / 60
             avg_voice_per_day = total_voice_minutes / \
@@ -1382,8 +1468,8 @@ class AverageStats(commands.Cog):
             invites_result = await self.db_cog.q_invite_leaderboard(
                 guild_id=guild_id,
                 role_filter_ids=role_filter_ids,
-                start_time=start_date,
-                end_time=now,
+                start_time=start_time,
+                end_time=end_time,
                 limit=100
             )
             total_invites = sum(invite['valid_invites']
@@ -1397,7 +1483,8 @@ class AverageStats(commands.Cog):
                     role_id) if role_id and role_id != "none" else None
                 total_activities = await activity_cog.db.get_server_total_activity_sessions(
                     guild_id=guild_id,
-                    days=effective_days,
+                    start_time=start_time,
+                    end_time=end_time,
                     role_id=role_id_int
                 )
             else:
@@ -1430,28 +1517,24 @@ class AverageStats(commands.Cog):
             traceback.print_exc()
             return await self._create_error_image(interaction)
 
-    async def generate_user_stats_image(self, interaction: discord.Interaction, days_back: int, user_id: int, period: str = "day", display_text: str = None) -> discord.File:
+    async def generate_user_stats_image(self, interaction: discord.Interaction, start_time: datetime = None, end_time: datetime = None,
+                                        days_back_equiv: int = 30, user_id: int = None, period: str = "day", display_text: str = None) -> discord.File:
         guild_id = interaction.guild.id
         self.current_guild = interaction.guild
         now = datetime.utcnow()
 
-        # Use the provided display_text, or fall back to days_back if not provided
+        # Use the provided display_text, or create from days_back_equiv
         if display_text is None:
-            if days_back == 999999:
+            if days_back_equiv == 999999:
                 display_text = "All Time"
             else:
-                display_text = f"{days_back} days"
-
-        # Handle All Time (days_back == 999999)
-        if days_back == 999999:
-            start_date = None
-        else:
-            start_date = now - timedelta(days=days_back)
+                display_text = f"{days_back_equiv} days"
 
         try:
             # Calculate effective days for All Time
-            if days_back == 999999:
-                effective_days = 30
+            effective_days = days_back_equiv
+            if days_back_equiv == 999999:
+                # For All Time, calculate based on actual data range
                 try:
                     async with self.db_cog.pool.acquire() as conn:
                         # Get the oldest recorded date for this user in this guild
@@ -1463,15 +1546,13 @@ class AverageStats(commands.Cog):
                             effective_days = max(1, (now - oldest).days)
                 except:
                     pass
-            else:
-                effective_days = days_back
 
             # Messages - using hourly aggregated table
             messages_result = await self.db_cog.q_user_total_messages(
                 guild_id=guild_id,
                 user_id=user_id,
-                start_time=start_date,
-                end_time=now
+                start_time=start_time,
+                end_time=end_time
             )
             total_messages = messages_result.get('total_messages', 0)
             avg_messages_per_day = total_messages / \
@@ -1482,8 +1563,8 @@ class AverageStats(commands.Cog):
                 guild_id=guild_id,
                 user_id=user_id,
                 limit=100,
-                start_time=start_date,
-                end_time=now
+                start_time=start_time,
+                end_time=end_time
             )
             total_emojis = sum(emoji['usage_count'] for emoji in user_emojis)
             avg_emojis_per_day = total_emojis / effective_days if effective_days > 0 else 0
@@ -1492,8 +1573,8 @@ class AverageStats(commands.Cog):
             voice_result = await self.db_cog.q_user_total_voice(
                 guild_id=guild_id,
                 user_id=user_id,
-                start_time=start_date,
-                end_time=now
+                start_time=start_time,
+                end_time=end_time
             )
             total_voice_minutes = voice_result.get('total_seconds', 0) / 60
             avg_voice_per_day = total_voice_minutes / \
@@ -1503,8 +1584,8 @@ class AverageStats(commands.Cog):
             invites_result = await self.db_cog.q_user_invite_stats(
                 guild_id=guild_id,
                 user_id=user_id,
-                start_time=start_date,
-                end_time=now
+                start_time=start_time,
+                end_time=end_time
             )
             total_invites = invites_result.get('valid_invites', 0)
             avg_invites_per_day = total_invites / effective_days if effective_days > 0 else 0
@@ -1515,7 +1596,8 @@ class AverageStats(commands.Cog):
                 total_activities = await activity_cog.db.get_user_total_activity_sessions(
                     guild_id=guild_id,
                     user_id=user_id,
-                    days=effective_days
+                    start_time=start_time,
+                    end_time=end_time
                 )
             else:
                 total_activities = 0
@@ -1690,11 +1772,11 @@ class AverageStats(commands.Cog):
                 return
 
         try:
-            # Get server default days and display text
-            default_days, display_text = await self.get_server_default_days(interaction.guild.id)
-            image_file = await self.generate_server_stats_image(interaction, default_days, None, "day", display_text)
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(interaction.guild.id)
+            image_file = await self.generate_server_stats_image(interaction, start_time, end_time, days_back_equiv, None, "day", display_text)
             view = AverageServerStatsView(
-                self, default_days, display_text, None, "day", using_server_default=True)
+                self, start_time, end_time, days_back_equiv, display_text, None, "day", using_server_default=True)
             await interaction.followup.send(file=image_file, view=view)
         except Exception as e:
             print(f"Error in average server command: {e}")
@@ -1724,11 +1806,11 @@ class AverageStats(commands.Cog):
                 return
 
         try:
-            # Get server default days and display text
-            default_days, display_text = await self.get_server_default_days(interaction.guild.id)
-            image_file = await self.generate_user_stats_image(interaction, default_days, user.id, "day", display_text)
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(interaction.guild.id)
+            image_file = await self.generate_user_stats_image(interaction, start_time, end_time, days_back_equiv, user.id, "day", display_text)
             view = AverageUserStatsView(
-                self, default_days, display_text, user.id, "day", using_server_default=True)
+                self, start_time, end_time, days_back_equiv, display_text, user.id, "day", using_server_default=True)
             await interaction.followup.send(file=image_file, view=view)
         except Exception as e:
             print(f"Error in average user command: {e}")

@@ -22,6 +22,7 @@ from pathlib import Path
 import pytz
 import sys
 import gc
+import re
 from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
 
 root_dir = Path(__file__).parent.parent
@@ -787,20 +788,18 @@ class ActivityDatabase:
             raise DatabaseConnectionError(
                 "Failed to initialize database", original=e)
 
-    async def get_user_activity_stats(self, guild_id: int, user_id: int, days: int,
+    async def get_user_activity_stats(self, guild_id: int, user_id: int, start_time: datetime = None,
+                                      end_time: datetime = None, days_back_equiv: int = 14,
                                       role_id: int = None, sort_by: str = "time") -> List[Dict]:
         if not self.pool:
             raise DatabaseConnectionError("No database pool available")
 
-        if days == 999999:
-            time_condition = ""
-            time_params = []
-        else:
-            time_condition = "AND hour >= NOW() - INTERVAL '1 day' * $3"
-            time_params = [days]
+        # If end_time not provided, use current time
+        if end_time is None:
+            end_time = datetime.now(timezone.utc)
 
         async with self.pool.acquire() as conn:
-            query = f'''
+            query = '''
                 SELECT
                     display_name,
                     activity_type,
@@ -809,18 +808,25 @@ class ActivityDatabase:
                 FROM activity_sessions_hourly
                 WHERE guild_id = $1
                 AND user_id = $2
-                {time_condition}
-                GROUP BY display_name, activity_type
             '''
+            params = [guild_id, user_id]
+            param_counter = 3
 
-            params = [guild_id, user_id] + time_params
-            param_counter = len(params) + 1
+            if start_time is not None:
+                query += f" AND hour >= ${param_counter}"
+                params.append(start_time)
+                param_counter += 1
+
+            query += f" AND hour <= ${param_counter}"
+            params.append(end_time)
+            param_counter += 1
 
             if role_id:
                 query += f" AND ${param_counter} = ANY(role_ids)"
                 params.append(role_id)
                 param_counter += 1
 
+            query += " GROUP BY display_name, activity_type"
             query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
 
             try:
@@ -840,20 +846,18 @@ class ActivityDatabase:
                 raise DatabaseQueryError(
                     "Failed to fetch user activity stats", original=e)
 
-    async def get_server_activity_stats(self, guild_id: int, days: int, role_id: int = None,
-                                        sort_by: str = "users") -> List[Dict]:
+    async def get_server_activity_stats(self, guild_id: int, start_time: datetime = None,
+                                        end_time: datetime = None, days_back_equiv: int = 14,
+                                        role_id: int = None, sort_by: str = "users") -> List[Dict]:
         if not self.pool:
             raise DatabaseConnectionError("No database pool available")
 
-        if days == 999999:
-            time_condition = ""
-            time_params = []
-        else:
-            time_condition = "AND ash.hour >= NOW() - INTERVAL '1 day' * $2"
-            time_params = [days]
+        # If end_time not provided, use current time
+        if end_time is None:
+            end_time = datetime.now(timezone.utc)
 
         async with self.pool.acquire() as conn:
-            query = f'''
+            query = '''
                 SELECT
                     ash.display_name,
                     ash.activity_type,
@@ -862,11 +866,18 @@ class ActivityDatabase:
                     SUM(ash.session_count) as session_count
                 FROM activity_sessions_hourly ash
                 WHERE ash.guild_id = $1
-                {time_condition}
             '''
+            params = [guild_id]
+            param_counter = 2
 
-            params = [guild_id] + time_params
-            param_counter = len(params) + 1
+            if start_time is not None:
+                query += f" AND ash.hour >= ${param_counter}"
+                params.append(start_time)
+                param_counter += 1
+
+            query += f" AND ash.hour <= ${param_counter}"
+            params.append(end_time)
+            param_counter += 1
 
             if role_id:
                 query += f''' AND ash.user_id IN (
@@ -898,75 +909,89 @@ class ActivityDatabase:
                 raise DatabaseQueryError(
                     "Failed to fetch server activity stats", original=e)
 
-    async def get_server_total_activity_sessions(self, guild_id: int, days: int, role_id: int = None) -> int:
+    async def get_server_total_activity_sessions(self, guild_id: int, start_time: datetime = None,
+                                                 end_time: datetime = None, days_back_equiv: int = 14,
+                                                 role_id: int = None) -> int:
         if not self.pool:
             return 0
 
-        if days == 999999:
-            time_condition = ""
-            time_params = []
-        else:
-            time_condition = "AND hour >= NOW() - INTERVAL '1 day' * $2"
-            time_params = [days]
+        # If end_time not provided, use current time
+        if end_time is None:
+            end_time = datetime.now(timezone.utc)
 
         async with self.pool.acquire() as conn:
-            query = f'''
+            query = '''
                 SELECT COALESCE(SUM(session_count), 0) as total_sessions
                 FROM activity_sessions_hourly
                 WHERE guild_id = $1
-                {time_condition}
             '''
-            params = [guild_id] + time_params
+            params = [guild_id]
+            param_counter = 2
+
+            if start_time is not None:
+                query += f" AND hour >= ${param_counter}"
+                params.append(start_time)
+                param_counter += 1
+
+            query += f" AND hour <= ${param_counter}"
+            params.append(end_time)
+            param_counter += 1
 
             if role_id:
-                query += f" AND ${len(params)+1} = ANY(role_ids)"
+                query += f" AND ${param_counter} = ANY(role_ids)"
                 params.append(role_id)
+                param_counter += 1
 
             query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
 
             row = await conn.fetchrow(query, *params)
             return row['total_sessions'] if row else 0
 
-    async def get_user_total_activity_sessions(self, guild_id: int, user_id: int, days: int) -> int:
+    async def get_user_total_activity_sessions(self, guild_id: int, user_id: int, start_time: datetime = None,
+                                               end_time: datetime = None, days_back_equiv: int = 14) -> int:
         if not self.pool:
             return 0
 
-        if days == 999999:
-            time_condition = ""
-            time_params = []
-        else:
-            time_condition = "AND hour >= NOW() - INTERVAL '1 day' * $3"
-            time_params = [days]
+        # If end_time not provided, use current time
+        if end_time is None:
+            end_time = datetime.now(timezone.utc)
 
         async with self.pool.acquire() as conn:
-            query = f'''
+            query = '''
                 SELECT COALESCE(SUM(session_count), 0) as total_sessions
                 FROM activity_sessions_hourly
                 WHERE guild_id = $1
                 AND user_id = $2
-                {time_condition}
             '''
-            params = [guild_id, user_id] + time_params
+            params = [guild_id, user_id]
+            param_counter = 3
+
+            if start_time is not None:
+                query += f" AND hour >= ${param_counter}"
+                params.append(start_time)
+                param_counter += 1
+
+            query += f" AND hour <= ${param_counter}"
+            params.append(end_time)
+            param_counter += 1
 
             query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
 
             row = await conn.fetchrow(query, *params)
             return row['total_sessions'] if row else 0
 
-    async def get_leaderboard_stats(self, guild_id: int, category: str, days: int,
+    async def get_leaderboard_stats(self, guild_id: int, category: str, start_time: datetime = None,
+                                    end_time: datetime = None, days_back_equiv: int = 14,
                                     role_id: int = None, sort_by: str = "users") -> List[Dict]:
         if not self.pool:
             raise DatabaseConnectionError("No database pool available")
 
-        if days == 999999:
-            time_condition = ""
-            time_params = []
-        else:
-            time_condition = "AND ash.hour >= NOW() - INTERVAL '1 day' * $2"
-            time_params = [days]
+        # If end_time not provided, use current time
+        if end_time is None:
+            end_time = datetime.now(timezone.utc)
 
         async with self.pool.acquire() as conn:
-            query = f'''
+            query = '''
                 SELECT
                     ash.display_name,
                     ash.activity_type,
@@ -975,11 +1000,18 @@ class ActivityDatabase:
                     SUM(ash.session_count) as session_count
                 FROM activity_sessions_hourly ash
                 WHERE ash.guild_id = $1
-                {time_condition}
             '''
+            params = [guild_id]
+            param_counter = 2
 
-            params = [guild_id] + time_params
-            param_counter = len(params) + 1
+            if start_time is not None:
+                query += f" AND ash.hour >= ${param_counter}"
+                params.append(start_time)
+                param_counter += 1
+
+            query += f" AND ash.hour <= ${param_counter}"
+            params.append(end_time)
+            param_counter += 1
 
             if category != "all":
                 query += f" AND ash.activity_type = ${param_counter}"
@@ -1017,7 +1049,8 @@ class ActivityDatabase:
                     "Failed to fetch leaderboard stats", original=e)
 
     async def get_user_leaderboard_stats(self, guild_id: int, user_id: int, category: str,
-                                         days: int, sort_by: str = "time") -> List[Dict]:
+                                         start_time: datetime = None, end_time: datetime = None,
+                                         days_back_equiv: int = 14, sort_by: str = "time") -> List[Dict]:
         """
         Get leaderboard-style stats for a specific user (top activities per category,
         sorted by time/sessions, for use in the per-user leaderboard view).
@@ -1025,15 +1058,12 @@ class ActivityDatabase:
         if not self.pool:
             raise DatabaseConnectionError("No database pool available")
 
-        if days == 999999:
-            time_condition = ""
-            time_params = []
-        else:
-            time_condition = "AND hour >= NOW() - INTERVAL '1 day' * $3"
-            time_params = [days]
+        # If end_time not provided, use current time
+        if end_time is None:
+            end_time = datetime.now(timezone.utc)
 
         async with self.pool.acquire() as conn:
-            query = f'''
+            query = '''
                 SELECT
                     display_name,
                     activity_type,
@@ -1042,11 +1072,18 @@ class ActivityDatabase:
                 FROM activity_sessions_hourly
                 WHERE guild_id = $1
                 AND user_id = $2
-                {time_condition}
             '''
+            params = [guild_id, user_id]
+            param_counter = 3
 
-            params = [guild_id, user_id] + time_params
-            param_counter = len(params) + 1
+            if start_time is not None:
+                query += f" AND hour >= ${param_counter}"
+                params.append(start_time)
+                param_counter += 1
+
+            query += f" AND hour <= ${param_counter}"
+            params.append(end_time)
+            param_counter += 1
 
             if category != "all":
                 query += f" AND activity_type = ${param_counter}"
@@ -1208,30 +1245,36 @@ class ActivityDatabase:
                                    activity_type, display_name)
 
     async def get_user_activity_days_and_streak(self, guild_id: int, user_id: int, activity_name: str,
-                                                activity_type: str, days: int) -> Dict:
+                                                activity_type: str, start_time: datetime = None,
+                                                end_time: datetime = None, days_back_equiv: int = 14) -> Dict:
         if not self.pool:
             raise DatabaseConnectionError("No database pool available")
 
-        if days == 999999:
-            time_condition = ""
-            time_params = []
-        else:
-            time_condition = "AND hour >= NOW() - INTERVAL '1 day' * $5"
-            time_params = [days]
+        # If end_time not provided, use current time
+        if end_time is None:
+            end_time = datetime.now(timezone.utc)
 
         async with self.pool.acquire() as conn:
-            query = f'''
+            query = '''
                 SELECT DISTINCT DATE(hour) as activity_date
                 FROM activity_sessions_hourly
                 WHERE guild_id = $1
                 AND user_id = $2
                 AND activity_type = $3
                 AND display_name = $4
-                {time_condition}
-                ORDER BY activity_date
             '''
-            params = [guild_id, user_id, activity_type,
-                      activity_name] + time_params
+            params = [guild_id, user_id, activity_type, activity_name]
+            param_counter = 5
+
+            if start_time is not None:
+                query += f" AND hour >= ${param_counter}"
+                params.append(start_time)
+                param_counter += 1
+
+            query += f" AND hour <= ${param_counter}"
+            params.append(end_time)
+            param_counter += 1
+
             query, params = await self._apply_bot_filter(query, params, guild_id, 'activity_sessions_hourly')
 
             try:
@@ -1730,7 +1773,7 @@ _INVISIBLE_RECTS = [
 # =========================================================
 
 
-async def generate_user_activity_image(guild: discord.Guild, user: discord.Member, days_back,
+async def generate_user_activity_image(guild: discord.Guild, user: discord.Member, display_text: str,
                                        activity_data: list, streak_stats: dict, sort_by: str = "time"):
     try:
         template_path = BASE_DIR / "assets" / "images" / "activity user final png.png"
@@ -1743,12 +1786,11 @@ async def generate_user_activity_image(guild: discord.Guild, user: discord.Membe
 
         await _draw_name_and_avatar_on_image(image, draw, user.name, user.display_avatar.url)
 
-        time_period_text = days_back if isinstance(
-            days_back, str) else f"{days_back} days"
+        # Use display_text for time period
         draw_text_with_stroke(draw, (550, 38), datetime.now().strftime("%B %d, %Y"),
                               font_small, "white", "black", 1)
         draw_text_with_stroke(
-            draw, (630, 457), time_period_text, font_small, "white", "black", 1)
+            draw, (630, 457), display_text, font_small, "white", "black", 1)
 
         if activity_data and len(activity_data) > 0:
             activities_by_type = {
@@ -1832,7 +1874,7 @@ async def generate_user_activity_image(guild: discord.Guild, user: discord.Membe
         return discord.File(img_bytes, filename="user_activity_error.png")
 
 
-async def generate_server_activity_image(guild: discord.Guild, days_back, activity_data: list,
+async def generate_server_activity_image(guild: discord.Guild, display_text: str, activity_data: list,
                                          role_id: str = None, sort_by: str = "users", db_pool=None):
     try:
         template_path = BASE_DIR / "assets" / "images" / "activity server final png.png"
@@ -1869,10 +1911,8 @@ async def generate_server_activity_image(guild: discord.Guild, days_back, activi
         draw_text_with_stroke(draw, (550, 38), datetime.now().strftime("%B %d, %Y"),
                               font_small, "white", "black", 1)
 
-        time_period_text = days_back if isinstance(
-            days_back, str) else f"{days_back} days"
         draw_text_with_stroke(
-            draw, (630, 457), time_period_text, font_small, "white", "black", 1)
+            draw, (630, 457), display_text, font_small, "white", "black", 1)
 
         if activity_data:
             activities_by_type: Dict[str, list] = {}
@@ -1920,7 +1960,7 @@ async def generate_server_activity_image(guild: discord.Guild, days_back, activi
 
 
 async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_data: list,
-                                              category: str, days_back, role_id: str = None,
+                                              category: str, display_text: str, role_id: str = None,
                                               sort_by: str = "users", page: int = 0, db_pool=None,
                                               target_user: discord.Member = None):
     """
@@ -1972,10 +2012,8 @@ async def generate_activity_leaderboard_image(guild: discord.Guild, leaderboard_
         draw_text_with_stroke(draw, (70, 424), role_text,
                               font_small, "white", "black", 1)
 
-        time_period_text = days_back if isinstance(
-            days_back, str) else f"{days_back} days"
         draw_text_with_stroke(
-            draw, (630, 422), time_period_text, font_small, "white", "black", 1)
+            draw, (630, 422), display_text, font_small, "white", "black", 1)
         draw_text_with_stroke(draw, (550, 38), datetime.now().strftime("%B %d, %Y"),
                               font_small, "white", "black", 1)
 
@@ -2180,6 +2218,8 @@ async def generate_activity_streak_image(guild: discord.Guild, streak_data: list
         draw_text_with_stroke(draw, (550, 38), datetime.now().strftime("%B %d, %Y"),
                               font_small, "white", "black", 1)
 
+        # Streak data is not time‑windowed, so no time period label here
+
         if streak_data:
             def streak_value_getter(row):
                 days = row.get('best_streak_days', 0) or 0
@@ -2336,7 +2376,11 @@ class TimeModal(discord.ui.Modal, title='Custom Time Period'):
                 return
             await interaction.response.defer()
             view = self.view
-            view.days = days
+            now = datetime.now(timezone.utc)
+            view.start_time = now - timedelta(days=days)
+            view.end_time = now
+            view.days_back_equiv = days
+            view.display_text = f"{days} days"
             view.using_server_default = False
             view.show_time_buttons = False
             view.page = 0
@@ -2402,14 +2446,18 @@ class ActivityView(discord.ui.View):
     """
 
     def __init__(self, cog, guild: discord.Guild, command_type: str,
-                 initial_days: int = 14, initial_role: str = "none",
+                 start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14,
+                 display_text: str = "14 days", initial_role: str = "none",
                  target_user: discord.Member = None, initial_category: str = "all",
                  initial_sort: str = "time", page: int = 0, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog
         self.guild = guild
         self.command_type = command_type
-        self.days = initial_days
+        self.start_time = start_time
+        self.end_time = end_time if end_time else datetime.now(timezone.utc)
+        self.days_back_equiv = days_back_equiv
+        self.display_text = display_text
         self.role_id = initial_role
         self.target_user = target_user
         self.category = initial_category
@@ -2472,7 +2520,7 @@ class ActivityView(discord.ui.View):
 
             if self.show_time_buttons:
                 all_time_button = discord.ui.Button(
-                    style=discord.ButtonStyle.primary if self.days == 999999 else discord.ButtonStyle.secondary,
+                    style=discord.ButtonStyle.primary if self.days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                     label="All Time",
                     custom_id="all_time"
                 )
@@ -2481,7 +2529,7 @@ class ActivityView(discord.ui.View):
 
                 for days in TIME_PERIODS:
                     days_button = discord.ui.Button(
-                        style=discord.ButtonStyle.primary if self.days == days else discord.ButtonStyle.secondary,
+                        style=discord.ButtonStyle.primary if self.days_back_equiv == days else discord.ButtonStyle.secondary,
                         label=f"{days} Days",
                         custom_id=f"days_{days}"
                     )
@@ -2490,7 +2538,7 @@ class ActivityView(discord.ui.View):
 
                 custom_button = discord.ui.Button(
                     style=discord.ButtonStyle.success,
-                    label=f"Custom ({self.days}d)" if self.days not in TIME_PERIODS and self.days != 999999 else "Custom",
+                    label=f"Custom ({self.days_back_equiv}d)" if self.days_back_equiv not in TIME_PERIODS and self.days_back_equiv != 999999 else "Custom",
                     custom_id="custom_days"
                 )
                 custom_button.callback = self.custom_days_callback
@@ -2527,8 +2575,16 @@ class ActivityView(discord.ui.View):
     async def handle_button_click(self, interaction: discord.Interaction, days: int = None):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
-        if days:
-            self.days = days
+        if days is not None:
+            now = datetime.now(timezone.utc)
+            if days == 999999:
+                self.start_time = None
+                self.display_text = "All Time"
+            else:
+                self.start_time = now - timedelta(days=days)
+                self.display_text = f"{days} days"
+            self.end_time = now
+            self.days_back_equiv = days
             self.using_server_default = False
             self.show_time_buttons = False
             self.page = 0
@@ -2536,8 +2592,6 @@ class ActivityView(discord.ui.View):
 
     async def update_message(self, interaction: discord.Interaction):
         try:
-            display_days = "All Time" if self.days == 999999 else self.days
-
             if self.command_type == "user":
                 role_id_param = None
                 if self.role_id != "none":
@@ -2547,11 +2601,11 @@ class ActivityView(discord.ui.View):
                         pass
 
                 stats = await self.cog.db.get_user_activity_stats(
-                    self.guild.id, self.target_user.id, self.days, role_id_param, self.sort_by)
+                    self.guild.id, self.target_user.id, self.start_time, self.end_time, self.days_back_equiv, role_id_param, self.sort_by)
                 streak_stats = await self.cog.db.get_user_streak_stats(
                     self.guild.id, self.target_user.id)
                 file = await generate_user_activity_image(
-                    self.guild, self.target_user, display_days, stats, streak_stats, self.sort_by)
+                    self.guild, self.target_user, self.display_text, stats, streak_stats, self.sort_by)
                 self._update_components()
                 await interaction.edit_original_response(attachments=[file], view=self)
 
@@ -2564,9 +2618,9 @@ class ActivityView(discord.ui.View):
                         pass
 
                 stats = await self.cog.db.get_server_activity_stats(
-                    self.guild.id, self.days, role_id_param, self.sort_by)
+                    self.guild.id, self.start_time, self.end_time, self.days_back_equiv, role_id_param, self.sort_by)
                 file = await generate_server_activity_image(
-                    self.guild, display_days, stats, self.role_id, self.sort_by)
+                    self.guild, self.display_text, stats, self.role_id, self.sort_by)
                 self._update_components()
                 await interaction.edit_original_response(attachments=[file], view=self)
 
@@ -2579,7 +2633,7 @@ class ActivityView(discord.ui.View):
                         pass
 
                 stats = await self.cog.db.get_leaderboard_stats(
-                    self.guild.id, self.category, self.days, role_id_param, self.sort_by)
+                    self.guild.id, self.category, self.start_time, self.end_time, self.days_back_equiv, role_id_param, self.sort_by)
                 self.last_stats = stats
 
                 total_pages = max(
@@ -2588,14 +2642,14 @@ class ActivityView(discord.ui.View):
                     self.page = max(0, total_pages - 1)
 
                 file = await generate_activity_leaderboard_image(
-                    self.guild, stats, self.category, display_days,
+                    self.guild, stats, self.category, self.display_text,
                     self.role_id, self.sort_by, self.page)
                 self._update_components()
                 await interaction.edit_original_response(attachments=[file], view=self)
 
             elif self.command_type == "user_leaderboard":
                 stats = await self.cog.db.get_user_leaderboard_stats(
-                    self.guild.id, self.target_user.id, self.category, self.days, self.sort_by)
+                    self.guild.id, self.target_user.id, self.category, self.start_time, self.end_time, self.days_back_equiv, self.sort_by)
                 self.last_stats = stats
 
                 total_pages = max(
@@ -2604,7 +2658,7 @@ class ActivityView(discord.ui.View):
                     self.page = max(0, total_pages - 1)
 
                 file = await generate_activity_leaderboard_image(
-                    self.guild, stats, self.category, display_days,
+                    self.guild, stats, self.category, self.display_text,
                     "none", self.sort_by, self.page,
                     target_user=self.target_user)
                 self._update_components()
@@ -3238,30 +3292,105 @@ class ActivityTracker(commands.Cog):
             return False
 
     # =========================================================
-    # GET SERVER DEFAULT DAYS
+    # GET SERVER DEFAULT TIME RANGE
     # =========================================================
 
-    async def get_server_default_days(self, guild_id: int) -> tuple:
-        """Get the default days back from server settings. Returns (days_back, display_text)"""
+    async def get_server_default_time_range(self, guild_id: int) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
         try:
             settings_cog = self.bot.get_cog('Settings')
             if not settings_cog:
-                return (14, "14 days")
+                end = datetime.now(timezone.utc)
+                start = end - timedelta(days=14)
+                return (start, end, "14 days", 14)
 
             settings = await settings_cog.get_guild_settings(guild_id)
             mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.now(timezone.utc)
 
             if mode == 'all_time':
-                return (999999, "All Time")
+                return (None, now, "All Time", 999999)
+
             elif mode == 'days_back':
                 days = settings.get('default_days_back') or 14
-                return (days, f"{days} days")
-            else:
-                return (14, "Custom")
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Since the {rolling_value}{suffix}"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=14)
+            return (start, end, "14 days", 14)
 
         except Exception as e:
-            print(f"Error getting server default days: {e}")
-            return (14, "14 days")
+            import traceback
+            traceback.print_exc()
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=14)
+            return (start, end, "14 days", 14)
 
     # =========================================================
     # SHARED COMMAND HANDLER
@@ -3293,56 +3422,57 @@ class ActivityTracker(commands.Cog):
                     await send_method(msg, delete_after=5)
                 return
 
-            default_days, time_display = await self.get_server_default_days(guild.id)
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
 
             # ---- user activity ----
             if command_type == "user":
                 if target_user is None:
                     target_user = user
 
-                view = ActivityView(self, guild, "user", default_days, "none",
-                                    target_user, "all", "time", 0, using_server_default=True)
-                stats = await self.db.get_user_activity_stats(guild.id, target_user.id, default_days, None, "time")
+                view = ActivityView(self, guild, "user", start_time, end_time, days_back_equiv, display_text,
+                                    "none", target_user, "all", "time", 0, using_server_default=True)
+                stats = await self.db.get_user_activity_stats(guild.id, target_user.id, start_time, end_time, days_back_equiv, None, "time")
                 streak_stats = await self.db.get_user_streak_stats(guild.id, target_user.id)
-                file = await generate_user_activity_image(guild, target_user, time_display, stats, streak_stats, "time")
+                file = await generate_user_activity_image(guild, target_user, display_text, stats, streak_stats, "time")
                 await send_method(file=file, view=view)
 
             # ---- server activity ----
             elif command_type == "server":
-                view = ActivityView(self, guild, "server", default_days, "none",
-                                    None, "all", "users", 0, using_server_default=True)
-                stats = await self.db.get_server_activity_stats(guild.id, default_days, None, "users")
-                file = await generate_server_activity_image(guild, time_display, stats, "none", "users")
+                view = ActivityView(self, guild, "server", start_time, end_time, days_back_equiv, display_text,
+                                    "none", None, "all", "users", 0, using_server_default=True)
+                stats = await self.db.get_server_activity_stats(guild.id, start_time, end_time, days_back_equiv, None, "users")
+                file = await generate_server_activity_image(guild, display_text, stats, "none", "users")
                 await send_method(file=file, view=view)
 
             # ---- leaderboard (server or per-user) ----
             elif command_type == "leaderboard":
                 if target_user is not None:
                     # Per-user leaderboard
-                    view = ActivityView(self, guild, "user_leaderboard", default_days, "none",
-                                        target_user, "all", "time", 0, using_server_default=True)
+                    view = ActivityView(self, guild, "user_leaderboard", start_time, end_time, days_back_equiv, display_text,
+                                        "none", target_user, "all", "time", 0, using_server_default=True)
                     stats = await self.db.get_user_leaderboard_stats(
-                        guild.id, target_user.id, "all", default_days, "time")
+                        guild.id, target_user.id, "all", start_time, end_time, days_back_equiv, "time")
                     view.last_stats = stats
                     file = await generate_activity_leaderboard_image(
-                        guild, stats, "all", time_display, "none", "time", 0,
+                        guild, stats, "all", display_text, "none", "time", 0,
                         target_user=target_user)
                 else:
                     # Server leaderboard
-                    view = ActivityView(self, guild, "leaderboard", default_days, "none",
-                                        None, "all", "users", 0, using_server_default=True)
-                    stats = await self.db.get_leaderboard_stats(guild.id, "all", default_days, None, "users")
+                    view = ActivityView(self, guild, "leaderboard", start_time, end_time, days_back_equiv, display_text,
+                                        "none", None, "all", "users", 0, using_server_default=True)
+                    stats = await self.db.get_leaderboard_stats(guild.id, "all", start_time, end_time, days_back_equiv, None, "users")
                     view.last_stats = stats
                     file = await generate_activity_leaderboard_image(
-                        guild, stats, "all", time_display, "none", "users", 0)
+                        guild, stats, "all", display_text, "none", "users", 0)
                 await send_method(file=file, view=view)
 
             # ---- streak (server or per-user) ----
             elif command_type == "streak":
                 if target_user is not None:
                     # Per-user streak
-                    view = ActivityView(self, guild, "user_streak", default_days, "none",
-                                        target_user, "all", "time", 0, using_server_default=True)
+                    view = ActivityView(self, guild, "user_streak", start_time, end_time, days_back_equiv, display_text,
+                                        "none", target_user, "all", "time", 0, using_server_default=True)
                     stats = await self.db.get_user_activity_streak_stats(guild.id, target_user.id)
                     file = await generate_activity_streak_image(
                         guild, stats, "none",
@@ -3350,8 +3480,8 @@ class ActivityTracker(commands.Cog):
                         target_user=target_user)
                 else:
                     # Server streak
-                    view = ActivityView(self, guild, "streak", default_days, "none",
-                                        None, "all", "users", 0, using_server_default=True)
+                    view = ActivityView(self, guild, "streak", start_time, end_time, days_back_equiv, display_text,
+                                        "none", None, "all", "users", 0, using_server_default=True)
                     stats = await self.db.get_activity_streak_stats(guild.id, None)
                     file = await generate_activity_streak_image(
                         guild, stats, "none",
