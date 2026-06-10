@@ -6,7 +6,6 @@ const Login = () => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
 
-  // Get the current hostname for API URL (now pointing to FastAPI on port 8000)
   const getApiUrl = () => {
     return window.location.origin;
   };
@@ -43,10 +42,7 @@ const Login = () => {
       
       const data = await response.json();
       
-      
       if (data.authenticated) {
-       
-        
         setUser(data.user);
         localStorage.setItem('user', JSON.stringify(data.user));
       } else {
@@ -94,25 +90,32 @@ const Login = () => {
     window.location.href = '/Manage Servers';
   };
 
+  const handleMyCart = (e) => {
+    e.preventDefault();
+    window.location.href = '/My Cart/index.html';
+  };
+
+  const handleMySubscriptions = (e) => {
+    e.preventDefault();
+    window.location.href = '/My Subscriptions/index.html';
+  };
+
   const toggleDropdown = () => {
     setDropdownOpen(!dropdownOpen);
   };
 
   const getDisplayName = () => {
     if (!user) return '';
-    // Try different possible name fields
     return user.global_name || user.username || 'User';
   };
 
   const getAvatarUrl = () => {
     if (!user) return '';
     
-    // Check if user has avatar and id
     if (user.avatar && user.id) {
       return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=32`;
     }
     
-    // Fallback to default avatar
     return 'https://cdn.discordapp.com/embed/avatars/0.png';
   };
 
@@ -144,6 +147,12 @@ const Login = () => {
           <div className="dropdown-menu">
             <a href="/Manage Servers" className="dropdown-item" onClick={handleManageServers}>
               Manage Servers
+            </a>
+            <a href="/My Cart/index.html" className="dropdown-item" onClick={handleMyCart}>
+              My Cart
+            </a>
+            <a href="/My Subscriptions/index.html" className="dropdown-item" onClick={handleMySubscriptions}>
+              My Subscriptions
             </a>
             <button className="dropdown-item logout-item" onClick={handleLogout}>
               Log Out
@@ -280,32 +289,28 @@ const Login = () => {
             }
 
             .dropdown-menu {
-              right: auto;
-              left: -80px;
-              min-width: 160px;
-            }
-
-            @media (max-width: 480px) {
-              .dropdown-menu {
-                left: -60px;
-              }
-            }
-
-            @media (max-width: 360px) {
-              .dropdown-menu {
-                left: -40px;
-              }
+              right: 0;
+              left: auto;
+              transform: translateX(20%);
+              min-width: 170px;
             }
           }
 
           @media (max-width: 480px) {
             .dropdown-menu {
-              min-width: 150px;
+              min-width: 155px;
+              transform: translateX(30%);
             }
-            
+
             .dropdown-item {
               padding: 10px 14px;
               font-size: 13px;
+            }
+          }
+
+          @media (max-width: 360px) {
+            .dropdown-menu {
+              transform: translateX(40%);
             }
           }
         `}</style>

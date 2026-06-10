@@ -26,6 +26,14 @@ const Footer = () => {
           <span className="footer-separator">|</span>
           
           <a 
+            href="/Premium/index.html" 
+            className="footer-link premium-link"
+          >
+            Premium
+          </a>
+          <span className="footer-separator">|</span>
+          
+          <a 
             href="/docs/index.html?page=privacy" 
             className="footer-link"
           >
@@ -85,12 +93,22 @@ const Footer = () => {
           color: #b0b0b0;
           text-decoration: none;
           font-size: 16px;
-          transition: color 0.2s ease;
+          transition: all 0.2s ease;
           white-space: nowrap;
         }
 
         .footer-link:hover {
           color: #aa00ff;
+        }
+
+        .premium-link {
+          position: relative;
+          font-weight: 500;
+        }
+
+        .premium-link:hover {
+          color: #ffd700;
+          text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
         }
 
         .footer-separator {

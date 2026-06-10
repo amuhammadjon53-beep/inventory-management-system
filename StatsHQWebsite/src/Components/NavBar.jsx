@@ -123,6 +123,9 @@ const NavBar = () => {
       } else if (path.includes("/Manage Servers/") || path === '/Manage Servers') {
         setCurrentPage("manage-servers");
         setServerInfo(null);
+      } else if (path.includes("/Premium/") || path === '/Premium') {
+        setCurrentPage("premium");
+        setServerInfo(null);
       } else {
         setCurrentPage("home");
         setServerInfo(null);
@@ -342,6 +345,9 @@ const NavBar = () => {
       <a href="/Commands/" className={`mobile-nav-link ${currentPage === 'commands' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
         Commands
       </a>
+      <a href="/Premium/index.html" className={`mobile-nav-link ${currentPage === 'premium' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        Premium
+      </a>
       <a href="#" className={`mobile-nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'invite-tracking', 'distribution', 'ships'].includes(currentPage) ? 'active' : ''}`} onClick={handleDocsClick}>
         Docs
       </a>
@@ -370,6 +376,9 @@ const NavBar = () => {
             </a>
             <a href="/Commands/" className={`nav-link ${currentPage === 'commands' ? 'active' : ''}`}>
               Commands
+            </a>
+            <a href="/Premium/index.html" className={`nav-link ${currentPage === 'premium' ? 'active' : ''}`}>
+              Premium
             </a>
             <a href="/docs/" className={`nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies'].includes(currentPage) ? 'active' : ''}`}>
               Docs
