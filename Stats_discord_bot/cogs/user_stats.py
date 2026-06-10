@@ -413,7 +413,6 @@ class UserStats(commands.Cog):
 
     # NEW METHOD: GET SERVER DEFAULT TIME RANGE
     async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
-        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
         try:
             settings_cog = self.bot.get_cog('Settings')
             if not settings_cog:
@@ -423,7 +422,7 @@ class UserStats(commands.Cog):
 
             settings = await settings_cog.get_guild_settings(guild.id)
             mode = settings.get('default_time_mode', 'days_back')
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)  # ← MAKE THIS AWARE
 
             if mode == 'all_time':
                 return (None, now, "All Time", 999999)
@@ -436,8 +435,16 @@ class UserStats(commands.Cog):
             elif mode == 'date_range':
                 from_date = settings.get('default_from_date')
                 to_date = settings.get('default_to_date')
+
+                # Ensure both are timezone-aware
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
                 end = to_date if to_date else now
                 start = from_date if from_date else None
+
                 from_str = from_date.strftime(
                     '%d-%m-%Y') if from_date else None
                 to_str = to_date.strftime('%d-%m-%Y') if to_date else None
@@ -449,6 +456,7 @@ class UserStats(commands.Cog):
                     display = f"Custom"
                 else:
                     display = "Custom"
+
                 days_back = max(1, (end - start).days) if start else 999999
                 return (start, end, display, days_back)
 
@@ -494,12 +502,18 @@ class UserStats(commands.Cog):
                     display = f"Custom"
                     return (start, now, display, days_back)
 
-            end = now - timedelta(days=0)
+                # rolling_window configured but type/value missing — fall through to default
+                end = now
+                start = now - timedelta(days=14)
+                return (start, end, "14 days", 14)
+
+            # Unknown mode fallback
+            end = now
             start = now - timedelta(days=14)
             return (start, end, "14 days", 14)
 
         except Exception as e:
-            end = datetime.utcnow()
+            end = datetime.now(timezone.utc)
             start = end - timedelta(days=14)
             return (start, end, "14 days", 14)
 

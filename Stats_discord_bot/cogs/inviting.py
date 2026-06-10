@@ -1350,18 +1350,19 @@ class Invites(commands.Cog):
         self.initialized = True
 
     # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
     async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
         """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
         try:
             settings_cog = self.bot.get_cog('Settings')
             if not settings_cog:
-                end = datetime.utcnow()
+                end = datetime.now(timezone.utc)
                 start = end - timedelta(days=InviteConfig.DEFAULT_DAYS_BACK)
                 return (start, end, f"{InviteConfig.DEFAULT_DAYS_BACK} days", InviteConfig.DEFAULT_DAYS_BACK)
 
             settings = await settings_cog.get_guild_settings(guild.id)
             mode = settings.get('default_time_mode', 'days_back')
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             if mode == 'all_time':
                 return (None, now, "All Time", 999999)
@@ -1375,6 +1376,13 @@ class Invites(commands.Cog):
             elif mode == 'date_range':
                 from_date = settings.get('default_from_date')
                 to_date = settings.get('default_to_date')
+
+                # Add timezone awareness guards
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
                 end = to_date if to_date else now
                 start = from_date if from_date else None
                 from_str = from_date.strftime(
@@ -1434,7 +1442,7 @@ class Invites(commands.Cog):
                     days_back = max(1, (now - start).days)
                     suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
                         rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
-                    display = f"Since the {rolling_value}{suffix}"
+                    display = f"Custom"
                     return (start, now, display, days_back)
 
             end = now - timedelta(days=0)
@@ -1444,7 +1452,7 @@ class Invites(commands.Cog):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            end = datetime.utcnow()
+            end = datetime.now(timezone.utc)
             start = end - timedelta(days=InviteConfig.DEFAULT_DAYS_BACK)
             return (start, end, f"{InviteConfig.DEFAULT_DAYS_BACK} days", InviteConfig.DEFAULT_DAYS_BACK)
 

@@ -3319,6 +3319,13 @@ class ActivityTracker(commands.Cog):
             elif mode == 'date_range':
                 from_date = settings.get('default_from_date')
                 to_date = settings.get('default_to_date')
+
+                # Add timezone awareness guards
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
                 end = to_date if to_date else now
                 start = from_date if from_date else None
                 from_str = from_date.strftime(
@@ -3378,7 +3385,7 @@ class ActivityTracker(commands.Cog):
                     days_back = max(1, (now - start).days)
                     suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
                         rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
-                    display = f"Since the {rolling_value}{suffix}"
+                    display = f"Custom"
                     return (start, now, display, days_back)
 
             end = now - timedelta(days=0)

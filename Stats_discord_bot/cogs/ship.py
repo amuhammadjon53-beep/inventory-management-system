@@ -735,6 +735,31 @@ class ShipCog(commands.Cog):
                         UNIQUE(guild_id, user1_id, user2_id)
                     )
                 """)
+
+                # Convert naive TIMESTAMP columns to TIMESTAMPTZ (timezone-aware)
+                await conn.execute("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = 'ship_scores' 
+                            AND column_name = 'last_shipped'
+                            AND data_type = 'timestamp without time zone'
+                        ) THEN
+                            ALTER TABLE ship_scores ALTER COLUMN last_shipped TYPE TIMESTAMPTZ;
+                        END IF;
+                        
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = 'ship_scores' 
+                            AND column_name = 'created_at'
+                            AND data_type = 'timestamp without time zone'
+                        ) THEN
+                            ALTER TABLE ship_scores ALTER COLUMN created_at TYPE TIMESTAMPTZ;
+                        END IF;
+                    END $$;
+                """)
+
                 await conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_ship_scores_guild_score 
                     ON ship_scores (guild_id, compatibility_score DESC)
@@ -755,13 +780,13 @@ class ShipCog(commands.Cog):
         try:
             settings_cog = self.bot.get_cog('Settings')
             if not settings_cog:
-                end = datetime.utcnow()
+                end = datetime.now(timezone.utc)
                 start = end - timedelta(days=ShipConfig.DEFAULT_DAYS_BACK)
                 return (start, end, f"{ShipConfig.DEFAULT_DAYS_BACK} days", ShipConfig.DEFAULT_DAYS_BACK)
 
             settings = await settings_cog.get_guild_settings(guild.id)
             mode = settings.get('default_time_mode', 'days_back')
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             if mode == 'all_time':
                 return (None, now, "All Time", 999999)
@@ -775,6 +800,13 @@ class ShipCog(commands.Cog):
             elif mode == 'date_range':
                 from_date = settings.get('default_from_date')
                 to_date = settings.get('default_to_date')
+
+                # Add timezone awareness guards
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
                 end = to_date if to_date else now
                 start = from_date if from_date else None
                 from_str = from_date.strftime(
@@ -834,7 +866,7 @@ class ShipCog(commands.Cog):
                     days_back = max(1, (now - start).days)
                     suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
                         rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
-                    display = f"Since the {rolling_value}{suffix}"
+                    display = f"Custom"
                     return (start, now, display, days_back)
 
             end = now - timedelta(days=0)
@@ -842,7 +874,7 @@ class ShipCog(commands.Cog):
             return (start, end, f"{ShipConfig.DEFAULT_DAYS_BACK} days", ShipConfig.DEFAULT_DAYS_BACK)
 
         except Exception as e:
-            end = datetime.utcnow()
+            end = datetime.now(timezone.utc)
             start = end - timedelta(days=ShipConfig.DEFAULT_DAYS_BACK)
             return (start, end, f"{ShipConfig.DEFAULT_DAYS_BACK} days", ShipConfig.DEFAULT_DAYS_BACK)
 
