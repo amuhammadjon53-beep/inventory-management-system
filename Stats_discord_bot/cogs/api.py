@@ -1332,6 +1332,44 @@ class ProjectedRoleGrowthResponse(BaseModel):
     analysis: Dict[str, Any]
 
 
+# ============================================
+# CART SYSTEM REQUEST/RESPONSE MODELS
+# ============================================
+
+class CartItemRequest(BaseModel):
+    """Request model for adding an item to cart"""
+    item_type: str = Field(..., pattern="^(module|tier)$", description="Type of item (module or tier)")
+    item_id: str = Field(..., description="Item identifier (e.g., 'optimization-plus')")
+    billing_cycle: str = Field(..., pattern="^(monthly|yearly)$", description="Billing cycle")
+    price_usd: float = Field(..., ge=0, description="Price in USD")
+
+
+class CartItemRemoveRequest(BaseModel):
+    """Request model for removing an item from cart"""
+    item_id: str = Field(..., description="Item identifier to remove")
+
+
+class AssignServerRequest(BaseModel):
+    """Request model for assigning a server to a cart item"""
+    item_id: str = Field(..., description="Item identifier")
+    guild_id: str = Field(..., description="Guild/server ID to assign")
+
+
+class CartResponse(BaseModel):
+    """Response model for cart operations"""
+    success: bool
+    message: str
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class GetCartResponse(BaseModel):
+    """Response model for getting cart contents"""
+    success: bool
+    cart: List[Dict[str, Any]] = []
+    total_price_usd: float = 0.0
+    error: Optional[str] = None
+
 class GrowthForecaster:
     """
     Advanced growth forecasting system using:
@@ -18907,6 +18945,388 @@ class DatabaseStatsAPI:
             raise DatabaseQueryError('Failed weekly category mentions received', context={
                                      'guild_id': guild_id, 'category_id': category_id}, original=e)
 
+    # ======================================================================
+    # CART SYSTEM
+    # ======================================================================
+
+    async def add_cart_item(
+        self,
+        user_id: int,
+        item_type: str,
+        item_id: str,
+        billing_cycle: str,
+        price_usd: float
+    ) -> bool:
+        """Add or update an item in user's cart."""
+        if not self.pool:
+            return False
+
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO cart_items (user_id, item_type, item_id, billing_cycle, price_usd)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (user_id, item_id) DO UPDATE SET
+                        billing_cycle = EXCLUDED.billing_cycle,
+                        price_usd = EXCLUDED.price_usd,
+                        added_at = NOW()
+                """, user_id, item_type, item_id, billing_cycle, price_usd)
+                return True
+        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+            raise DatabaseConnectionError(
+                "Database connection does not exist while adding cart item",
+                context={'user_id': user_id, 'item_id': item_id},
+                original=e
+            )
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while adding cart item",
+                context={'user_id': user_id, 'item_id': item_id},
+                original=e
+            )
+        except asyncpg.exceptions.QueryCanceledError as e:
+            raise DatabaseTimeoutError(
+                "Database operation timed out while adding cart item",
+                context={'user_id': user_id, 'item_id': item_id},
+                original=e
+            )
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Database error adding cart item",
+                context={'user_id': user_id, 'item_id': item_id},
+                original=e
+            )
+        except Exception as e:
+            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+                raise DatabaseQueryError(
+                    "Unexpected error adding cart item",
+                    context={'user_id': user_id, 'item_id': item_id},
+                    original=e
+                )
+            raise
+
+    async def remove_cart_item(
+        self,
+        user_id: int,
+        item_id: str
+    ) -> bool:
+        """Remove an item from user's cart."""
+        if not self.pool:
+            return False
+
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.execute("""
+                    DELETE FROM cart_items
+                    WHERE user_id = $1 AND item_id = $2
+                """, user_id, item_id)
+                return 'DELETE 1' in result
+        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+            raise DatabaseConnectionError(
+                "Database connection does not exist while removing cart item",
+                context={'user_id': user_id, 'item_id': item_id},
+                original=e
+            )
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while removing cart item",
+                context={'user_id': user_id, 'item_id': item_id},
+                original=e
+            )
+        except asyncpg.exceptions.QueryCanceledError as e:
+            raise DatabaseTimeoutError(
+                "Database operation timed out while removing cart item",
+                context={'user_id': user_id, 'item_id': item_id},
+                original=e
+            )
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Database error removing cart item",
+                context={'user_id': user_id, 'item_id': item_id},
+                original=e
+            )
+        except Exception as e:
+            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+                raise DatabaseQueryError(
+                    "Unexpected error removing cart item",
+                    context={'user_id': user_id, 'item_id': item_id},
+                    original=e
+                )
+            raise
+
+    async def assign_server_to_cart_item(
+        self,
+        user_id: int,
+        item_id: str,
+        guild_id: int
+    ) -> bool:
+        """Assign a server to a cart item."""
+        if not self.pool:
+            return False
+
+        try:
+            async with self.pool.acquire() as conn:
+                # Look up the cart_item id
+                row = await conn.fetchrow("""
+                    SELECT id FROM cart_items
+                    WHERE user_id = $1 AND item_id = $2
+                """, user_id, item_id)
+
+                if not row:
+                    return False
+
+                cart_item_id = row['id']
+
+                # Upsert the server assignment
+                await conn.execute("""
+                    INSERT INTO cart_item_servers (cart_item_id, user_id, guild_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (cart_item_id, guild_id) DO NOTHING
+                """, cart_item_id, user_id, guild_id)
+
+                return True
+        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+            raise DatabaseConnectionError(
+                "Database connection does not exist while assigning server to cart item",
+                context={'user_id': user_id,
+                         'item_id': item_id, 'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while assigning server to cart item",
+                context={'user_id': user_id,
+                         'item_id': item_id, 'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.QueryCanceledError as e:
+            raise DatabaseTimeoutError(
+                "Database operation timed out while assigning server to cart item",
+                context={'user_id': user_id,
+                         'item_id': item_id, 'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Database error assigning server to cart item",
+                context={'user_id': user_id,
+                         'item_id': item_id, 'guild_id': guild_id},
+                original=e
+            )
+        except Exception as e:
+            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+                raise DatabaseQueryError(
+                    "Unexpected error assigning server to cart item",
+                    context={'user_id': user_id,
+                             'item_id': item_id, 'guild_id': guild_id},
+                    original=e
+                )
+            raise
+
+    async def unassign_server_from_cart_item(
+        self,
+        user_id: int,
+        item_id: str,
+        guild_id: int
+    ) -> bool:
+        """Remove a server assignment from a cart item."""
+        if not self.pool:
+            return False
+
+        try:
+            async with self.pool.acquire() as conn:
+                # Look up the cart_item id
+                row = await conn.fetchrow("""
+                    SELECT id FROM cart_items
+                    WHERE user_id = $1 AND item_id = $2
+                """, user_id, item_id)
+
+                if not row:
+                    return False
+
+                cart_item_id = row['id']
+
+                # Delete the server assignment
+                result = await conn.execute("""
+                    DELETE FROM cart_item_servers
+                    WHERE cart_item_id = $1 AND guild_id = $2
+                """, cart_item_id, guild_id)
+
+                return 'DELETE 1' in result
+        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+            raise DatabaseConnectionError(
+                "Database connection does not exist while unassigning server from cart item",
+                context={'user_id': user_id,
+                         'item_id': item_id, 'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while unassigning server from cart item",
+                context={'user_id': user_id,
+                         'item_id': item_id, 'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.QueryCanceledError as e:
+            raise DatabaseTimeoutError(
+                "Database operation timed out while unassigning server from cart item",
+                context={'user_id': user_id,
+                         'item_id': item_id, 'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Database error unassigning server from cart item",
+                context={'user_id': user_id,
+                         'item_id': item_id, 'guild_id': guild_id},
+                original=e
+            )
+        except Exception as e:
+            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+                raise DatabaseQueryError(
+                    "Unexpected error unassigning server from cart item",
+                    context={'user_id': user_id,
+                             'item_id': item_id, 'guild_id': guild_id},
+                    original=e
+                )
+            raise
+
+    async def get_cart(
+        self,
+        user_id: int
+    ) -> List[Dict[str, Any]]:
+        """Get full cart for a user with all server assignments."""
+        if not self.pool:
+            return []
+
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT 
+                        ci.id,
+                        ci.user_id,
+                        ci.item_type,
+                        ci.item_id,
+                        ci.billing_cycle,
+                        ci.price_usd,
+                        ci.added_at,
+                        COALESCE(
+                            json_agg(
+                                json_build_object('guild_id', cis.guild_id, 'assigned_at', cis.assigned_at)
+                            ) FILTER (WHERE cis.guild_id IS NOT NULL),
+                            '[]'
+                        ) AS assigned_servers
+                    FROM cart_items ci
+                    LEFT JOIN cart_item_servers cis ON cis.cart_item_id = ci.id
+                    WHERE ci.user_id = $1
+                    GROUP BY ci.id
+                    ORDER BY ci.added_at ASC
+                """, user_id)
+
+                result = []
+                for row in rows:
+                    assigned_raw = row['assigned_servers']
+                    if isinstance(assigned_raw, str):
+                        assigned_raw = json.loads(assigned_raw)
+
+                    result.append({
+                        'id': row['id'],
+                        'user_id': row['user_id'],
+                        'item_type': row['item_type'],
+                        'item_id': row['item_id'],
+                        'billing_cycle': row['billing_cycle'],
+                        'price_usd': float(row['price_usd']) if row['price_usd'] else 0.0,
+                        'added_at': row['added_at'].isoformat() if row['added_at'] else None,
+                        'assigned_servers': [
+                            {
+                                'guild_id': s['guild_id'],
+                                'assigned_at': s['assigned_at']
+                            }
+                            for s in assigned_raw
+                        ]
+                    })
+
+                return result
+        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+            raise DatabaseConnectionError(
+                "Database connection does not exist while getting cart",
+                context={'user_id': user_id},
+                original=e
+            )
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while getting cart",
+                context={'user_id': user_id},
+                original=e
+            )
+        except asyncpg.exceptions.QueryCanceledError as e:
+            raise DatabaseTimeoutError(
+                "Database operation timed out while getting cart",
+                context={'user_id': user_id},
+                original=e
+            )
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Database error getting cart",
+                context={'user_id': user_id},
+                original=e
+            )
+        except Exception as e:
+            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+                raise DatabaseQueryError(
+                    "Unexpected error getting cart",
+                    context={'user_id': user_id},
+                    original=e
+                )
+            raise
+
+    async def clear_cart(
+        self,
+        user_id: int
+    ) -> bool:
+        """Clear all items from user's cart."""
+        if not self.pool:
+            return False
+
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    DELETE FROM cart_items
+                    WHERE user_id = $1
+                """, user_id)
+                return True
+        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+            raise DatabaseConnectionError(
+                "Database connection does not exist while clearing cart",
+                context={'user_id': user_id},
+                original=e
+            )
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while clearing cart",
+                context={'user_id': user_id},
+                original=e
+            )
+        except asyncpg.exceptions.QueryCanceledError as e:
+            raise DatabaseTimeoutError(
+                "Database operation timed out while clearing cart",
+                context={'user_id': user_id},
+                original=e
+            )
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Database error clearing cart",
+                context={'user_id': user_id},
+                original=e
+            )
+        except Exception as e:
+            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+                raise DatabaseQueryError(
+                    "Unexpected error clearing cart",
+                    context={'user_id': user_id},
+                    original=e
+                )
+            raise
 
 # ======================================================================
 # SHARED RESULT BUILDER
@@ -39184,7 +39604,7 @@ async def settings_time_period_update(request: TimePeriodUpdateRequest):
             # At least one date should be provided
             if request.default_from_date is None and request.default_to_date is None:
                 return {"success": False, "message": "At least one date (from or to) must be provided for date range mode"}
-            
+
             # If both dates are provided, validate from < to
             if request.default_from_date and request.default_to_date:
                 if request.default_from_date >= request.default_to_date:
@@ -39193,13 +39613,13 @@ async def settings_time_period_update(request: TimePeriodUpdateRequest):
         elif request.default_time_mode == 'rolling_window':
             if request.default_rolling_type is None:
                 return {"success": False, "message": "Rolling type is required for rolling_window mode"}
-            
+
             if request.default_rolling_type not in ['weekday', 'monthly']:
                 return {"success": False, "message": "Rolling type must be 'weekday' or 'monthly'"}
-            
+
             if request.default_rolling_value is None:
                 return {"success": False, "message": "Rolling value is required for rolling_window mode"}
-            
+
             if request.default_rolling_type == 'weekday':
                 if not 0 <= request.default_rolling_value <= 6:
                     return {"success": False, "message": "Weekday value must be between 0 (Monday) and 6 (Sunday)"}
@@ -39209,7 +39629,7 @@ async def settings_time_period_update(request: TimePeriodUpdateRequest):
 
         # Convert guild_id to integer (Discord snowflake)
         guild_id_int = int(request.guild_id)
-        
+
         # Update all time period settings in one query
         query = """
             UPDATE settings SET
@@ -39221,7 +39641,7 @@ async def settings_time_period_update(request: TimePeriodUpdateRequest):
                 default_rolling_value = $6
             WHERE guild_id = $7
         """
-        
+
         async with db_stats.pool.acquire() as conn:
             await conn.execute(
                 query,
@@ -39233,15 +39653,17 @@ async def settings_time_period_update(request: TimePeriodUpdateRequest):
                 request.default_rolling_value,
                 guild_id_int  # Use integer version
             )
-        
-        logger.info(f"Successfully updated time period settings for guild {request.guild_id}")
+
+        logger.info(
+            f"Successfully updated time period settings for guild {request.guild_id}")
         return {"success": True, "message": "Successfully updated time period settings"}
-        
+
     except DatabaseError as e:
         logger.error(f"Database error in settings_time_period_update: {e}")
         return {"success": False, "message": f"Database error: {str(e)}"}
     except ValueError as e:
-        logger.error(f"Value conversion error in settings_time_period_update: {e}")
+        logger.error(
+            f"Value conversion error in settings_time_period_update: {e}")
         return {"success": False, "message": f"Invalid guild ID format: {str(e)}"}
     except Exception as e:
         logger.error(f"Unexpected error in settings_time_period_update: {e}")
@@ -42447,6 +42869,254 @@ async def debug_bot_role_hierarchy(
             "success": False,
             "error": str(e)
         }
+        
+# ============================================
+# CART SYSTEM ENDPOINTS
+# ============================================
+
+@app.post("/api/cart/add", response_model=CartResponse)
+async def cart_add_item(
+    request: CartItemRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Add or update an item in the user's cart.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        success = await db_stats.add_cart_item(
+            user_id=int(user['discord_id']),
+            item_type=request.item_type,
+            item_id=request.item_id,
+            billing_cycle=request.billing_cycle,
+            price_usd=request.price_usd
+        )
+        
+        if success:
+            return CartResponse(
+                success=True,
+                message=f"Added/updated {request.item_id} to cart",
+                data={
+                    "item_id": request.item_id,
+                    "item_type": request.item_type,
+                    "billing_cycle": request.billing_cycle,
+                    "price_usd": request.price_usd
+                }
+            )
+        else:
+            return CartResponse(
+                success=False,
+                message="Failed to add item to cart",
+                error="Database operation failed"
+            )
+    except DatabaseError as e:
+        logger.error(f"Database error in cart_add_item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in cart_add_item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/cart/remove", response_model=CartResponse)
+async def cart_remove_item(
+    request: CartItemRemoveRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Remove an item from the user's cart.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        success = await db_stats.remove_cart_item(
+            user_id=int(user['discord_id']),
+            item_id=request.item_id
+        )
+        
+        if success:
+            return CartResponse(
+                success=True,
+                message=f"Removed {request.item_id} from cart",
+                data={"item_id": request.item_id}
+            )
+        else:
+            return CartResponse(
+                success=False,
+                message=f"Item {request.item_id} not found in cart",
+                error="Item not found"
+            )
+    except DatabaseError as e:
+        logger.error(f"Database error in cart_remove_item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in cart_remove_item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/cart/assign-server", response_model=CartResponse)
+async def cart_assign_server(
+    request: AssignServerRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Assign a server to a cart item.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        # Verify the user has access to this guild
+        user_servers = await auth_db.get_user_servers(user['discord_id'])
+        if not any(str(s['guild_id']) == request.guild_id for s in user_servers):
+            raise HTTPException(
+                status_code=403,
+                detail="You are not a member of this guild or the bot is not present"
+            )
+        
+        success = await db_stats.assign_server_to_cart_item(
+            user_id=int(user['discord_id']),
+            item_id=request.item_id,
+            guild_id=int(request.guild_id)
+        )
+        
+        if success:
+            return CartResponse(
+                success=True,
+                message=f"Assigned guild {request.guild_id} to {request.item_id}",
+                data={
+                    "item_id": request.item_id,
+                    "guild_id": request.guild_id
+                }
+            )
+        else:
+            return CartResponse(
+                success=False,
+                message=f"Item {request.item_id} not found in cart",
+                error="Item not found"
+            )
+    except HTTPException:
+        raise
+    except DatabaseError as e:
+        logger.error(f"Database error in cart_assign_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in cart_assign_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/cart/unassign-server", response_model=CartResponse)
+async def cart_unassign_server(
+    request: AssignServerRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Remove a server assignment from a cart item.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        success = await db_stats.unassign_server_from_cart_item(
+            user_id=int(user['discord_id']),
+            item_id=request.item_id,
+            guild_id=int(request.guild_id)
+        )
+        
+        if success:
+            return CartResponse(
+                success=True,
+                message=f"Removed guild {request.guild_id} from {request.item_id}",
+                data={
+                    "item_id": request.item_id,
+                    "guild_id": request.guild_id
+                }
+            )
+        else:
+            return CartResponse(
+                success=False,
+                message=f"Assignment not found for item {request.item_id} and guild {request.guild_id}",
+                error="Assignment not found"
+            )
+    except DatabaseError as e:
+        logger.error(f"Database error in cart_unassign_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in cart_unassign_server: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/cart", response_model=GetCartResponse)
+async def cart_get(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get the current user's cart with all items and server assignments.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        cart_items = await db_stats.get_cart(
+            user_id=int(user['discord_id'])
+        )
+        
+        total_price = sum(item.get('price_usd', 0) for item in cart_items)
+        
+        return GetCartResponse(
+            success=True,
+            cart=cart_items,
+            total_price_usd=round(total_price, 2)
+        )
+    except DatabaseError as e:
+        logger.error(f"Database error in cart_get: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in cart_get: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/cart/clear", response_model=CartResponse)
+async def cart_clear(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Clear all items from the user's cart.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        success = await db_stats.clear_cart(
+            user_id=int(user['discord_id'])
+        )
+        
+        if success:
+            return CartResponse(
+                success=True,
+                message="Cart cleared successfully",
+                data={"cleared": True}
+            )
+        else:
+            return CartResponse(
+                success=False,
+                message="Failed to clear cart",
+                error="Database operation failed"
+            )
+    except DatabaseError as e:
+        logger.error(f"Database error in cart_clear: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in cart_clear: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================
 # PUBLIC ENDPOINTS (No Authentication Required)

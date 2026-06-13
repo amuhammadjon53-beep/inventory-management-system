@@ -87,7 +87,7 @@ const Login = () => {
 
   const handleManageServers = (e) => {
     e.preventDefault();
-    window.location.href = '/Manage Servers';
+    window.location.href = '/Manage Servers/';
   };
 
   const handleMyCart = (e) => {
@@ -145,7 +145,7 @@ const Login = () => {
 
         {dropdownOpen && (
           <div className="dropdown-menu">
-            <a href="/Manage Servers" className="dropdown-item" onClick={handleManageServers}>
+            <a href="/Manage Servers/" className="dropdown-item" onClick={handleManageServers}>
               Manage Servers
             </a>
             <a href="/My Cart/index.html" className="dropdown-item" onClick={handleMyCart}>
@@ -232,7 +232,7 @@ const Login = () => {
           @keyframes dropdownFade {
             from {
               opacity: 0;
-              transform: translateY(-10px);
+              transform: translateY(-8px);
             }
             to {
               opacity: 1;
@@ -289,28 +289,23 @@ const Login = () => {
             }
 
             .dropdown-menu {
-              right: 0;
+              position: fixed;
+              top: auto;
+              right: 8px;
               left: auto;
-              transform: translateX(20%);
               min-width: 170px;
             }
           }
 
           @media (max-width: 480px) {
             .dropdown-menu {
+              right: 8px;
               min-width: 155px;
-              transform: translateX(30%);
             }
 
             .dropdown-item {
               padding: 10px 14px;
               font-size: 13px;
-            }
-          }
-
-          @media (max-width: 360px) {
-            .dropdown-menu {
-              transform: translateX(40%);
             }
           }
         `}</style>

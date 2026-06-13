@@ -477,7 +477,6 @@ class MentionsImageGenerator:
         MentionsImageGenerator.draw_text_with_stroke(
             draw, (70, 424), role_text, font_small, "white", "black", 1)
 
-        # Use display_text for time period
         MentionsImageGenerator.draw_text_with_stroke(
             draw, (630, 422), display_text, font_small, "white", "black", 1)
 
@@ -1492,8 +1491,6 @@ class Mentions(commands.Cog):
                 break
             await asyncio.sleep(1)
 
-    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
-    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
     async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
         """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
         try:
@@ -1519,7 +1516,6 @@ class Mentions(commands.Cog):
                 from_date = settings.get('default_from_date')
                 to_date = settings.get('default_to_date')
 
-                # Add timezone awareness guards
                 if from_date is not None and from_date.tzinfo is None:
                     from_date = from_date.replace(tzinfo=timezone.utc)
                 if to_date is not None and to_date.tzinfo is None:
@@ -1624,7 +1620,7 @@ class Mentions(commands.Cog):
             return True
 
     # ============================================================================
-    # SLASH COMMANDS — all under /mentions group
+    # SLASH COMMANDS
     # ============================================================================
 
     mentions_group = app_commands.Group(
@@ -1637,6 +1633,7 @@ class Mentions(commands.Cog):
         target="Optional: Channel or category to filter by",
         target_user="Optional: User to analyze (shows who mentioned them or who they mentioned)"
     )
+    @app_commands.rename(target_user="user")
     async def slash_mentions_leaderboard(
         self,
         interaction: discord.Interaction,
@@ -1658,11 +1655,12 @@ class Mentions(commands.Cog):
 
     @mentions_group.command(name="ratio", description="Show your mentions ratio (received/sent)")
     @app_commands.describe(target_user="The user to check (optional - defaults to you)")
+    @app_commands.rename(target_user="user")
     async def slash_mentions_ratio(self, interaction: discord.Interaction, target_user: Optional[discord.Member] = None):
         await self._handle_slash_ratio(interaction, target_user or interaction.user)
 
     # ============================================================================
-    # PREFIX COMMANDS — all under mentions group
+    # PREFIX COMMANDS
     # ============================================================================
 
     @commands.group(name="mentions", invoke_without_command=True)

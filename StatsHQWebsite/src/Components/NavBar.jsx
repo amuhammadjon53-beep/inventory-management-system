@@ -120,7 +120,7 @@ const NavBar = () => {
       } else if (path.includes("/Commands/") || path === '/Commands') {
         setCurrentPage("commands");
         setServerInfo(null);
-      } else if (path.includes("/Manage Servers/") || path === '/Manage Servers') {
+      } else if (path.includes("/Manage Servers/") || path === '/Manage Servers/') {
         setCurrentPage("manage-servers");
         setServerInfo(null);
       } else if (path.includes("/Premium/") || path === '/Premium') {
