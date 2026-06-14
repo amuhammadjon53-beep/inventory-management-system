@@ -1,10 +1,36 @@
+from datetime import datetime, timedelta, date, timezone
+from fastapi.encoders import jsonable_encoder
+import threading
+import base64
+import hashlib
+from cryptography.fernet import Fernet
+import decimal
+from enum import Enum
+import math
+from exceptions import (
+    DatabaseError, DatabaseConnectionError, DatabaseQueryError,
+    DatabaseTimeoutError, DatabaseTransactionError, DatabaseIntegrityError,
+    ValidationError, MissingArgumentError, InvalidArgumentError,
+    ExternalAPIError, ExternalAPITimeoutError, ExternalAPIRateLimitError,
+    BusinessLogicError, InsufficientFundsError, CooldownError
+)
+import redis.asyncio as redis
+import re
+from datetime import datetime, time
+from pydantic import BaseModel, Field, field_validator, model_validator
+import secrets
+import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env'))
+from paddle_webhooks import verify_webhook_signature, process_event
+from paddle_client import PaddleAPIError
+import paddle_client
 from datetime import datetime, timedelta, timezone, time
 from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException
 import sys
 import json
-import os
 import site
 from pathlib import Path
 import random
@@ -27,29 +53,8 @@ import asyncpg
 import aiohttp
 import logging
 import uuid
-import secrets
-from pydantic import BaseModel, Field, field_validator, model_validator
-from datetime import datetime, time
-import re
-import redis.asyncio as redis
-from exceptions import (
-    DatabaseError, DatabaseConnectionError, DatabaseQueryError,
-    DatabaseTimeoutError, DatabaseTransactionError, DatabaseIntegrityError,
-    ValidationError, MissingArgumentError, InvalidArgumentError,
-    ExternalAPIError, ExternalAPITimeoutError, ExternalAPIRateLimitError,
-    BusinessLogicError, InsufficientFundsError, CooldownError
-)
-import site
-import math
-from enum import Enum
-import decimal
-from cryptography.fernet import Fernet
-import hashlib
-import base64
-import os
-import threading
-from fastapi.encoders import jsonable_encoder
-from datetime import datetime, timedelta, date, timezone
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 try:
     # When loaded as a cog by Discord bot
     from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter, fastapi_rate_limited
@@ -1338,9 +1343,12 @@ class ProjectedRoleGrowthResponse(BaseModel):
 
 class CartItemRequest(BaseModel):
     """Request model for adding an item to cart"""
-    item_type: str = Field(..., pattern="^(module|tier)$", description="Type of item (module or tier)")
-    item_id: str = Field(..., description="Item identifier (e.g., 'optimization-plus')")
-    billing_cycle: str = Field(..., pattern="^(monthly|yearly)$", description="Billing cycle")
+    item_type: str = Field(..., pattern="^(module|tier)$",
+                           description="Type of item (module or tier)")
+    item_id: str = Field(...,
+                         description="Item identifier (e.g., 'optimization-plus')")
+    billing_cycle: str = Field(..., pattern="^(monthly|yearly)$",
+                               description="Billing cycle")
     price_usd: float = Field(..., ge=0, description="Price in USD")
 
 
@@ -1369,6 +1377,7 @@ class GetCartResponse(BaseModel):
     cart: List[Dict[str, Any]] = []
     total_price_usd: float = 0.0
     error: Optional[str] = None
+
 
 class GrowthForecaster:
     """
@@ -19327,6 +19336,388 @@ class DatabaseStatsAPI:
                     original=e
                 )
             raise
+
+    async def get_all_modules(self) -> List[Dict]:
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM modules WHERE is_active = TRUE ORDER BY module_number")
+            return [dict(r) for r in rows]
+
+    async def get_module_by_key(self, module_key: str) -> Optional[Dict]:
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM modules WHERE module_key = $1", module_key)
+            return dict(row) if row else None
+
+    async def get_module_by_paddle_product(self, paddle_product_id: str) -> Optional[Dict]:
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM modules WHERE paddle_product_id = $1", paddle_product_id
+            )
+            return dict(row) if row else None
+
+    async def get_module_by_paddle_price(self, paddle_price_id: str) -> Optional[Dict]:
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT * FROM modules
+                   WHERE paddle_monthly_price_id = $1
+                      OR paddle_yearly_price_id   = $1""",
+                paddle_price_id,
+            )
+            return dict(row) if row else None
+
+    # ======================================================================
+    # PADDLE: DISCOUNTS
+    # ======================================================================
+
+    async def get_discount_for_server_count(self, server_count: int) -> Optional[Dict]:
+        """Return the discount row for *exactly* server_count, or the highest available."""
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            capped = min(server_count, 11)
+            row = await conn.fetchrow(
+                """SELECT * FROM server_count_discounts
+                   WHERE server_count <= $1
+                   ORDER BY server_count DESC LIMIT 1""",
+                capped,
+            )
+            return dict(row) if row else None
+
+    async def get_all_discounts(self) -> List[Dict]:
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM server_count_discounts ORDER BY server_count")
+            return [dict(r) for r in rows]
+
+    # ======================================================================
+    # PADDLE: CUSTOMERS
+    # ======================================================================
+
+    async def upsert_paddle_customer(
+        self,
+        discord_id: str,
+        paddle_customer_id: Optional[str] = None,
+        email: Optional[str] = None,
+    ) -> Dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO paddle_customers (discord_id, paddle_customer_id, email, updated_at)
+                   VALUES ($1, $2, $3, NOW())
+                   ON CONFLICT (discord_id) DO UPDATE SET
+                       paddle_customer_id = COALESCE(EXCLUDED.paddle_customer_id, paddle_customers.paddle_customer_id),
+                       email              = COALESCE(EXCLUDED.email,              paddle_customers.email),
+                       updated_at         = NOW()
+                   RETURNING *""",
+                discord_id, paddle_customer_id, email,
+            )
+            return dict(row)
+
+    async def get_paddle_customer(self, discord_id: str) -> Optional[Dict]:
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM paddle_customers WHERE discord_id = $1", discord_id
+            )
+            return dict(row) if row else None
+
+    async def get_paddle_customer_by_paddle_id(self, paddle_customer_id: str) -> Optional[Dict]:
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM paddle_customers WHERE paddle_customer_id = $1", paddle_customer_id
+            )
+            return dict(row) if row else None
+
+    # ======================================================================
+    # PADDLE: SUBSCRIPTIONS
+    # ======================================================================
+
+    async def create_subscription(self, data: Dict) -> Dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO subscriptions (
+                    discord_id, guild_id, paddle_subscription_id, paddle_transaction_id,
+                    paddle_customer_id, module_id, tier_id, billing_cycle,
+                    base_price_usd, discount_pct, final_price_usd, server_count_at_purchase,
+                    status, current_period_start, current_period_end
+                ) VALUES (
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+                ) RETURNING *""",
+                data["discord_id"], data["guild_id"],
+                data["paddle_subscription_id"], data.get(
+                    "paddle_transaction_id"),
+                data["paddle_customer_id"], data.get(
+                    "module_id"), data.get("tier_id"),
+                data["billing_cycle"], data["base_price_usd"],
+                data.get("discount_pct", 0), data["final_price_usd"],
+                data.get("server_count_at_purchase", 1),
+                data.get("status", "active"),
+                data.get("current_period_start"), data.get(
+                    "current_period_end"),
+            )
+            return dict(row)
+
+    async def get_subscription(self, paddle_subscription_id: str) -> Optional[Dict]:
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM subscriptions WHERE paddle_subscription_id = $1",
+                paddle_subscription_id,
+            )
+            return dict(row) if row else None
+
+    async def get_subscriptions_for_user(self, discord_id: str) -> List[Dict]:
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT s.*, m.display_name AS module_name, m.module_key
+                   FROM subscriptions s
+                   LEFT JOIN modules m ON s.module_id = m.id
+                   WHERE s.discord_id = $1
+                   ORDER BY s.created_at DESC""",
+                discord_id,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_subscriptions_for_guild(self, guild_id: int) -> List[Dict]:
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT s.*, m.display_name AS module_name, m.module_key
+                   FROM subscriptions s
+                   LEFT JOIN modules m ON s.module_id = m.id
+                   WHERE s.guild_id = $1 AND s.status = 'active'
+                   ORDER BY s.created_at DESC""",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+
+    async def update_subscription_status(
+        self,
+        paddle_subscription_id: str,
+        status: str,
+        current_period_start: Optional[datetime] = None,
+        current_period_end: Optional[datetime] = None,
+        canceled_at: Optional[datetime] = None,
+        cancel_at_period_end: Optional[bool] = None,
+        paddle_transaction_id: Optional[str] = None,
+    ) -> Optional[Dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE subscriptions SET
+                       status                = $2,
+                       current_period_start  = COALESCE($3, current_period_start),
+                       current_period_end    = COALESCE($4, current_period_end),
+                       canceled_at           = COALESCE($5, canceled_at),
+                       cancel_at_period_end  = COALESCE($6, cancel_at_period_end),
+                       paddle_transaction_id = COALESCE($7, paddle_transaction_id),
+                       updated_at            = NOW()
+                   WHERE paddle_subscription_id = $1
+                   RETURNING *""",
+                paddle_subscription_id, status,
+                current_period_start, current_period_end,
+                canceled_at, cancel_at_period_end, paddle_transaction_id,
+            )
+            return dict(row) if row else None
+
+    # ======================================================================
+    # PADDLE: GUILD MODULE ACCESS
+    # ======================================================================
+
+    async def grant_module_access(
+        self,
+        guild_id: int,
+        module_id: int,
+        subscription_id: int,
+        discord_id: str,
+    ) -> Dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO guild_module_access (guild_id, module_id, subscription_id, discord_id, is_active)
+                   VALUES ($1, $2, $3, $4, TRUE)
+                   ON CONFLICT (guild_id, module_id, subscription_id) DO UPDATE SET
+                       is_active  = TRUE,
+                       revoked_at = NULL
+                   RETURNING *""",
+                guild_id, module_id, subscription_id, discord_id,
+            )
+            return dict(row)
+
+    async def revoke_module_access(self, subscription_id: int) -> int:
+        """Revoke all access rows tied to a subscription. Returns affected count."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """UPDATE guild_module_access SET
+                       is_active  = FALSE,
+                       revoked_at = NOW()
+                   WHERE subscription_id = $1 AND is_active = TRUE""",
+                subscription_id,
+            )
+            return int(result.split()[-1])
+
+    async def guild_has_module(self, guild_id: int, module_key: str) -> bool:
+        if not self.pool:
+            return False
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT 1 FROM guild_module_access gma
+                   JOIN modules m ON gma.module_id = m.id
+                   WHERE gma.guild_id = $1
+                     AND m.module_key = $2
+                     AND gma.is_active = TRUE
+                   LIMIT 1""",
+                guild_id, module_key,
+            )
+            return row is not None
+
+    async def get_guild_active_modules(self, guild_id: int) -> List[Dict]:
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT m.module_key, m.display_name, m.module_number,
+                          gma.granted_at, gma.discord_id AS granted_by,
+                          s.billing_cycle, s.current_period_end,
+                          s.paddle_subscription_id
+                   FROM guild_module_access gma
+                   JOIN modules m ON gma.module_id = m.id
+                   JOIN subscriptions s ON gma.subscription_id = s.id
+                   WHERE gma.guild_id = $1 AND gma.is_active = TRUE
+                   ORDER BY m.module_number""",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+
+    # ======================================================================
+    # PADDLE: TRANSACTIONS
+    # ======================================================================
+
+    async def log_transaction(self, data: Dict) -> Dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO payment_transactions (
+                    paddle_transaction_id, paddle_subscription_id, paddle_customer_id,
+                    discord_id, guild_id, amount_usd, currency, status,
+                    transaction_type, raw_payload
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                ON CONFLICT (paddle_transaction_id) DO UPDATE SET
+                    status      = EXCLUDED.status,
+                    raw_payload = EXCLUDED.raw_payload
+                RETURNING *""",
+                data.get("paddle_transaction_id"), data.get(
+                    "paddle_subscription_id"),
+                data.get("paddle_customer_id"), data.get("discord_id"),
+                data.get("guild_id"), data.get(
+                    "amount_usd"), data.get("currency", "USD"),
+                data.get("status"), data.get("transaction_type"),
+                json.dumps(data.get("raw_payload", {})),
+            )
+            return dict(row)
+
+    async def get_transactions_for_user(self, discord_id: str) -> List[Dict]:
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM payment_transactions WHERE discord_id = $1 ORDER BY created_at DESC",
+                discord_id,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_transactions_for_guild(self, guild_id: int) -> List[Dict]:
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM payment_transactions WHERE guild_id = $1 ORDER BY created_at DESC",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+
+    # ======================================================================
+    # PADDLE: REFUNDS
+    # ======================================================================
+
+    async def log_refund(self, data: Dict) -> Dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO refunds (
+                    paddle_transaction_id, paddle_subscription_id,
+                    discord_id, guild_id, amount_usd, reason
+                ) VALUES ($1,$2,$3,$4,$5,$6)
+                RETURNING *""",
+                data.get("paddle_transaction_id"), data.get(
+                    "paddle_subscription_id"),
+                data.get("discord_id"), data.get("guild_id"),
+                data.get("amount_usd"), data.get("reason"),
+            )
+            return dict(row)
+
+    async def get_refunds_for_user(self, discord_id: str) -> List[Dict]:
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM refunds WHERE discord_id = $1 ORDER BY refunded_at DESC",
+                discord_id,
+            )
+            return [dict(r) for r in rows]
+
+    # ======================================================================
+    # PADDLE: WEBHOOK EVENT LOG
+    # ======================================================================
+
+    async def is_event_processed(self, event_id: str) -> bool:
+        if not self.pool:
+            return False
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT processed FROM paddle_webhook_events WHERE event_id = $1", event_id
+            )
+            if row is None:
+                return False
+            return row["processed"]
+
+    async def record_webhook_event(
+        self,
+        event_id: str,
+        event_type: str,
+        payload: Dict,
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO paddle_webhook_events (event_id, event_type, payload)
+                   VALUES ($1, $2, $3)
+                   ON CONFLICT (event_id) DO NOTHING""",
+                event_id, event_type, json.dumps(payload),
+            )
+
+    async def mark_event_processed(
+        self, event_id: str, error: Optional[str] = None
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE paddle_webhook_events SET
+                       processed        = $2,
+                       processing_error = $3,
+                       processed_at     = NOW()
+                   WHERE event_id = $1""",
+                event_id, error is None, error,
+            )
+
 
 # ======================================================================
 # SHARED RESULT BUILDER
@@ -42869,10 +43260,11 @@ async def debug_bot_role_hierarchy(
             "success": False,
             "error": str(e)
         }
-        
+
 # ============================================
 # CART SYSTEM ENDPOINTS
 # ============================================
+
 
 @app.post("/api/cart/add", response_model=CartResponse)
 async def cart_add_item(
@@ -42885,7 +43277,7 @@ async def cart_add_item(
     """
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     try:
         success = await db_stats.add_cart_item(
             user_id=int(user['discord_id']),
@@ -42894,7 +43286,7 @@ async def cart_add_item(
             billing_cycle=request.billing_cycle,
             price_usd=request.price_usd
         )
-        
+
         if success:
             return CartResponse(
                 success=True,
@@ -42931,13 +43323,13 @@ async def cart_remove_item(
     """
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     try:
         success = await db_stats.remove_cart_item(
             user_id=int(user['discord_id']),
             item_id=request.item_id
         )
-        
+
         if success:
             return CartResponse(
                 success=True,
@@ -42969,7 +43361,7 @@ async def cart_assign_server(
     """
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     try:
         # Verify the user has access to this guild
         user_servers = await auth_db.get_user_servers(user['discord_id'])
@@ -42978,13 +43370,13 @@ async def cart_assign_server(
                 status_code=403,
                 detail="You are not a member of this guild or the bot is not present"
             )
-        
+
         success = await db_stats.assign_server_to_cart_item(
             user_id=int(user['discord_id']),
             item_id=request.item_id,
             guild_id=int(request.guild_id)
         )
-        
+
         if success:
             return CartResponse(
                 success=True,
@@ -43021,14 +43413,14 @@ async def cart_unassign_server(
     """
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     try:
         success = await db_stats.unassign_server_from_cart_item(
             user_id=int(user['discord_id']),
             item_id=request.item_id,
             guild_id=int(request.guild_id)
         )
-        
+
         if success:
             return CartResponse(
                 success=True,
@@ -43062,14 +43454,14 @@ async def cart_get(
     """
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     try:
         cart_items = await db_stats.get_cart(
             user_id=int(user['discord_id'])
         )
-        
+
         total_price = sum(item.get('price_usd', 0) for item in cart_items)
-        
+
         return GetCartResponse(
             success=True,
             cart=cart_items,
@@ -43093,12 +43485,12 @@ async def cart_clear(
     """
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     try:
         success = await db_stats.clear_cart(
             user_id=int(user['discord_id'])
         )
-        
+
         if success:
             return CartResponse(
                 success=True,
@@ -43118,6 +43510,813 @@ async def cart_clear(
         logger.error(f"Unexpected error in cart_clear: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/api/paddle/webhook")
+async def paddle_webhook(request: Request):
+    """Receive and process Paddle webhook events"""
+    raw_body = await request.body()
+    signature = request.headers.get("Paddle-Signature", "")
+
+    if not verify_webhook_signature(raw_body, signature):
+        raise HTTPException(
+            status_code=401, detail="Invalid webhook signature")
+
+    try:
+        import json
+        event = json.loads(raw_body)  # parse from raw_body, not request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    event_id = event.get("notification_id") or event.get("event_id")
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Missing event_id")
+
+    # Idempotency check
+    if await db_stats.is_event_processed(event_id):
+        logger.info(f"Paddle event {event_id} already processed, skipping")
+        return {"status": "already_processed"}
+
+    await db_stats.record_webhook_event(
+        event_id=event_id,
+        event_type=event.get("event_type", "unknown"),
+        payload=event
+    )
+
+    try:
+        await process_event(db_stats, event)
+        await db_stats.mark_event_processed(event_id)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(
+            f"Error processing Paddle event {event_id}: {e}", exc_info=True)
+        await db_stats.mark_event_processed(event_id, error=str(e))
+        raise HTTPException(status_code=500, detail="Event processing failed")
+
+
+# ============================================
+# PADDLE: MODULES ENDPOINTS
+# NOTE: Static routes MUST come before /{module_key} to avoid being swallowed.
+# ============================================
+
+@app.get("/api/paddle/modules")
+async def get_all_modules(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get all active modules ordered by module number"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        modules = await db_stats.get_all_modules()
+        return modules
+    except Exception as e:
+        logger.error(f"Error in get_all_modules: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# STATIC: must be above /{module_key}
+@app.get("/api/paddle/modules/by-product/{paddle_product_id}")
+async def get_module_by_paddle_product(
+    paddle_product_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get a module by its Paddle product ID"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        module = await db_stats.get_module_by_paddle_product(paddle_product_id)
+        if not module:
+            raise HTTPException(status_code=404, detail="Module not found")
+        return module
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_module_by_paddle_product: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# STATIC: must be above /{module_key}
+@app.get("/api/paddle/modules/by-price/{paddle_price_id}")
+async def get_module_by_paddle_price(
+    paddle_price_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get a module by its Paddle monthly or yearly price ID"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        module = await db_stats.get_module_by_paddle_price(paddle_price_id)
+        if not module:
+            raise HTTPException(status_code=404, detail="Module not found")
+        return module
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_module_by_paddle_price: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Map tier → env var name for discount IDs
+# Tier 1 = first server = no discount; tiers 2–11 use the named discount codes
+DISCOUNT_TIER_ENV_KEYS = {
+    2:  "TWO_SERVERS",
+    3:  "THREE_SERVERS",
+    4:  "FOUR_SERVERS",
+    5:  "FIVE_SERVERS",
+    6:  "SIX_SERVERS",
+    7:  "SEVEN_SERVERS",
+    8:  "EIGHT_SERVERS",
+    9:  "NINE_SERVERS",
+    10: "TEN_SERVERS",
+    11: "ELEVEN_SERVERS",
+}
+
+
+@app.post("/api/paddle/checkout")
+async def create_checkout(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Create a Paddle hosted checkout URL for a single module + guild.
+
+    Body:
+        module_key    (str, required) — e.g. "optimization-plus"
+        guild_id      (str, required) — Discord guild snowflake
+        billing_cycle (str, optional) — "monthly" (default) | "yearly"
+
+    Returns:
+        { "checkout_url": "https://..." }
+
+    Error codes:
+        400 — missing / invalid fields
+        401 — not authenticated
+        409 — guild already has an active sub for this module
+        500 — Paddle API or internal error
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # ── 1. Parse + validate body ──────────────────────────────────────────────
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    module_key = body.get("module_key")
+    guild_id_raw = body.get("guild_id")
+    billing_cycle = body.get("billing_cycle", "monthly")
+
+    if not module_key:
+        raise HTTPException(status_code=400, detail="'module_key' is required")
+    if not guild_id_raw:
+        raise HTTPException(status_code=400, detail="'guild_id' is required")
+    if billing_cycle not in ("monthly", "yearly"):
+        raise HTTPException(
+            status_code=400,
+            detail="'billing_cycle' must be 'monthly' or 'yearly'"
+        )
+
+    try:
+        guild_id = int(guild_id_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400, detail="'guild_id' must be a valid integer")
+
+    discord_id = str(user.get("id") or user.get("discord_id"))
+
+    # ── 2. Resolve Paddle price ID from env ───────────────────────────────────
+    # Currently only "optimization-plus" is supported. As new modules ship,
+    # add entries to this map: module_key → { billing_cycle → env var name }
+    MODULE_PRICE_ENV_KEYS = {
+        "optimization-plus": {
+            "monthly": "MONTHLY_OPTIMIZATION",
+            "yearly":  "YEARLY_OPTIMIZATION",
+        },
+    }
+
+    price_env_map = MODULE_PRICE_ENV_KEYS.get(module_key)
+    if not price_env_map:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown module '{module_key}'"
+        )
+
+    price_env_key = price_env_map[billing_cycle]
+    paddle_price_id = os.environ.get(price_env_key)
+
+    if not paddle_price_id:
+        logger.error(f"Missing env var: {price_env_key}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Paddle price not configured for module '{module_key}' ({billing_cycle})"
+        )
+
+    # ── 3. Duplicate-subscription guard ───────────────────────────────────────
+    try:
+        existing_guild_subs = await db_stats.get_subscriptions_for_guild(guild_id)
+        already_active = any(
+            s.get("module_key") == module_key and s.get("status") == "active"
+            for s in existing_guild_subs
+        )
+        if already_active:
+            raise HTTPException(
+                status_code=409,
+                detail="This server already has an active subscription for this module."
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking guild subscriptions: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to verify existing subscriptions")
+
+    # ── 4. Count existing active subs for this user+module → discount tier ────
+    try:
+        user_subs = await db_stats.get_subscriptions_for_user(discord_id)
+        existing_count = sum(
+            1 for s in user_subs
+            if s.get("module_key") == module_key and s.get("status") == "active"
+        )
+    except Exception as e:
+        logger.warning(
+            f"Error counting user subscriptions for {discord_id}: {e}")
+        existing_count = 0  # non-fatal: proceed without discount
+
+    # Tier = existing active subs + 1 (this new purchase), capped at 11.
+    # Tier 1 = first server ever = no discount.
+    # Tiers 2–11 map to the named Paddle discount codes in env.
+    tier = min(existing_count + 1, 11)
+    discount_env_key = DISCOUNT_TIER_ENV_KEYS.get(
+        tier)          # None for tier 1
+    paddle_discount_id = os.environ.get(
+        discount_env_key) if discount_env_key else None
+
+    logger.info(
+        f"Checkout: user={discord_id} module={module_key} guild={guild_id} "
+        f"billing={billing_cycle} existing_subs={existing_count} tier={tier} "
+        f"discount_env={discount_env_key or 'none'} discount_id={paddle_discount_id or 'none'}"
+    )
+
+    # ── 5. Resolve Paddle customer record ─────────────────────────────────────
+    paddle_customer_id: Optional[str] = None
+    try:
+        customer = await db_stats.get_paddle_customer(discord_id)
+        if customer:
+            paddle_customer_id = customer.get("paddle_customer_id")
+    except Exception as e:
+        logger.warning(
+            f"Could not fetch Paddle customer for {discord_id}: {e}")
+        # Non-fatal: Paddle will create a new customer at checkout
+
+    # ── 6. Build checkout URL via Paddle ──────────────────────────────────────
+    try:
+        checkout_url = await paddle_client.generate_checkout_url(
+            price_id=paddle_price_id,
+            customer_id=paddle_customer_id,       # None → Paddle creates new customer
+            discount_id=paddle_discount_id,        # None → full price (tier 1)
+            custom_data={
+                "discord_id":    discord_id,
+                "guild_id":      str(guild_id),
+                "module_key":    module_key,
+                "billing_cycle": billing_cycle,
+            },
+        )
+    except PaddleAPIError as e:
+        logger.error(
+            f"Paddle API error creating checkout for {discord_id}: {e}")
+        raise HTTPException(status_code=e.status, detail=e.body)
+    except Exception as e:
+        logger.error(
+            f"Unexpected error creating checkout URL: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail="Failed to create checkout session")
+
+    if not checkout_url:
+        raise HTTPException(
+            status_code=500, detail="No checkout URL returned from Paddle")
+
+    return {"checkout_url": checkout_url}
+
+
+# DYNAMIC: must be LAST among /modules/* routes
+@app.get("/api/paddle/modules/{module_key}")
+async def get_module_by_key(
+    module_key: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get a module by its key"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        module = await db_stats.get_module_by_key(module_key)
+        if not module:
+            raise HTTPException(status_code=404, detail="Module not found")
+        return module
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_module_by_key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PADDLE: DISCOUNTS ENDPOINTS
+# ============================================
+
+@app.get("/api/paddle/discounts")
+async def get_all_discounts(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get all server count discounts ordered by server count"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discounts = await db_stats.get_all_discounts()
+        return discounts
+    except Exception as e:
+        logger.error(f"Error in get_all_discounts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/paddle/discounts/for-server-count/{server_count}")
+async def get_discount_for_server_count(
+    server_count: int,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get the applicable discount for a given number of servers"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discount = await db_stats.get_discount_for_server_count(server_count)
+        if not discount:
+            raise HTTPException(status_code=404, detail="No discount found")
+        return discount
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_discount_for_server_count: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PADDLE: CUSTOMERS ENDPOINTS
+# NOTE: /me and /by-paddle-id/* are static — no dynamic /{customer_id} route
+# exists currently so ordering is safe, but keep static routes first anyway.
+# ============================================
+
+@app.get("/api/paddle/customers/me")
+async def get_paddle_customer_me(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get the current user's Paddle customer record"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discord_id = str(user.get('id') or user.get('discord_id'))
+        customer = await db_stats.get_paddle_customer(discord_id)
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        return customer
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_paddle_customer_me: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/paddle/customers/upsert")
+async def upsert_paddle_customer(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Create or update a Paddle customer record for the current user"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        body = await request.json()
+        discord_id = str(user.get('id') or user.get('discord_id'))
+        paddle_customer_id = body.get('paddle_customer_id')
+        email = body.get('email')
+
+        customer = await db_stats.upsert_paddle_customer(
+            discord_id=discord_id,
+            paddle_customer_id=paddle_customer_id,
+            email=email
+        )
+        return customer
+    except Exception as e:
+        logger.error(f"Error in upsert_paddle_customer: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/paddle/customers/by-paddle-id/{paddle_customer_id}")
+async def get_paddle_customer_by_paddle_id(
+    paddle_customer_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get a customer record by their Paddle customer ID"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        customer = await db_stats.get_paddle_customer_by_paddle_id(paddle_customer_id)
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        return customer
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_paddle_customer_by_paddle_id: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PADDLE: SUBSCRIPTIONS ENDPOINTS
+# NOTE: Static routes MUST come before /{paddle_subscription_id} or FastAPI
+# will match "user" and "guild" as subscription ID strings.
+# ============================================
+
+# STATIC: must be above /{paddle_subscription_id}
+@app.get("/api/paddle/subscriptions/user/me")
+async def get_subscriptions_for_user_me(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get all subscriptions for the current user"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discord_id = str(user.get('id') or user.get('discord_id'))
+        subscriptions = await db_stats.get_subscriptions_for_user(discord_id)
+        return subscriptions
+    except Exception as e:
+        logger.error(f"Error in get_subscriptions_for_user_me: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# STATIC: must be above /{paddle_subscription_id}
+@app.get("/api/paddle/subscriptions/guild/{guild_id}")
+async def get_subscriptions_for_guild(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get all active subscriptions for a guild"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+        subscriptions = await db_stats.get_subscriptions_for_guild(guild_id_int)
+        return subscriptions
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid guild_id format")
+    except Exception as e:
+        logger.error(f"Error in get_subscriptions_for_guild: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# DYNAMIC: must be LAST among /subscriptions/* GET routes
+@app.get("/api/paddle/subscriptions/{paddle_subscription_id}")
+async def get_subscription(
+    paddle_subscription_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get a subscription by its Paddle subscription ID"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        subscription = await db_stats.get_subscription(paddle_subscription_id)
+        if not subscription:
+            raise HTTPException(
+                status_code=404, detail="Subscription not found")
+        return subscription
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_subscription: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --------------------------------------------
+# PADDLE: SUBSCRIPTION ACTIONS (thin wrappers around Paddle API)
+# These call Paddle directly — the webhook handles the DB update afterward.
+# --------------------------------------------
+
+@app.patch("/api/paddle/subscriptions/{paddle_subscription_id}/cancel")
+async def cancel_subscription(
+    paddle_subscription_id: str,
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Cancel a subscription.
+    Body: { "effective_from": "immediately" | "next_billing_period" } (default: "immediately")
+    Allowed callers: subscription owner OR a guild admin for the guild this subscription belongs to.
+    DB update is handled automatically by the subscription.canceled webhook.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discord_id = str(user.get('id') or user.get('discord_id'))
+
+        sub = await db_stats.get_subscription(paddle_subscription_id)
+        if not sub:
+            raise HTTPException(
+                status_code=404, detail="Subscription not found")
+
+        is_owner = sub["discord_id"] == discord_id
+        if not is_owner:
+            # Check if the user is an admin of the guild this subscription belongs to.
+            # Returns a Discord permissions integer, or None if user isn't in the guild.
+            # 0x8  = ADMINISTRATOR (bypasses all permission checks in Discord)
+            # 0x20 = MANAGE_GUILD  (can manage server settings)
+            permissions = await auth_db.get_user_permissions_from_db(discord_id, str(sub["guild_id"]))
+            is_guild_admin = bool(permissions and permissions & 0x8)
+            if not is_guild_admin:
+                raise HTTPException(
+                    status_code=403, detail="Not authorized to cancel this subscription")
+
+        body = {}
+        if await request.body():
+            body = await request.json()
+        effective_from = body.get("effective_from", "immediately")
+        if effective_from not in ("immediately", "next_billing_period"):
+            raise HTTPException(
+                status_code=400,
+                detail="effective_from must be 'immediately' or 'next_billing_period'"
+            )
+
+        result = await paddle_client.cancel_subscription(paddle_subscription_id, effective_from)
+        return result
+    except HTTPException:
+        raise
+    except PaddleAPIError as e:
+        logger.error(
+            f"Paddle API error canceling {paddle_subscription_id}: {e}")
+        raise HTTPException(status_code=e.status, detail=e.body)
+    except Exception as e:
+        logger.error(f"Error in cancel_subscription: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/paddle/subscriptions/{paddle_subscription_id}/auto-renew")
+async def set_auto_renew(
+    paddle_subscription_id: str,
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Enable or disable auto-renewal for a subscription.
+    Body: { "enable": true } to re-enable, { "enable": false } to cancel at period end.
+    Allowed callers: subscription owner only.
+    DB update is handled automatically by the subscription.updated webhook.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discord_id = str(user.get('id') or user.get('discord_id'))
+
+        sub = await db_stats.get_subscription(paddle_subscription_id)
+        if not sub:
+            raise HTTPException(
+                status_code=404, detail="Subscription not found")
+        if sub["discord_id"] != discord_id:
+            raise HTTPException(
+                status_code=403, detail="Not authorized to modify this subscription")
+
+        body = await request.json()
+        enable = body.get("enable")
+        if enable is None:
+            raise HTTPException(
+                status_code=400, detail="'enable' (bool) is required")
+
+        if enable:
+            # Clear any scheduled cancellation
+            payload = {"scheduled_change": None}
+        else:
+            # Schedule cancellation at end of current billing period
+            payload = {
+                "scheduled_change": {
+                    "action": "cancel",
+                    "effective_at": "next_billing_period"
+                }
+            }
+
+        result = await paddle_client.update_subscription(paddle_subscription_id, payload)
+        return result
+    except HTTPException:
+        raise
+    except PaddleAPIError as e:
+        logger.error(
+            f"Paddle API error updating auto-renew for {paddle_subscription_id}: {e}")
+        raise HTTPException(status_code=e.status, detail=e.body)
+    except Exception as e:
+        logger.error(f"Error in set_auto_renew: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/paddle/subscriptions/{paddle_subscription_id}/refund")
+async def refund_subscription(
+    paddle_subscription_id: str,
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Issue a refund for the most recent completed transaction on a subscription.
+    Body: { "reason": "..." } required. Optional: { "amount": "9.99" } for partial refund.
+    Allowed callers: subscription owner only.
+    DB update is handled automatically by the adjustment.created webhook.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discord_id = str(user.get('id') or user.get('discord_id'))
+
+        sub = await db_stats.get_subscription(paddle_subscription_id)
+        if not sub:
+            raise HTTPException(
+                status_code=404, detail="Subscription not found")
+        if sub["discord_id"] != discord_id:
+            raise HTTPException(
+                status_code=403, detail="Not authorized to refund this subscription")
+
+        body = await request.json()
+        reason = body.get("reason")
+        if not reason:
+            raise HTTPException(status_code=400, detail="'reason' is required")
+        amount = body.get("amount")  # optional, omit for full refund
+
+        # Look up the most recent completed transaction for this subscription
+        transactions_resp = await paddle_client.list_transactions(
+            subscription_id=paddle_subscription_id,
+            per_page=1
+        )
+        transactions = transactions_resp.get("data", [])
+        if not transactions:
+            raise HTTPException(
+                status_code=404, detail="No transactions found for this subscription")
+
+        latest_transaction = transactions[0]
+        if latest_transaction.get("status") != "completed":
+            raise HTTPException(
+                status_code=400, detail="Most recent transaction is not completed")
+
+        result = await paddle_client.create_refund(
+            transaction_id=latest_transaction["id"],
+            reason=reason,
+            amount=amount,
+        )
+        return result
+    except HTTPException:
+        raise
+    except PaddleAPIError as e:
+        logger.error(
+            f"Paddle API error refunding {paddle_subscription_id}: {e}")
+        raise HTTPException(status_code=e.status, detail=e.body)
+    except Exception as e:
+        logger.error(f"Error in refund_subscription: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PADDLE: GUILD MODULE ACCESS ENDPOINTS
+# ============================================
+
+@app.get("/api/paddle/guild-module-access/{guild_id}/active")
+async def get_guild_active_modules(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get all active modules for a guild"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        modules = await db_stats.get_guild_active_modules(int(guild_id))
+        return modules
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid guild_id format")
+    except Exception as e:
+        logger.error(f"Error in get_guild_active_modules: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/paddle/guild-module-access/{guild_id}/has/{module_key}")
+async def guild_has_module(
+    guild_id: str,
+    module_key: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Check whether a guild has active access to a specific module"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        has_access = await db_stats.guild_has_module(int(guild_id), module_key)
+        return {"has_access": has_access}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid guild_id format")
+    except Exception as e:
+        logger.error(f"Error in guild_has_module: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PADDLE: TRANSACTIONS ENDPOINTS
+# POST /transactions/log removed — internal only, called by webhook handler.
+# ============================================
+
+@app.get("/api/paddle/transactions/user/me")
+async def get_transactions_for_user_me(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get all transactions for the current user"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discord_id = str(user.get('id') or user.get('discord_id'))
+        transactions = await db_stats.get_transactions_for_user(discord_id)
+        return transactions
+    except Exception as e:
+        logger.error(f"Error in get_transactions_for_user_me: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/paddle/transactions/guild/{guild_id}")
+async def get_transactions_for_guild(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get all transactions for a guild"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        transactions = await db_stats.get_transactions_for_guild(int(guild_id))
+        return transactions
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid guild_id format")
+    except Exception as e:
+        logger.error(f"Error in get_transactions_for_guild: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PADDLE: REFUNDS ENDPOINTS
+# POST /refunds/log removed — internal only, called by webhook handler.
+# ============================================
+
+@app.get("/api/paddle/refunds/user/me")
+async def get_refunds_for_user_me(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get all refunds for the current user"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discord_id = str(user.get('id') or user.get('discord_id'))
+        refunds = await db_stats.get_refunds_for_user(discord_id)
+        return refunds
+    except Exception as e:
+        logger.error(f"Error in get_refunds_for_user_me: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PADDLE: WEBHOOK EVENT LOG ENDPOINTS
+# POST /webhook-events/record removed — internal only.
+# PATCH /webhook-events/{event_id}/mark-processed removed — internal only.
+# Both are called directly inside the webhook handler.
+# ============================================
+
+@app.get("/api/paddle/webhook-events/{event_id}/processed")
+async def is_event_processed(
+    event_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Check whether a webhook event has already been processed"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        processed = await db_stats.is_event_processed(event_id)
+        return {"event_id": event_id, "processed": processed}
+    except Exception as e:
+        logger.error(f"Error in is_event_processed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 # ============================================
 # PUBLIC ENDPOINTS (No Authentication Required)
 # ============================================

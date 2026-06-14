@@ -1,48 +1,74 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Trash2, ChevronDown, ShoppingCart, Server } from 'lucide-react';
+import { Trash2, ShoppingCart, Server, Zap } from 'lucide-react';
 import NavBar from '../Components/NavBar.jsx';
 import Footer from '../Components/Footer.jsx';
 
 const API_URL = window.location.origin;
 
+// ─── Module registry ───────────────────────────────────────────────────────────
+// Add new modules here as you release them.
 const MODULE_INFO = {
   'optimization-plus': {
     name: 'Optimization+',
-    icon: <ShoppingCart size={28} color="#aa00ff" />,
+    icon: <Zap size={28} color="#aa00ff" />,
+    monthlyPrice: 2.49,
+    yearlyPrice: 24.90,
   },
 };
 
-const YEARLY_MULTIPLIER = 10;
+// ─── Discount tiers (must match server_count_discounts table + env discount IDs)
+// Key = total active subs for this module across all user's servers (including this purchase)
+const DISCOUNT_TIERS = {
+  1:  0.00,
+  2:  0.05,
+  3:  0.10,
+  4:  0.15,
+  5:  0.20,
+  6:  0.25,
+  7:  0.30,
+  8:  0.35,
+  9:  0.40,
+  10: 0.45,
+  11: 0.50,
+};
+
+const getDiscountPct = (totalServerCount) => {
+  const capped = Math.min(totalServerCount, 11);
+  return DISCOUNT_TIERS[capped] ?? 0;
+};
 
 const MyCartPage = () => {
-  const [user, setUser] = useState(null);
+  const [user, setUser]               = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [showLoginOverlay, setShowLoginOverlay] = useState(false);
 
-  const [cart, setCart] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [cart, setCart]               = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState(null);
 
-  const [servers, setServers] = useState([]);
-  const [serversLoading, setServersLoading] = useState(true);
+  const [servers, setServers]                 = useState([]);
+  const [serversLoading, setServersLoading]   = useState(true);
 
-  const [openDropdown, setOpenDropdown] = useState(null);
-  const [pendingActions, setPendingActions] = useState({});
-  const [removingItem, setRemovingItem] = useState(null);
+  // How many active subs the user already has per module key
+  // e.g. { 'optimization-plus': 2 }
+  const [existingSubCounts, setExistingSubCounts] = useState({});
+
+  const [pendingCheckout, setPendingCheckout] = useState(null); // item_id being checked out
+  const [removingItem, setRemovingItem]       = useState(null);
 
   const hasFetchedRef = useRef(false);
 
-  // ─── Auth check ───
+  // ─── Auth ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        const response = await fetch(`${API_URL}/api/auth/status`, {
+        const res = await fetch(`${API_URL}/api/auth/status`, {
           credentials: 'include',
-          headers: { 'Cache-Control': 'no-cache' }
+          headers: { 'Cache-Control': 'no-cache' },
         });
-        if (!response.ok) throw new Error('Auth check failed');
-        const data = await response.json();
+        if (!res.ok) throw new Error('Auth check failed');
+        const data = await res.json();
         if (data.authenticated) {
           setUser(data.user);
         } else {
@@ -57,24 +83,25 @@ const MyCartPage = () => {
     checkAuth();
   }, []);
 
-  // ─── Fetch cart + servers once authenticated ───
+  // ─── Initial fetch once authenticated ─────────────────────────────────────
   useEffect(() => {
     if (!user || hasFetchedRef.current) return;
     hasFetchedRef.current = true;
     fetchCart();
     fetchServers();
+    fetchExistingSubCounts();
   }, [user]);
 
   const fetchCart = async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${API_URL}/api/cart`, {
+      const res = await fetch(`${API_URL}/api/cart`, {
         credentials: 'include',
-        headers: { 'Cache-Control': 'no-cache' }
+        headers: { 'Cache-Control': 'no-cache' },
       });
-      if (!response.ok) throw new Error(`Failed to fetch cart: ${response.status}`);
-      const data = await response.json();
+      if (!res.ok) throw new Error(`Failed to fetch cart: ${res.status}`);
+      const data = await res.json();
       setCart(data.cart || []);
     } catch (err) {
       setError(err.message);
@@ -86,20 +113,19 @@ const MyCartPage = () => {
   const fetchServers = async () => {
     setServersLoading(true);
     try {
-      const response = await fetch(`${API_URL}/api/user/servers`, {
+      const res = await fetch(`${API_URL}/api/user/servers`, {
         credentials: 'include',
-        headers: { 'Cache-Control': 'no-cache' }
+        headers: { 'Cache-Control': 'no-cache' },
       });
-      if (!response.ok) throw new Error(`Failed to fetch servers: ${response.status}`);
-      const data = await response.json();
-      const processed = data.map(server => ({
-        ...server,
-        id: String(server.id),
-        iconUrl: server.icon
-          ? `https://cdn.discordapp.com/icons/${server.id}/${server.icon}.png?size=64`
-          : 'https://cdn.discordapp.com/embed/avatars/0.png'
-      }));
-      setServers(processed);
+      if (!res.ok) throw new Error(`Failed to fetch servers: ${res.status}`);
+      const data = await res.json();
+      setServers(data.map(s => ({
+        ...s,
+        id: String(s.id),
+        iconUrl: s.icon
+          ? `https://cdn.discordapp.com/icons/${s.id}/${s.icon}.png?size=64`
+          : 'https://cdn.discordapp.com/embed/avatars/0.png',
+      })));
     } catch (err) {
       console.error('Error fetching servers:', err);
     } finally {
@@ -107,107 +133,103 @@ const MyCartPage = () => {
     }
   };
 
+  const fetchExistingSubCounts = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/paddle/subscriptions/user/me`, {
+        credentials: 'include',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+      if (!res.ok) return;
+      const subs = await res.json();
+
+      // Count active subs per module_key
+      const counts = {};
+      for (const sub of subs) {
+        if (sub.status === 'active' && sub.module_key) {
+          counts[sub.module_key] = (counts[sub.module_key] || 0) + 1;
+        }
+      }
+      setExistingSubCounts(counts);
+    } catch (err) {
+      console.error('Error fetching existing sub counts:', err);
+    }
+  };
+
   const handleLogin = () => {
     window.location.href = `${API_URL}/api/auth/discord?returnTo=${encodeURIComponent(window.location.href)}`;
   };
 
-  const getAssignedGuildIds = (item) => {
-    return (item.assigned_servers || [])
-      .map(s => String(s.guild_id))
-      .filter(id => id && id !== '0' && id !== 'null' && id !== 'undefined');
-  };
-
-  // ─── Optimistically update assigned_servers in cart state ───
-  const optimisticallyAssign = (itemId, guildId) => {
-    setCart(prev => prev.map(item => {
-      if (item.item_id !== itemId) return item;
-      const already = (item.assigned_servers || []).some(s => String(s.guild_id) === String(guildId));
-      if (already) return item;
-      return {
-        ...item,
-        assigned_servers: [...(item.assigned_servers || []), { guild_id: String(guildId) }]
-      };
-    }));
-  };
-
-  const optimisticallyUnassign = (itemId, guildId) => {
-    setCart(prev => prev.map(item => {
-      if (item.item_id !== itemId) return item;
-      return {
-        ...item,
-        assigned_servers: (item.assigned_servers || []).filter(s => String(s.guild_id) !== String(guildId))
-      };
-    }));
-  };
-
-  // ─── Server assignment ───
+  // ─── Server assignment (one server per cart item) ─────────────────────────
   const assignServer = async (item, guildId) => {
     const guildIdStr = String(guildId);
-    // Optimistic update — show the server immediately
-    optimisticallyAssign(item.item_id, guildIdStr);
-    setOpenDropdown(null);
-    setPendingActions(prev => ({ ...prev, [item.item_id]: true }));
+    // Optimistic update
+    setCart(prev => prev.map(ci =>
+      ci.item_id === item.item_id
+        ? { ...ci, guild_id: guildIdStr }
+        : ci
+    ));
     try {
-      const response = await fetch(`${API_URL}/api/cart/assign-server`, {
+      const res = await fetch(`${API_URL}/api/cart/assign-server`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_id: item.item_id, guild_id: guildIdStr })
+        body: JSON.stringify({ item_id: item.item_id, guild_id: guildIdStr }),
       });
-      const data = await response.json();
-      if (!response.ok || !data.success) {
-        throw new Error(data.detail || data.message || 'Failed to assign server');
-      }
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.detail || data.message || 'Failed to assign server');
     } catch (err) {
-      // Roll back the optimistic update on failure
-      optimisticallyUnassign(item.item_id, guildIdStr);
+      // Roll back
+      setCart(prev => prev.map(ci =>
+        ci.item_id === item.item_id
+          ? { ...ci, guild_id: item.guild_id }
+          : ci
+      ));
       setError(err.message);
       setTimeout(() => setError(null), 4000);
-    } finally {
-      setPendingActions(prev => ({ ...prev, [item.item_id]: false }));
     }
   };
 
-  const unassignServer = async (item, guildId) => {
-    const guildIdStr = String(guildId);
-    // Optimistic update — remove the server immediately
-    optimisticallyUnassign(item.item_id, guildIdStr);
-    setPendingActions(prev => ({ ...prev, [item.item_id]: true }));
+  const unassignServer = async (item) => {
+    const prevGuildId = item.guild_id;
+    // Optimistic update
+    setCart(prev => prev.map(ci =>
+      ci.item_id === item.item_id
+        ? { ...ci, guild_id: null }
+        : ci
+    ));
     try {
-      const response = await fetch(`${API_URL}/api/cart/unassign-server`, {
+      const res = await fetch(`${API_URL}/api/cart/unassign-server`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_id: item.item_id, guild_id: guildIdStr })
+        body: JSON.stringify({ item_id: item.item_id, guild_id: prevGuildId }),
       });
-      const data = await response.json();
-      if (!response.ok || !data.success) {
-        throw new Error(data.detail || data.message || 'Failed to remove server');
-      }
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.detail || data.message || 'Failed to remove server');
     } catch (err) {
-      // Roll back the optimistic update on failure
-      optimisticallyAssign(item.item_id, guildIdStr);
+      // Roll back
+      setCart(prev => prev.map(ci =>
+        ci.item_id === item.item_id
+          ? { ...ci, guild_id: prevGuildId }
+          : ci
+      ));
       setError(err.message);
       setTimeout(() => setError(null), 4000);
-    } finally {
-      setPendingActions(prev => ({ ...prev, [item.item_id]: false }));
     }
   };
 
-  // ─── Remove item from cart ───
+  // ─── Remove item ───────────────────────────────────────────────────────────
   const removeFromCart = async (item) => {
     setRemovingItem(item.item_id);
     try {
-      const response = await fetch(`${API_URL}/api/cart/remove`, {
+      const res = await fetch(`${API_URL}/api/cart/remove`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_id: item.item_id })
+        body: JSON.stringify({ item_id: item.item_id }),
       });
-      const data = await response.json();
-      if (!response.ok || !data.success) {
-        throw new Error(data.detail || data.message || 'Failed to remove item');
-      }
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.detail || data.message || 'Failed to remove item');
       setTimeout(() => {
         setCart(prev => prev.filter(ci => ci.item_id !== item.item_id));
         setRemovingItem(null);
@@ -219,30 +241,103 @@ const MyCartPage = () => {
     }
   };
 
-  // ─── Pricing ───
-  const MULTI_SERVER_DISCOUNT_STEP = 0.05;
-  const MULTI_SERVER_DISCOUNT_MAX = 0.50;
-
-  const getItemDiscount = (item) => {
-    const assignedCount = getAssignedGuildIds(item).length;
-    const extraServers = Math.max(0, assignedCount - 2);
-    return Math.min(extraServers * MULTI_SERVER_DISCOUNT_STEP, MULTI_SERVER_DISCOUNT_MAX);
+  // ─── Pricing helpers ───────────────────────────────────────────────────────
+  // Position of this item in the checkout queue affects discount tier.
+  // Items are sorted by item_id for a stable order.
+  const getItemDiscount = (item, cartIndex) => {
+    const existing = existingSubCounts[item.item_id] || 0;
+    // cartIndex is 0-based position among items with the same module_key in this cart
+    const totalServerCount = existing + cartIndex + 1;
+    return getDiscountPct(totalServerCount);
   };
 
-  const getItemBasePrice = (item) => {
-    return item.billing_cycle === 'yearly'
-      ? item.price_usd * YEARLY_MULTIPLIER
-      : item.price_usd;
+  const getBasePrice = (item) => {
+    const info = MODULE_INFO[item.item_id];
+    if (!info) return item.price_usd || 0;
+    return item.billing_cycle === 'yearly' ? info.yearlyPrice : info.monthlyPrice;
   };
 
-  const getItemEffectivePrice = (item) => {
-    const discount = getItemDiscount(item);
-    return getItemBasePrice(item) * (1 - discount);
+  const getEffectivePrice = (item, cartIndex) => {
+    const base     = getBasePrice(item);
+    const discount = getItemDiscount(item, cartIndex);
+    return parseFloat((base * (1 - discount)).toFixed(2));
   };
 
-  const totalPrice = cart.reduce((sum, item) => sum + getItemEffectivePrice(item), 0);
+  // Group cart items by module_key to assign per-module cartIndex for discount calc
+  const getCartIndex = (item) => {
+    return cart
+      .filter(ci => ci.item_id === item.item_id)
+      .findIndex(ci => ci.item_id === item.item_id && ci.cart_item_id === item.cart_item_id);
+  };
 
-  // ─── Render: Login overlay ───
+  const totalPrice = cart.reduce((sum, item) => {
+    const idx = getCartIndex(item);
+    return sum + getEffectivePrice(item, idx);
+  }, 0);
+
+  // ─── Checkout ──────────────────────────────────────────────────────────────
+  const handleCheckout = async (item) => {
+    if (!item.guild_id) {
+      setError('Please assign a server before checking out.');
+      setTimeout(() => setError(null), 4000);
+      return;
+    }
+
+    setPendingCheckout(item.item_id);
+    setError(null);
+
+    try {
+      const res = await fetch(`${API_URL}/api/paddle/checkout`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          module_key:    item.item_id,
+          guild_id:      item.guild_id,
+          billing_cycle: item.billing_cycle || 'monthly',
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        // 409 = already subscribed for this guild
+        if (res.status === 409) {
+          throw new Error('This server already has an active subscription for this module.');
+        }
+        throw new Error(data.detail || 'Failed to create checkout session');
+      }
+
+      if (!data.checkout_url) {
+        throw new Error('No checkout URL returned from server');
+      }
+
+      // Redirect to Paddle hosted checkout
+      window.location.href = data.checkout_url;
+
+    } catch (err) {
+      setError(err.message);
+      setTimeout(() => setError(null), 6000);
+    } finally {
+      setPendingCheckout(null);
+    }
+  };
+
+  // ─── Render helpers ────────────────────────────────────────────────────────
+  const getAssignedServer = (item) => {
+    if (!item.guild_id) return null;
+    return servers.find(s => s.id === String(item.guild_id)) || null;
+  };
+
+  const getAvailableServers = (item) => {
+    // Exclude servers already assigned to another cart item with the same module
+    const takenByOtherItems = cart
+      .filter(ci => ci.item_id === item.item_id && ci.cart_item_id !== item.cart_item_id && ci.guild_id)
+      .map(ci => String(ci.guild_id));
+    return servers.filter(s => !takenByOtherItems.includes(s.id));
+  };
+
+  // ─── Login overlay ─────────────────────────────────────────────────────────
   if (authChecked && showLoginOverlay) {
     return (
       <>
@@ -253,9 +348,7 @@ const MyCartPage = () => {
               <div className="login-icon">🔒</div>
               <h2>Sign in to view your cart</h2>
               <p>Log in with Discord to see what's waiting in your cart and assign it to your servers.</p>
-              <button className="login-button" onClick={handleLogin}>
-                Log In with Discord
-              </button>
+              <button className="login-button" onClick={handleLogin}>Log In with Discord</button>
             </div>
           </div>
         </div>
@@ -270,9 +363,7 @@ const MyCartPage = () => {
       <>
         <NavBar />
         <div className="cart-page">
-          <div className="state-container">
-            <div className="spinner" />
-          </div>
+          <div className="state-container"><div className="spinner" /></div>
         </div>
         <Footer />
         <style>{baseStyles + stateStyles}</style>
@@ -280,25 +371,22 @@ const MyCartPage = () => {
     );
   }
 
+  // ─── Main render ───────────────────────────────────────────────────────────
   return (
     <>
       <NavBar />
-
       <div className="cart-page">
         <div className="bg-glow bg-glow-1" />
         <div className="bg-glow bg-glow-2" />
 
         <div className="cart-container">
-
           <div className="modules-divider">
             <div className="divider-line" />
             <span className="modules-label">MY CART</span>
             <div className="divider-line" />
           </div>
 
-          {error && (
-            <div className="global-error">{error}</div>
-          )}
+          {error && <div className="global-error">{error}</div>}
 
           {loading ? (
             <div className="state-container">
@@ -316,125 +404,138 @@ const MyCartPage = () => {
             <>
               <div className="modules-grid">
                 {cart.map((item) => {
-                  const info = MODULE_INFO[item.item_id] || { name: item.item_id, icon: <ShoppingCart size={28} color="#aa00ff" /> };
-                  const assignedIds = getAssignedGuildIds(item);
-                  const assignedServers = servers.filter(s => assignedIds.includes(String(s.id)));
-                  const availableServers = servers.filter(s => !assignedIds.includes(String(s.id)));
-                  const discount = getItemDiscount(item);
-                  const effectivePrice = getItemEffectivePrice(item);
-                  const isYearly = item.billing_cycle === 'yearly';
-                  const isPending = pendingActions[item.item_id];
-                  const isRemoving = removingItem === item.item_id;
-                  const isDropdownOpen = openDropdown === item.item_id;
+                  const info           = MODULE_INFO[item.item_id] || { name: item.item_id, icon: <ShoppingCart size={28} color="#aa00ff" /> };
+                  const cartIdx        = getCartIndex(item);
+                  const discount       = getItemDiscount(item, cartIdx);
+                  const basePrice      = getBasePrice(item);
+                  const effectivePrice = getEffectivePrice(item, cartIdx);
+                  const isYearly       = item.billing_cycle === 'yearly';
+                  const assignedServer = getAssignedServer(item);
+                  const availServers   = getAvailableServers(item);
+                  const isRemoving     = removingItem === item.item_id;
+                  const isCheckingOut  = pendingCheckout === item.item_id;
+                  const existing       = existingSubCounts[item.item_id] || 0;
+                  const totalCount     = existing + cartIdx + 1;
 
                   return (
-                    <div key={item.item_id} className={`module-card ${isRemoving ? 'is-removing' : ''}`}>
+                    <div key={item.cart_item_id || item.item_id} className={`module-card ${isRemoving ? 'is-removing' : ''}`}>
                       <div className="card-sheen" />
 
+                      {/* Header */}
                       <div className="module-header">
                         <div className="module-icon">{info.icon}</div>
                         <div className="module-title-group">
                           <h2 className="module-name">{info.name}</h2>
                           <span className="module-price">
-                            <span className="price-amount" key={effectivePrice}>${effectivePrice.toFixed(2)}</span>
+                            <span className="price-amount" key={effectivePrice}>
+                              ${effectivePrice.toFixed(2)}
+                            </span>
                             {' '}/ {isYearly ? 'year' : 'month'}
                             {isYearly && (
-                              <span className="discount-pill yearly-pill"> · 17% off</span>
+                              <span className="discount-pill yearly-pill"> · 2 months free</span>
                             )}
                             {discount > 0 && (
                               <span className="discount-pill"> · {(discount * 100).toFixed(0)}% multi-server</span>
                             )}
                           </span>
+                          {discount > 0 && (
+                            <span className="base-price-strike">${basePrice.toFixed(2)} / {isYearly ? 'year' : 'month'}</span>
+                          )}
                         </div>
                       </div>
 
                       <div className="module-divider" />
 
+                      {/* Server assignment */}
                       <div className="server-section">
-                        <p className="feature-group-label">Servers</p>
+                        <p className="feature-group-label">Server</p>
 
-                        {assignedServers.length > 0 && (
-                          <div className="assigned-servers">
-                            {assignedServers.map(server => (
-                              <div key={server.id} className="server-chip">
-                                <img src={server.iconUrl} alt={server.name} className="server-chip-icon"
-                                  onError={(e) => { e.target.src = 'https://cdn.discordapp.com/embed/avatars/0.png'; }}
-                                />
-                                <span className="server-chip-name">{server.name}</span>
-                                <button
-                                  className="server-chip-remove"
-                                  onClick={() => unassignServer(item, server.id)}
-                                  disabled={isPending}
-                                  aria-label={`Remove ${server.name}`}
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            ))}
+                        {assignedServer ? (
+                          <div className="server-chip">
+                            <img
+                              src={assignedServer.iconUrl}
+                              alt={assignedServer.name}
+                              className="server-chip-icon"
+                              onError={(e) => { e.target.src = 'https://cdn.discordapp.com/embed/avatars/0.png'; }}
+                            />
+                            <span className="server-chip-name">{assignedServer.name}</span>
+                            <button
+                              className="server-chip-remove"
+                              onClick={() => unassignServer(item)}
+                              aria-label={`Remove ${assignedServer.name}`}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="server-select-wrapper">
+                            <Server size={14} className="server-select-icon" />
+                            <select
+                              className="server-select"
+                              defaultValue=""
+                              onChange={(e) => {
+                                if (e.target.value) assignServer(item, e.target.value);
+                              }}
+                              disabled={serversLoading || availServers.length === 0}
+                            >
+                              <option value="" disabled>
+                                {serversLoading
+                                  ? 'Loading servers...'
+                                  : availServers.length === 0
+                                    ? 'No servers available'
+                                    : 'Select a server'}
+                              </option>
+                              {availServers.map(s => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                            </select>
                           </div>
                         )}
 
-                        {assignedServers.length === 0 && (
-                          <p className="no-server-text">No server assigned yet — pick one below.</p>
-                        )}
-
-                        <div className="add-server-wrapper">
-                          <button
-                            className="add-server-btn"
-                            onClick={() => setOpenDropdown(isDropdownOpen ? null : item.item_id)}
-                            disabled={isPending || serversLoading || availableServers.length === 0}
-                          >
-                            <Server size={15} />
-                            <span>
-                              {serversLoading
-                                ? 'Loading servers...'
-                                : availableServers.length === 0
-                                  ? 'All servers added'
-                                  : assignedServers.length === 0
-                                    ? 'Select a server'
-                                    : 'Add another server'}
-                            </span>
-                            <ChevronDown size={15} className={`chevron ${isDropdownOpen ? 'open' : ''}`} />
-                          </button>
-
-                          {isDropdownOpen && availableServers.length > 0 && (
-                            <div className="server-dropdown">
-                              {availableServers.map(server => (
-                                <button
-                                  key={server.id}
-                                  className="server-dropdown-item"
-                                  onClick={() => assignServer(item, server.id)}
-                                  disabled={isPending}
-                                >
-                                  <img src={server.iconUrl} alt={server.name} className="server-chip-icon"
-                                    onError={(e) => { e.target.src = 'https://cdn.discordapp.com/embed/avatars/0.png'; }}
-                                  />
-                                  <span>{server.name}</span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-
-                        {assignedServers.length > 0 && (
-                          <p className="discount-note">
+                        {/* Discount context note */}
+                        {existing > 0 && (
+                          <p className="discount-context-note">
                             {discount > 0
-                              ? `Multi-server discount applied: ${(discount * 100).toFixed(0)}% off`
-                              : 'Add more servers for up to 50% off this item'}
+                              ? `${(discount * 100).toFixed(0)}% off — you have ${existing} active ${info.name} subscription${existing > 1 ? 's' : ''} (server ${totalCount} total)`
+                              : `You have ${existing} active ${info.name} subscription${existing > 1 ? 's' : ''}`}
+                          </p>
+                        )}
+                        {existing === 0 && discount === 0 && (
+                          <p className="discount-context-note muted">
+                            Add this module to more servers for up to 50% off each
                           </p>
                         )}
                       </div>
 
                       <div className="module-divider" />
 
+                      {/* Footer actions */}
                       <div className="module-footer">
+                        <button
+                          className="checkout-item-btn"
+                          onClick={() => handleCheckout(item)}
+                          disabled={isCheckingOut || isRemoving || !item.guild_id}
+                          title={!item.guild_id ? 'Assign a server first' : ''}
+                        >
+                          {isCheckingOut ? (
+                            <>
+                              <div className="btn-spinner" />
+                              <span>Redirecting to Paddle...</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>Checkout — ${effectivePrice.toFixed(2)}</span>
+                            </>
+                          )}
+                        </button>
+
                         <button
                           className="remove-btn"
                           onClick={() => removeFromCart(item)}
-                          disabled={isRemoving}
+                          disabled={isRemoving || isCheckingOut}
                         >
-                          <Trash2 size={16} />
-                          <span>{isRemoving ? 'Removing...' : 'Remove from Cart'}</span>
+                          <Trash2 size={15} />
+                          <span>{isRemoving ? 'Removing...' : 'Remove'}</span>
                         </button>
                       </div>
 
@@ -446,27 +547,29 @@ const MyCartPage = () => {
                 })}
               </div>
 
-              <div className="checkout-card">
-                <button className="checkout-btn">
-                  <span className="checkout-label">Checkout</span>
-                  <span className="checkout-price" key={totalPrice}>${totalPrice.toFixed(2)}</span>
-                </button>
-                <p className="page-footnote">
-                  Total reflects all multi-server discounts. Final billing is calculated at checkout, excluding VAT.
-                </p>
-              </div>
+              {/* Cart total summary */}
+              {cart.length > 1 && (
+                <div className="cart-summary">
+                  <div className="summary-row">
+                    <span className="summary-label">Total across {cart.length} items</span>
+                    <span className="summary-total" key={totalPrice}>${totalPrice.toFixed(2)}</span>
+                  </div>
+                  <p className="page-footnote">
+                    Each item checks out separately through Paddle. Discounts are applied based on your total active subscriptions per module.
+                  </p>
+                </div>
+              )}
             </>
           )}
-
         </div>
       </div>
-
       <Footer />
-
       <style>{baseStyles + cartStyles + loginStyles + stateStyles}</style>
     </>
   );
 };
+
+// ─── Styles ────────────────────────────────────────────────────────────────────
 
 const baseStyles = `
   @font-face {
@@ -498,29 +601,9 @@ const baseStyles = `
     overflow: hidden;
   }
 
-  .bg-glow {
-    position: absolute;
-    border-radius: 50%;
-    filter: blur(120px);
-    pointer-events: none;
-    opacity: 0.35;
-  }
-
-  .bg-glow-1 {
-    width: 500px;
-    height: 500px;
-    background: #aa00ff;
-    top: -200px;
-    left: -150px;
-  }
-
-  .bg-glow-2 {
-    width: 450px;
-    height: 450px;
-    background: #5500aa;
-    bottom: -150px;
-    right: -150px;
-  }
+  .bg-glow { position: absolute; border-radius: 50%; filter: blur(120px); pointer-events: none; opacity: 0.35; }
+  .bg-glow-1 { width: 500px; height: 500px; background: #aa00ff; top: -200px; left: -150px; }
+  .bg-glow-2 { width: 450px; height: 450px; background: #5500aa; bottom: -150px; right: -150px; }
 
   .cart-container {
     max-width: 600px;
@@ -547,27 +630,11 @@ const baseStyles = `
   .divider-line {
     flex: 1;
     height: 1px;
-    background: linear-gradient(
-      to right,
-      transparent 0%,
-      rgba(255,255,255,0.06) 8%,
-      rgba(255,255,255,0.3) 25%,
-      rgba(255,255,255,0.7) 50%,
-      rgba(255,255,255,0.3) 75%,
-      transparent 100%
-    );
+    background: linear-gradient(to right, transparent 0%, rgba(255,255,255,0.06) 8%, rgba(255,255,255,0.3) 25%, rgba(255,255,255,0.7) 50%, rgba(255,255,255,0.3) 75%, transparent 100%);
   }
 
   .modules-divider .divider-line:last-child {
-    background: linear-gradient(
-      to left,
-      transparent 0%,
-      rgba(255,255,255,0.06) 8%,
-      rgba(255,255,255,0.3) 25%,
-      rgba(255,255,255,0.7) 50%,
-      rgba(255,255,255,0.3) 75%,
-      transparent 100%
-    );
+    background: linear-gradient(to left, transparent 0%, rgba(255,255,255,0.06) 8%, rgba(255,255,255,0.3) 25%, rgba(255,255,255,0.7) 50%, rgba(255,255,255,0.3) 75%, transparent 100%);
   }
 
   .modules-label {
@@ -575,10 +642,7 @@ const baseStyles = `
     font-weight: 800;
     letter-spacing: 8px;
     color: #ffffff;
-    text-shadow:
-      0 0 12px rgba(255,255,255,0.95),
-      0 0 28px rgba(255,255,255,0.6),
-      0 0 55px rgba(255,255,255,0.25);
+    text-shadow: 0 0 12px rgba(255,255,255,0.95), 0 0 28px rgba(255,255,255,0.6), 0 0 55px rgba(255,255,255,0.25);
     white-space: nowrap;
     flex-shrink: 0;
   }
@@ -618,68 +682,38 @@ const baseStyles = `
 
   .card-sheen {
     position: absolute;
-    top: 0;
-    left: -100%;
-    width: 60%;
-    height: 100%;
-    background: linear-gradient(
-      100deg,
-      transparent 0%,
-      rgba(170, 0, 255, 0.06) 50%,
-      transparent 100%
-    );
+    top: 0; left: -100%;
+    width: 60%; height: 100%;
+    background: linear-gradient(100deg, transparent 0%, rgba(170,0,255,0.06) 50%, transparent 100%);
     transition: left 0.8s ease;
     pointer-events: none;
   }
+  .module-card:hover .card-sheen { left: 120%; }
 
-  .module-card:hover .card-sheen {
-    left: 120%;
-  }
-
-  .module-header {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    position: relative;
-    z-index: 1;
-  }
+  .module-header { display: flex; align-items: center; gap: 16px; position: relative; z-index: 1; }
 
   .module-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 52px;
-    height: 52px;
-    background: rgba(170, 0, 255, 0.1);
-    border: 1px solid rgba(170, 0, 255, 0.25);
+    display: flex; align-items: center; justify-content: center;
+    width: 52px; height: 52px;
+    background: rgba(170,0,255,0.1);
+    border: 1px solid rgba(170,0,255,0.25);
     border-radius: 12px;
     flex-shrink: 0;
-    transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.3s ease;
+    transition: transform 0.4s cubic-bezier(0.34,1.56,0.64,1), background 0.3s ease;
   }
+  .module-card:hover .module-icon { transform: rotate(90deg); background: rgba(170,0,255,0.18); }
 
-  .module-card:hover .module-icon {
-    transform: rotate(90deg);
-    background: rgba(170, 0, 255, 0.18);
-  }
+  .module-title-group { display: flex; flex-direction: column; gap: 4px; }
 
-  .module-title-group {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
+  .module-name { font-size: 22px; font-weight: 700; color: #ffffff; letter-spacing: 0.3px; }
 
-  .module-name {
-    font-size: 22px;
-    font-weight: 700;
-    color: #ffffff;
-    letter-spacing: 0.3px;
-  }
+  .module-price { font-size: 14px; color: #aa00ff; font-weight: 500; letter-spacing: 0.2px; }
 
-  .module-price {
-    font-size: 14px;
-    color: #aa00ff;
-    font-weight: 500;
-    letter-spacing: 0.2px;
+  .base-price-strike {
+    font-size: 12px;
+    color: #555870;
+    text-decoration: line-through;
+    margin-top: 2px;
   }
 
   .price-amount {
@@ -692,43 +726,24 @@ const baseStyles = `
     100% { opacity: 1; transform: translateY(0); filter: blur(0); }
   }
 
-  .module-divider {
-    height: 1px;
-    background-color: #2c2f3a;
-    margin: 24px 0;
-    position: relative;
-    z-index: 1;
-  }
+  .module-divider { height: 1px; background-color: #2c2f3a; margin: 24px 0; position: relative; z-index: 1; }
 
   .feature-group-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    color: #aa00ff;
-    text-shadow: 0 0 10px rgba(170, 0, 255, 0.45);
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 2px; color: #aa00ff;
+    text-shadow: 0 0 10px rgba(170,0,255,0.45);
     margin-bottom: 14px;
   }
 
   .module-footnote {
-    margin-top: 16px;
-    font-size: 12px;
-    color: #6e7180;
-    text-align: center;
-    font-style: italic;
-    position: relative;
-    z-index: 1;
+    margin-top: 16px; font-size: 12px; color: #6e7180;
+    text-align: center; font-style: italic; position: relative; z-index: 1;
   }
 
   .page-footnote {
-    margin-top: 16px;
-    font-size: 13px;
-    color: #6e7180;
-    text-align: center;
-    line-height: 1.6;
-    max-width: 480px;
-    margin-left: auto;
-    margin-right: auto;
+    margin-top: 12px; font-size: 13px; color: #6e7180;
+    text-align: center; line-height: 1.6;
+    max-width: 480px; margin-left: auto; margin-right: auto;
   }
 
   @media (max-width: 768px) {
@@ -751,7 +766,7 @@ const baseStyles = `
 
 const cartStyles = `
   .global-error {
-    background: rgba(255, 107, 107, 0.1);
+    background: rgba(255,107,107,0.1);
     border: 1px solid #ff6b6b;
     color: #ff8888;
     padding: 14px 20px;
@@ -762,67 +777,31 @@ const cartStyles = `
   }
 
   .empty-cart {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 16px;
-    text-align: center;
-    padding: 80px 20px;
-    background-color: #14151c;
-    border: 1px solid #2c2f3a;
-    border-radius: 16px;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 16px; text-align: center; padding: 80px 20px;
+    background-color: #14151c; border: 1px solid #2c2f3a; border-radius: 16px;
   }
-
-  .empty-cart h2 {
-    font-size: 22px;
-    font-weight: 700;
-    color: #ffffff;
-  }
-
-  .empty-cart p {
-    font-size: 14px;
-    color: #888b99;
-    max-width: 320px;
-    line-height: 1.6;
-  }
+  .empty-cart h2 { font-size: 22px; font-weight: 700; color: #ffffff; }
+  .empty-cart p { font-size: 14px; color: #888b99; max-width: 320px; line-height: 1.6; }
 
   .browse-link {
-    margin-top: 8px;
-    padding: 12px 28px;
+    margin-top: 8px; padding: 12px 28px;
     background: linear-gradient(135deg, #aa00ff 0%, #7700cc 100%);
-    color: #ffffff;
-    font-size: 14px;
-    font-weight: 600;
-    border-radius: 8px;
-    text-decoration: none;
-    transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease;
+    color: #ffffff; font-size: 14px; font-weight: 600;
+    border-radius: 8px; text-decoration: none;
+    transition: transform 0.25s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.25s ease;
   }
+  .browse-link:hover { transform: translateY(-2px) scale(1.01); box-shadow: 0 6px 24px rgba(170,0,255,0.45); }
 
-  .browse-link:hover {
-    transform: translateY(-2px) scale(1.01);
-    box-shadow: 0 6px 24px rgba(170, 0, 255, 0.45);
-  }
-
-  .server-section {
-    position: relative;
-    z-index: 2;
-  }
-
-  .assigned-servers {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 12px;
-  }
+  .server-section { position: relative; z-index: 2; }
 
   .server-chip {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: rgba(170, 0, 255, 0.08);
-    border: 1px solid rgba(170, 0, 255, 0.25);
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(170,0,255,0.08);
+    border: 1px solid rgba(170,0,255,0.25);
     border-radius: 30px;
     padding: 6px 10px 6px 6px;
+    width: fit-content;
     animation: chipAppear 0.2s ease;
   }
 
@@ -831,60 +810,37 @@ const cartStyles = `
     to { opacity: 1; transform: scale(1); }
   }
 
-  .server-chip-icon {
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-  }
+  .server-chip-icon { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
 
   .server-chip-name {
-    font-size: 13px;
-    color: #e0e0e0;
-    font-weight: 500;
-    max-width: 160px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: 13px; color: #e0e0e0; font-weight: 500;
+    max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
   .server-chip-remove {
-    background: none;
-    border: none;
-    color: #888b99;
-    font-size: 16px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 2px;
+    background: none; border: none; color: #888b99;
+    font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px;
     transition: color 0.2s ease;
   }
+  .server-chip-remove:hover { color: #ff6b6b; }
 
-  .server-chip-remove:hover:not(:disabled) {
-    color: #ff6b6b;
-  }
-
-  .server-chip-remove:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-
-  .no-server-text {
-    font-size: 13px;
-    color: #888b99;
-    margin-bottom: 12px;
-  }
-
-  .add-server-wrapper {
+  .server-select-wrapper {
     position: relative;
-  }
-
-  .add-server-btn {
     display: flex;
     align-items: center;
-    gap: 8px;
+  }
+
+  .server-select-icon {
+    position: absolute;
+    left: 12px;
+    color: #888b99;
+    pointer-events: none;
+    flex-shrink: 0;
+  }
+
+  .server-select {
     width: 100%;
-    padding: 10px 14px;
+    padding: 10px 14px 10px 34px;
     background: #1a1b24;
     border: 1px solid #2c2f3a;
     border-radius: 8px;
@@ -892,208 +848,122 @@ const cartStyles = `
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
+    appearance: none;
     transition: border-color 0.2s ease, color 0.2s ease;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888b99' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
   }
+  .server-select:hover:not(:disabled) { border-color: rgba(170,0,255,0.4); color: #ffffff; }
+  .server-select:disabled { cursor: not-allowed; opacity: 0.5; }
+  .server-select option { background: #1a1b24; color: #d0d0d0; }
 
-  .add-server-btn:hover:not(:disabled) {
-    border-color: rgba(170, 0, 255, 0.4);
-    color: #ffffff;
+  .discount-context-note {
+    margin-top: 10px; font-size: 12px; color: #7ebd9e; line-height: 1.5;
   }
+  .discount-context-note.muted { color: #555870; }
 
-  .add-server-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-
-  .add-server-btn span {
-    flex: 1;
-    text-align: left;
-  }
-
-  .chevron {
-    transition: transform 0.25s ease;
-    flex-shrink: 0;
-  }
-
-  .chevron.open {
-    transform: rotate(180deg);
-  }
-
-  .server-dropdown {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
-    right: 0;
-    background: #1a1b24;
-    border: 1px solid #2c2f3a;
-    border-radius: 8px;
-    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
-    max-height: 220px;
-    overflow-y: auto;
-    z-index: 10;
-    animation: dropdownOpen 0.2s ease;
-  }
-
-  @keyframes dropdownOpen {
-    from { opacity: 0; transform: translateY(-6px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  .server-dropdown-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: 10px 14px;
-    background: none;
-    border: none;
-    color: #d0d0d0;
-    font-size: 13px;
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.15s ease;
-  }
-
-  .server-dropdown-item:hover:not(:disabled) {
-    background: rgba(170, 0, 255, 0.1);
-    color: #ffffff;
-  }
-
-  .server-dropdown-item:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-
-  .discount-note {
-    margin-top: 10px;
-    font-size: 12px;
-    color: #888b99;
-  }
-
-  .discount-pill {
-    font-size: 12px;
-    color: #00e07a;
-    font-weight: 600;
-  }
-
-  .yearly-pill {
-    color: #aa00ff;
-  }
+  .discount-pill { font-size: 12px; color: #00e07a; font-weight: 600; }
+  .yearly-pill { color: #aa00ff; }
 
   .module-footer {
+    display: flex;
+    gap: 10px;
     position: relative;
     z-index: 1;
   }
 
-  .remove-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    width: 100%;
-    padding: 12px 24px;
-    background: transparent;
-    border: 1px solid rgba(255, 107, 107, 0.35);
-    color: #ff8888;
-    font-size: 14px;
-    font-weight: 600;
-    border-radius: 8px;
-    cursor: pointer;
-    letter-spacing: 0.3px;
-    transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
-  }
-
-  .remove-btn:hover:not(:disabled) {
-    background: rgba(255, 107, 107, 0.1);
-    border-color: #ff6b6b;
-  }
-
-  .remove-btn:active:not(:disabled) {
-    transform: scale(0.98);
-  }
-
-  .remove-btn:disabled {
-    cursor: wait;
-    opacity: 0.6;
-  }
-
-  .checkout-card {
-    margin-top: 36px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-  }
-
-  .checkout-btn {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 24px;
-    width: 100%;
-    max-width: 520px;
-    padding: 18px 32px;
+  .checkout-item-btn {
+    flex: 1;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 13px 20px;
     background: linear-gradient(135deg, #aa00ff 0%, #7700cc 100%);
     color: #ffffff;
     border: none;
-    border-radius: 12px;
+    border-radius: 8px;
+    font-size: 14px; font-weight: 700;
     cursor: pointer;
-    transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease;
+    letter-spacing: 0.3px;
+    transition: transform 0.25s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.25s ease, opacity 0.2s ease;
+  }
+  .checkout-item-btn:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(170,0,255,0.4);
+  }
+  .checkout-item-btn:active:not(:disabled) { transform: scale(0.98); }
+  .checkout-item-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .btn-spinner {
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
   }
 
-  .checkout-btn:hover {
-    transform: translateY(-2px) scale(1.01);
-    box-shadow: 0 8px 32px rgba(170, 0, 255, 0.4);
+  .remove-btn {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 13px 16px;
+    background: transparent;
+    border: 1px solid rgba(255,107,107,0.35);
+    color: #ff8888;
+    font-size: 13px; font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+    white-space: nowrap;
+  }
+  .remove-btn:hover:not(:disabled) { background: rgba(255,107,107,0.1); border-color: #ff6b6b; }
+  .remove-btn:disabled { cursor: wait; opacity: 0.6; }
+
+  .cart-summary {
+    margin-top: 36px;
+    background: #14151c;
+    border: 1px solid #2c2f3a;
+    border-radius: 16px;
+    padding: 24px 28px;
+    max-width: 520px;
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
   }
 
-  .checkout-btn:active {
-    transform: translateY(0) scale(0.99);
+  .summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
   }
 
-  .checkout-label {
-    font-size: 18px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-  }
+  .summary-label { font-size: 15px; color: #888b99; font-weight: 500; }
 
-  .checkout-price {
-    font-size: 22px;
-    font-weight: 800;
+  .summary-total {
+    font-size: 24px; font-weight: 800; color: #ffffff;
     animation: priceFade 0.35s ease;
   }
 
   @media (max-width: 480px) {
-    .checkout-btn { padding: 16px 24px; }
-    .checkout-label { font-size: 16px; }
-    .checkout-price { font-size: 19px; }
-    .server-chip-name { max-width: 110px; }
+    .server-chip-name { max-width: 130px; }
+    .checkout-item-btn { font-size: 13px; padding: 12px 14px; }
+    .cart-summary { padding: 20px; }
+    .summary-total { font-size: 20px; }
   }
 `;
 
 const loginStyles = `
   .login-overlay {
-    position: relative;
-    min-height: calc(100vh - 200px);
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 40px 20px;
-    z-index: 10;
+    position: relative; min-height: calc(100vh - 200px); width: 100%;
+    display: flex; align-items: center; justify-content: center;
+    padding: 40px 20px; z-index: 10;
   }
 
   .login-modal {
-    background: rgba(10, 10, 10, 0.95);
-    backdrop-filter: blur(20px);
-    border: 2px solid #aa00ff;
-    border-radius: 40px;
-    padding: 60px 40px;
-    max-width: 500px;
-    width: 100%;
-    text-align: center;
-    box-shadow: 0 30px 60px rgba(170, 0, 255, 0.3);
-    animation: modalAppear 0.5s ease;
-    position: relative;
-    z-index: 10;
+    background: rgba(10,10,10,0.95); backdrop-filter: blur(20px);
+    border: 2px solid #aa00ff; border-radius: 40px;
+    padding: 60px 40px; max-width: 500px; width: 100%;
+    text-align: center; box-shadow: 0 30px 60px rgba(170,0,255,0.3);
+    animation: modalAppear 0.5s ease; position: relative; z-index: 10;
   }
 
   @keyframes modalAppear {
@@ -1101,11 +971,7 @@ const loginStyles = `
     to { opacity: 1; transform: translateY(0); }
   }
 
-  .login-icon {
-    font-size: 80px;
-    margin-bottom: 30px;
-    animation: pulse 2s infinite;
-  }
+  .login-icon { font-size: 80px; margin-bottom: 30px; animation: pulse 2s infinite; }
 
   @keyframes pulse {
     0%, 100% { transform: scale(1); }
@@ -1113,49 +979,22 @@ const loginStyles = `
   }
 
   .login-modal h2 {
-    font-size: 36px;
-    font-weight: 800;
-    margin-bottom: 20px;
+    font-size: 36px; font-weight: 800; margin-bottom: 20px;
     background: linear-gradient(135deg, #ffffff, #aa00ff);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
   }
 
-  .login-modal p {
-    color: #b0b0b0;
-    font-size: 18px;
-    margin-bottom: 40px;
-    line-height: 1.6;
-  }
+  .login-modal p { color: #b0b0b0; font-size: 18px; margin-bottom: 40px; line-height: 1.6; }
 
   .login-button {
     background-image: linear-gradient(135deg, #aa00ff, #ff00aa);
-    color: white;
-    border: none;
-    padding: 10px 24px;
-    border-radius: 50px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    box-shadow: 0 4px 12px rgba(170, 0, 255, 0.3);
-    min-height: 36px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+    color: white; border: none; padding: 10px 24px; border-radius: 50px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s ease; box-shadow: 0 4px 12px rgba(170,0,255,0.3);
+    min-height: 36px; display: inline-flex; align-items: center; justify-content: center;
   }
-
-  .login-button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 20px rgba(170, 0, 255, 0.4);
-    background-image: linear-gradient(135deg, #bb00ff, #ff00bb);
-  }
-
-  .login-button:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 8px rgba(170, 0, 255, 0.3);
-  }
+  .login-button:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(170,0,255,0.4); background-image: linear-gradient(135deg, #bb00ff, #ff00bb); }
+  .login-button:active { transform: translateY(0); box-shadow: 0 2px 8px rgba(170,0,255,0.3); }
 
   @media (max-width: 768px) {
     .login-modal { padding: 40px 20px; }
@@ -1168,34 +1007,21 @@ const loginStyles = `
 
 const stateStyles = `
   .state-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: calc(100vh - 200px);
-    width: 100%;
-    gap: 20px;
-    padding: 20px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: calc(100vh - 200px); width: 100%; gap: 20px; padding: 20px;
   }
 
   .spinner {
-    width: 48px;
-    height: 48px;
+    width: 48px; height: 48px;
     border: 4px solid #232323;
-    border-top-color: #aa00ff;
-    border-right-color: #aa00ff;
+    border-top-color: #aa00ff; border-right-color: #aa00ff;
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
-  .state-text {
-    color: #b0b0b0;
-    font-size: 14px;
-  }
+  .state-text { color: #b0b0b0; font-size: 14px; }
 `;
 
 const root = createRoot(document.getElementById('app'));

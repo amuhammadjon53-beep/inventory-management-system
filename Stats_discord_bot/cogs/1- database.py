@@ -2940,6 +2940,249 @@ class DatabaseStats(commands.Cog):
                 ''')
                 print("  ✅ Created/verified table: reset_schedules")
 
+                # ===================================================================
+                # ===== PADDLE PAYMENT SYSTEM TABLES =====
+                # ===================================================================
+                print("\n" + "="*60)
+                print("💳 CREATING PADDLE PAYMENT TABLES")
+                print("="*60)
+
+                # ----- modules -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS modules (
+                        id                  SERIAL PRIMARY KEY,
+                        module_key          TEXT UNIQUE NOT NULL,
+                        display_name        TEXT NOT NULL,
+                        description         TEXT,
+                        module_number       TEXT NOT NULL,
+                        monthly_price_usd   NUMERIC(10,2) NOT NULL,
+                        yearly_price_usd    NUMERIC(10,2) NOT NULL,
+                        paddle_product_id   TEXT UNIQUE NOT NULL,
+                        paddle_monthly_price_id TEXT UNIQUE NOT NULL,
+                        paddle_yearly_price_id  TEXT UNIQUE NOT NULL,
+                        is_active           BOOLEAN DEFAULT TRUE,
+                        created_at          TIMESTAMPTZ DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: modules")
+
+                # ----- tiers -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS tiers (
+                        id                  SERIAL PRIMARY KEY,
+                        tier_key            TEXT UNIQUE NOT NULL,
+                        display_name        TEXT NOT NULL,
+                        monthly_price_usd   NUMERIC(10,2) NOT NULL,
+                        yearly_price_usd    NUMERIC(10,2) NOT NULL,
+                        paddle_product_id   TEXT UNIQUE,
+                        paddle_monthly_price_id TEXT UNIQUE,
+                        paddle_yearly_price_id  TEXT UNIQUE,
+                        discount_pct        NUMERIC(5,2) DEFAULT 0,
+                        is_active           BOOLEAN DEFAULT FALSE,
+                        created_at          TIMESTAMPTZ DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: tiers")
+
+                # ----- tier_modules -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS tier_modules (
+                        tier_id     INTEGER NOT NULL REFERENCES tiers(id) ON DELETE CASCADE,
+                        module_id   INTEGER NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
+                        PRIMARY KEY (tier_id, module_id)
+                    )
+                ''')
+                print("  ✅ Created/verified table: tier_modules")
+
+                # ----- server_count_discounts -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS server_count_discounts (
+                        id                      SERIAL PRIMARY KEY,
+                        server_count            INTEGER UNIQUE NOT NULL,
+                        discount_pct            NUMERIC(5,2) NOT NULL,
+                        paddle_discount_id      TEXT UNIQUE NOT NULL,
+                        created_at              TIMESTAMPTZ DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: server_count_discounts")
+
+                # ----- paddle_customers -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS paddle_customers (
+                        id                  SERIAL PRIMARY KEY,
+                        discord_id          TEXT UNIQUE NOT NULL,
+                        paddle_customer_id  TEXT UNIQUE,
+                        email               TEXT,
+                        created_at          TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at          TIMESTAMPTZ DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: paddle_customers")
+
+                # ----- subscriptions -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS subscriptions (
+                        id                      SERIAL PRIMARY KEY,
+                        discord_id              TEXT NOT NULL,
+                        guild_id                BIGINT NOT NULL,
+                        paddle_subscription_id  TEXT UNIQUE NOT NULL,
+                        paddle_transaction_id   TEXT,
+                        paddle_customer_id      TEXT NOT NULL,
+
+                        module_id               INTEGER REFERENCES modules(id),
+                        tier_id                 INTEGER REFERENCES tiers(id),
+                        billing_cycle           TEXT NOT NULL CHECK (billing_cycle IN ('monthly', 'yearly')),
+
+                        base_price_usd          NUMERIC(10,2) NOT NULL,
+                        discount_pct            NUMERIC(5,2)  DEFAULT 0,
+                        final_price_usd         NUMERIC(10,2) NOT NULL,
+                        server_count_at_purchase INTEGER DEFAULT 1,
+
+                        status                  TEXT NOT NULL DEFAULT 'active'
+                                                    CHECK (status IN ('active','past_due','canceled','paused','trialing')),
+                        current_period_start    TIMESTAMPTZ,
+                        current_period_end      TIMESTAMPTZ,
+                        canceled_at             TIMESTAMPTZ,
+                        cancel_at_period_end    BOOLEAN DEFAULT FALSE,
+
+                        created_at              TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at              TIMESTAMPTZ DEFAULT NOW(),
+
+                        CONSTRAINT sub_must_have_module_or_tier
+                            CHECK (module_id IS NOT NULL OR tier_id IS NOT NULL)
+                    )
+                ''')
+                print("  ✅ Created/verified table: subscriptions")
+
+                # ----- guild_module_access -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS guild_module_access (
+                        id              SERIAL PRIMARY KEY,
+                        guild_id        BIGINT  NOT NULL,
+                        module_id       INTEGER NOT NULL REFERENCES modules(id),
+                        subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+                        discord_id      TEXT    NOT NULL,
+                        is_active       BOOLEAN DEFAULT TRUE,
+                        granted_at      TIMESTAMPTZ DEFAULT NOW(),
+                        revoked_at      TIMESTAMPTZ,
+
+                        UNIQUE(guild_id, module_id, subscription_id)
+                    )
+                ''')
+                print("  ✅ Created/verified table: guild_module_access")
+
+                # ----- payment_transactions -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS payment_transactions (
+                        id                      SERIAL PRIMARY KEY,
+                        paddle_transaction_id   TEXT UNIQUE NOT NULL,
+                        paddle_subscription_id  TEXT,
+                        paddle_customer_id      TEXT,
+                        discord_id              TEXT,
+                        guild_id                BIGINT,
+                        amount_usd              NUMERIC(10,2),
+                        currency                TEXT DEFAULT 'USD',
+                        status                  TEXT,
+                        transaction_type        TEXT,
+                        raw_payload             JSONB,
+                        created_at              TIMESTAMPTZ DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: payment_transactions")
+
+                # ----- paddle_webhook_events -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS paddle_webhook_events (
+                        id              SERIAL PRIMARY KEY,
+                        event_id        TEXT UNIQUE NOT NULL,
+                        event_type      TEXT NOT NULL,
+                        payload         JSONB NOT NULL,
+                        processed       BOOLEAN DEFAULT FALSE,
+                        processing_error TEXT,
+                        received_at     TIMESTAMPTZ DEFAULT NOW(),
+                        processed_at    TIMESTAMPTZ
+                    )
+                ''')
+                print("  ✅ Created/verified table: paddle_webhook_events")
+
+                # ----- refunds -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS refunds (
+                        id                      SERIAL PRIMARY KEY,
+                        paddle_transaction_id   TEXT NOT NULL,
+                        paddle_subscription_id  TEXT,
+                        discord_id              TEXT,
+                        guild_id                BIGINT,
+                        amount_usd              NUMERIC(10,2),
+                        reason                  TEXT,
+                        refunded_at             TIMESTAMPTZ DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: refunds")
+
+                # ----- indexes for paddle tables -----
+                paddle_index_queries = [
+                    'CREATE INDEX IF NOT EXISTS idx_subscriptions_discord ON subscriptions(discord_id)',
+                    'CREATE INDEX IF NOT EXISTS idx_subscriptions_guild ON subscriptions(guild_id)',
+                    'CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status)',
+                    'CREATE INDEX IF NOT EXISTS idx_subscriptions_module ON subscriptions(module_id)',
+                    'CREATE INDEX IF NOT EXISTS idx_guild_module_access_guild ON guild_module_access(guild_id)',
+                    'CREATE INDEX IF NOT EXISTS idx_guild_module_access_active ON guild_module_access(guild_id, module_id, is_active)',
+                ]
+                for query in paddle_index_queries:
+                    try:
+                        await conn.execute(query)
+                    except asyncpg.exceptions.PostgresError as e:
+                        print(f"  ⚠️ Could not create index: {e}")
+                print("  ✅ Paddle indexes checked/created")
+
+                # ----- seed: modules -----
+                # Pricing rule: yearly = monthly x 10 (2 months free, ~16.7% off)
+                optimization_monthly = 2.49
+                optimization_yearly = round(optimization_monthly * 10, 2)  # 24.90
+
+                await conn.execute('''
+                    INSERT INTO modules (
+                        module_key, display_name, description, module_number,
+                        monthly_price_usd, yearly_price_usd,
+                        paddle_product_id, paddle_monthly_price_id, paddle_yearly_price_id
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9
+                    ) ON CONFLICT (module_key) DO NOTHING
+                ''',
+                    'optimization',
+                    'Optimization+',
+                    'Unlock scheduled resets, custom time periods, unlimited history syncs and indefinite data storage.',
+                    '1.1',
+                    optimization_monthly,
+                    optimization_yearly,
+                    'pro_01kv2cxndcxkfgrzzd8ay3tb11',
+                    'pri_01kv2czhp9jn6kd489rmtqgqg9',
+                    'pri_01kv2cyny93van4n4gjz58gayv'
+                )
+                print(f"  ✅ Seeded module: optimization (monthly=${optimization_monthly}, yearly=${optimization_yearly})")
+
+                # ----- seed: multi-server discounts -----
+                discount_rows = [
+                    (2,  5, 'dsc_01kv2d0jq5sw5m51gsk80sggzw'),
+                    (3, 10, 'dsc_01kv2d149rm948wrmnh4w3ted3'),
+                    (4, 15, 'dsc_01kv2d1kqteswvfbe5j3yqjh19'),
+                    (5, 20, 'dsc_01kv2d20r8rrnr9ghsd1jza5p9'),
+                    (6, 25, 'dsc_01kv2d2d559d0c4sn3zs41y38k'),
+                    (7, 30, 'dsc_01kv2d2s0q9z5gyvpk2zcyqcbd'),
+                    (8, 35, 'dsc_01kv2d3ab0a1wfam7zyjaz2brb'),
+                    (9, 40, 'dsc_01kv2d3mz7tjn3pdmv967tyqnf'),
+                    (10, 45, 'dsc_01kv2d3y5eq5qeaq9tvjeq4h09'),
+                    (11, 50, 'dsc_01kv2d47wvdzc65cy8ay731z9s'),
+                ]
+                for server_count, discount_pct, paddle_discount_id in discount_rows:
+                    await conn.execute('''
+                        INSERT INTO server_count_discounts (server_count, discount_pct, paddle_discount_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (server_count) DO NOTHING
+                    ''', server_count, discount_pct, paddle_discount_id)
+                print("  ✅ Seeded multi-server discounts")
+
                 # ===== ADD PRIMARY KEYS AND CONSTRAINTS =====
                 print("\n" + "="*60)
                 print("🔑 ADDING PRIMARY KEYS AND CONSTRAINTS")
@@ -3070,7 +3313,6 @@ class DatabaseStats(commands.Cog):
                     ('role_growth_hourly', 'hour'),
                     ('member_joins_hourly', 'hour'),
                     ('member_leaves_hourly', 'hour'),
-                    # Corrected time column mapping
                     ('slash_commands_daily', 'day')
                 ]
 
@@ -3090,7 +3332,6 @@ class DatabaseStats(commands.Cog):
 
                 for table_name, _ in hypertable_configs:
                     try:
-                        # if_exists => true prevents crashes if the policy wasn't set yet
                         await conn.execute(f"SELECT remove_retention_policy('{table_name}', if_exists => true)")
                         print(
                             f"  🗑️ Safely dropped retention policy for: {table_name}")
@@ -3103,7 +3344,6 @@ class DatabaseStats(commands.Cog):
                 print("🤐 CONFIGURING COMPRESSION POLICIES")
                 print("="*60)
 
-                # Define specific parameters per table to fix the daily mapping issue
                 compression_configs = [
                     ('message_tracking_hourly', 'hour'),
                     ('voice_session_history_hourly', 'hour'),
@@ -3113,13 +3353,11 @@ class DatabaseStats(commands.Cog):
                     ('role_growth_hourly', 'hour'),
                     ('member_joins_hourly', 'hour'),
                     ('member_leaves_hourly', 'hour'),
-                    # FIX: Set compress_orderby to 'day'
                     ('slash_commands_daily', 'day')
                 ]
 
                 for table_name, time_col in compression_configs:
                     try:
-                        # Enable compression alterations on the hypertable settings
                         await conn.execute(f"""
                             ALTER TABLE {table_name} SET (
                                 timescaledb.compress,
@@ -3128,7 +3366,6 @@ class DatabaseStats(commands.Cog):
                             )
                         """)
 
-                        # Add background job policy if it doesn't exist (e.g., compress after 14 days)
                         await conn.execute(f"""
                             SELECT add_compression_policy('{table_name}', INTERVAL '14 days', if_not_exists => true)
                         """)
@@ -18298,6 +18535,374 @@ class DatabaseStats(commands.Cog):
                     original=e
                 )
             raise
+        
+    
+    async def get_all_modules(pool: asyncpg.Pool) -> List[Dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM modules WHERE is_active = TRUE ORDER BY module_number")
+            return [dict(r) for r in rows]
+    
+    
+    async def get_module_by_key(pool: asyncpg.Pool, module_key: str) -> Optional[Dict]:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM modules WHERE module_key = $1", module_key)
+            return dict(row) if row else None
+    
+    
+    async def get_module_by_paddle_product(pool: asyncpg.Pool, paddle_product_id: str) -> Optional[Dict]:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM modules WHERE paddle_product_id = $1", paddle_product_id
+            )
+            return dict(row) if row else None
+    
+    
+    async def get_module_by_paddle_price(pool: asyncpg.Pool, paddle_price_id: str) -> Optional[Dict]:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT * FROM modules
+                WHERE paddle_monthly_price_id = $1
+                    OR paddle_yearly_price_id   = $1""",
+                paddle_price_id,
+            )
+            return dict(row) if row else None
+    
+    
+    # ──────────────────────────────────────────────────────────────────────────────
+    # DISCOUNTS
+    # ──────────────────────────────────────────────────────────────────────────────
+    
+    async def get_discount_for_server_count(pool: asyncpg.Pool, server_count: int) -> Optional[Dict]:
+        """Return the discount row for *exactly* server_count, or the highest available."""
+        async with pool.acquire() as conn:
+            capped = min(server_count, 11)
+            row = await conn.fetchrow(
+                """SELECT * FROM server_count_discounts
+                WHERE server_count <= $1
+                ORDER BY server_count DESC LIMIT 1""",
+                capped,
+            )
+            return dict(row) if row else None
+    
+    
+    async def get_all_discounts(pool: asyncpg.Pool) -> List[Dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM server_count_discounts ORDER BY server_count")
+            return [dict(r) for r in rows]
+    
+    
+    # ──────────────────────────────────────────────────────────────────────────────
+    # CUSTOMERS
+    # ──────────────────────────────────────────────────────────────────────────────
+    
+    async def upsert_paddle_customer(
+        pool: asyncpg.Pool,
+        discord_id: str,
+        paddle_customer_id: Optional[str] = None,
+        email: Optional[str] = None,
+    ) -> Dict:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO paddle_customers (discord_id, paddle_customer_id, email, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (discord_id) DO UPDATE SET
+                    paddle_customer_id = COALESCE(EXCLUDED.paddle_customer_id, paddle_customers.paddle_customer_id),
+                    email              = COALESCE(EXCLUDED.email,              paddle_customers.email),
+                    updated_at         = NOW()
+                RETURNING *""",
+                discord_id, paddle_customer_id, email,
+            )
+            return dict(row)
+    
+    
+    async def get_paddle_customer(pool: asyncpg.Pool, discord_id: str) -> Optional[Dict]:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM paddle_customers WHERE discord_id = $1", discord_id
+            )
+            return dict(row) if row else None
+    
+    
+    async def get_paddle_customer_by_paddle_id(pool: asyncpg.Pool, paddle_customer_id: str) -> Optional[Dict]:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM paddle_customers WHERE paddle_customer_id = $1", paddle_customer_id
+            )
+            return dict(row) if row else None
+    
+    
+    # ──────────────────────────────────────────────────────────────────────────────
+    # SUBSCRIPTIONS
+    # ──────────────────────────────────────────────────────────────────────────────
+    
+    async def create_subscription(pool: asyncpg.Pool, data: Dict) -> Dict:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO subscriptions (
+                    discord_id, guild_id, paddle_subscription_id, paddle_transaction_id,
+                    paddle_customer_id, module_id, tier_id, billing_cycle,
+                    base_price_usd, discount_pct, final_price_usd, server_count_at_purchase,
+                    status, current_period_start, current_period_end
+                ) VALUES (
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+                ) RETURNING *""",
+                data["discord_id"], data["guild_id"],
+                data["paddle_subscription_id"], data.get("paddle_transaction_id"),
+                data["paddle_customer_id"], data.get("module_id"), data.get("tier_id"),
+                data["billing_cycle"], data["base_price_usd"],
+                data.get("discount_pct", 0), data["final_price_usd"],
+                data.get("server_count_at_purchase", 1),
+                data.get("status", "active"),
+                data.get("current_period_start"), data.get("current_period_end"),
+            )
+            return dict(row)
+    
+    
+    async def get_subscription(pool: asyncpg.Pool, paddle_subscription_id: str) -> Optional[Dict]:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM subscriptions WHERE paddle_subscription_id = $1",
+                paddle_subscription_id,
+            )
+            return dict(row) if row else None
+    
+    
+    async def get_subscriptions_for_user(pool: asyncpg.Pool, discord_id: str) -> List[Dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT s.*, m.display_name AS module_name, m.module_key
+                FROM subscriptions s
+                LEFT JOIN modules m ON s.module_id = m.id
+                WHERE s.discord_id = $1
+                ORDER BY s.created_at DESC""",
+                discord_id,
+            )
+            return [dict(r) for r in rows]
+    
+    
+    async def get_subscriptions_for_guild(pool: asyncpg.Pool, guild_id: int) -> List[Dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT s.*, m.display_name AS module_name, m.module_key
+                FROM subscriptions s
+                LEFT JOIN modules m ON s.module_id = m.id
+                WHERE s.guild_id = $1 AND s.status = 'active'
+                ORDER BY s.created_at DESC""",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+    
+    
+    async def update_subscription_status(
+        pool: asyncpg.Pool,
+        paddle_subscription_id: str,
+        status: str,
+        current_period_start: Optional[datetime] = None,
+        current_period_end: Optional[datetime] = None,
+        canceled_at: Optional[datetime] = None,
+        cancel_at_period_end: Optional[bool] = None,
+        paddle_transaction_id: Optional[str] = None,
+    ) -> Optional[Dict]:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE subscriptions SET
+                    status                = $2,
+                    current_period_start  = COALESCE($3, current_period_start),
+                    current_period_end    = COALESCE($4, current_period_end),
+                    canceled_at           = COALESCE($5, canceled_at),
+                    cancel_at_period_end  = COALESCE($6, cancel_at_period_end),
+                    paddle_transaction_id = COALESCE($7, paddle_transaction_id),
+                    updated_at            = NOW()
+                WHERE paddle_subscription_id = $1
+                RETURNING *""",
+                paddle_subscription_id, status,
+                current_period_start, current_period_end,
+                canceled_at, cancel_at_period_end, paddle_transaction_id,
+            )
+            return dict(row) if row else None
+    
+    
+    # ──────────────────────────────────────────────────────────────────────────────
+    # GUILD MODULE ACCESS
+    # ──────────────────────────────────────────────────────────────────────────────
+    
+    async def grant_module_access(
+        pool: asyncpg.Pool,
+        guild_id: int,
+        module_id: int,
+        subscription_id: int,
+        discord_id: str,
+    ) -> Dict:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO guild_module_access (guild_id, module_id, subscription_id, discord_id, is_active)
+                VALUES ($1, $2, $3, $4, TRUE)
+                ON CONFLICT (guild_id, module_id, subscription_id) DO UPDATE SET
+                    is_active  = TRUE,
+                    revoked_at = NULL
+                RETURNING *""",
+                guild_id, module_id, subscription_id, discord_id,
+            )
+            return dict(row)
+    
+    
+    async def revoke_module_access(pool: asyncpg.Pool, subscription_id: int) -> int:
+        """Revoke all access rows tied to a subscription. Returns affected count."""
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """UPDATE guild_module_access SET
+                    is_active  = FALSE,
+                    revoked_at = NOW()
+                WHERE subscription_id = $1 AND is_active = TRUE""",
+                subscription_id,
+            )
+            return int(result.split()[-1])
+    
+    
+    async def guild_has_module(pool: asyncpg.Pool, guild_id: int, module_key: str) -> bool:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT 1 FROM guild_module_access gma
+                JOIN modules m ON gma.module_id = m.id
+                WHERE gma.guild_id = $1
+                    AND m.module_key = $2
+                    AND gma.is_active = TRUE
+                LIMIT 1""",
+                guild_id, module_key,
+            )
+            return row is not None
+    
+    
+    async def get_guild_active_modules(pool: asyncpg.Pool, guild_id: int) -> List[Dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT m.module_key, m.display_name, m.module_number,
+                        gma.granted_at, gma.discord_id AS granted_by,
+                        s.billing_cycle, s.current_period_end,
+                        s.paddle_subscription_id
+                FROM guild_module_access gma
+                JOIN modules m ON gma.module_id = m.id
+                JOIN subscriptions s ON gma.subscription_id = s.id
+                WHERE gma.guild_id = $1 AND gma.is_active = TRUE
+                ORDER BY m.module_number""",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+    
+    
+    # ──────────────────────────────────────────────────────────────────────────────
+    # TRANSACTIONS
+    # ──────────────────────────────────────────────────────────────────────────────
+    
+    async def log_transaction(pool: asyncpg.Pool, data: Dict) -> Dict:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO payment_transactions (
+                    paddle_transaction_id, paddle_subscription_id, paddle_customer_id,
+                    discord_id, guild_id, amount_usd, currency, status,
+                    transaction_type, raw_payload
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                ON CONFLICT (paddle_transaction_id) DO UPDATE SET
+                    status      = EXCLUDED.status,
+                    raw_payload = EXCLUDED.raw_payload
+                RETURNING *""",
+                data.get("paddle_transaction_id"), data.get("paddle_subscription_id"),
+                data.get("paddle_customer_id"), data.get("discord_id"),
+                data.get("guild_id"), data.get("amount_usd"), data.get("currency", "USD"),
+                data.get("status"), data.get("transaction_type"),
+                json.dumps(data.get("raw_payload", {})),
+            )
+            return dict(row)
+    
+    
+    async def get_transactions_for_user(pool: asyncpg.Pool, discord_id: str) -> List[Dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM payment_transactions WHERE discord_id = $1 ORDER BY created_at DESC",
+                discord_id,
+            )
+            return [dict(r) for r in rows]
+    
+    
+    async def get_transactions_for_guild(pool: asyncpg.Pool, guild_id: int) -> List[Dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM payment_transactions WHERE guild_id = $1 ORDER BY created_at DESC",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+    
+    
+    # ──────────────────────────────────────────────────────────────────────────────
+    # REFUNDS
+    # ──────────────────────────────────────────────────────────────────────────────
+    
+    async def log_refund(pool: asyncpg.Pool, data: Dict) -> Dict:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO refunds (
+                    paddle_transaction_id, paddle_subscription_id,
+                    discord_id, guild_id, amount_usd, reason
+                ) VALUES ($1,$2,$3,$4,$5,$6)
+                RETURNING *""",
+                data.get("paddle_transaction_id"), data.get("paddle_subscription_id"),
+                data.get("discord_id"), data.get("guild_id"),
+                data.get("amount_usd"), data.get("reason"),
+            )
+            return dict(row)
+    
+    
+    async def get_refunds_for_user(pool: asyncpg.Pool, discord_id: str) -> List[Dict]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM refunds WHERE discord_id = $1 ORDER BY refunded_at DESC",
+                discord_id,
+            )
+            return [dict(r) for r in rows]
+    
+    
+    # ──────────────────────────────────────────────────────────────────────────────
+    # WEBHOOK EVENT LOG
+    # ──────────────────────────────────────────────────────────────────────────────
+    
+    async def is_event_processed(pool: asyncpg.Pool, event_id: str) -> bool:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT processed FROM paddle_webhook_events WHERE event_id = $1", event_id
+            )
+            if row is None:
+                return False
+            return row["processed"]
+    
+    
+    async def record_webhook_event(
+        pool: asyncpg.Pool,
+        event_id: str,
+        event_type: str,
+        payload: Dict,
+    ) -> None:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO paddle_webhook_events (event_id, event_type, payload)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (event_id) DO NOTHING""",
+                event_id, event_type, json.dumps(payload),
+            )
+    
+    
+    async def mark_event_processed(
+        pool: asyncpg.Pool, event_id: str, error: Optional[str] = None
+    ) -> None:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE paddle_webhook_events SET
+                    processed        = $2,
+                    processing_error = $3,
+                    processed_at     = NOW()
+                WHERE event_id = $1""",
+                event_id, error is None, error,
+            )
+
 
     # ======================================================================
     # CLEANUP TASKS - FIXED EXCEPTION HANDLING
