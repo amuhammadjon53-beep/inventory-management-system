@@ -44317,6 +44317,23 @@ async def is_event_processed(
     except Exception as e:
         logger.error(f"Error in is_event_processed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+    
+@app.get("/api/paddle/transactions/{paddle_transaction_id}/invoice")
+async def get_transaction_invoice(
+    paddle_transaction_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get invoice PDF URL for a transaction"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        result = await paddle_client.get_transaction_invoice(paddle_transaction_id)
+        return result
+    except PaddleAPIError as e:
+        raise HTTPException(status_code=e.status, detail=e.body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 # ============================================
 # PUBLIC ENDPOINTS (No Authentication Required)
 # ============================================

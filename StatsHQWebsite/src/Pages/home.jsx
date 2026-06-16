@@ -172,7 +172,7 @@ const HomePage = () => {
               <span className="live-dot" />
               <span className="live-dot-ring" />
             </span>
-            <span className="social-proof-text">Tracking Statistics For More Than 10,000 Users</span>
+            <span className="social-proof-text">Tracking Statistics For More Than 100,000 Users</span>
           </div>
         </div>
 

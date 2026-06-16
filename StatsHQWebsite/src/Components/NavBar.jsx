@@ -289,6 +289,9 @@ const NavBar = () => {
         <a href="/Dashboard/Reset/" className={`mobile-nav-link ${isDashboardPageActive('Reset') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">🗑️</span>Reset Stats
         </a>
+        <a href="/Dashboard/Subscriptions/" className={`mobile-nav-link ${isDashboardPageActive('Subscriptions') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+          <span className="mobile-nav-icon">💎</span>Subscriptions
+        </a>
       </div>
     </div>
   );

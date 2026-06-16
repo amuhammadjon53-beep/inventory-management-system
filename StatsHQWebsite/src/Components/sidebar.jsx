@@ -404,6 +404,7 @@ const DashboardSidebar = ({
     else if (path.includes('/Dashboard/Blacklist')) setCurrentPage('blacklist');
     else if (path.includes('/Dashboard/Reset')) setCurrentPage('reset');
     else if (path.includes('/Dashboard/Debug')) setCurrentPage('debug');
+    else if (path.includes('/Dashboard/Subscriptions')) setCurrentPage('subscriptions');
   }, []);
 
   useEffect(() => { checkPrivilegedStatus(); }, []);
@@ -590,6 +591,9 @@ const DashboardSidebar = ({
           </a>
           <a href="/Dashboard/Reset/" className={`nav-item ${currentPage === 'reset' ? 'active' : ''}`}>
             <span className="nav-icon">🗑️</span>Reset Stats
+          </a>
+          <a href="/Dashboard/Subscriptions/" className={`nav-item ${currentPage === 'subscriptions' ? 'active' : ''}`}>
+            <span className="nav-icon">💎</span>Subscriptions
           </a>
           {isPrivileged && (
             <a href="/Dashboard/Debug/" className={`nav-item ${currentPage === 'debug' ? 'active' : ''}`}>
