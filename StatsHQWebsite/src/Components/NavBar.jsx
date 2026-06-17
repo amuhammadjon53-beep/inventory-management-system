@@ -352,7 +352,7 @@ const NavBar = () => {
       <a href="/Commands/" className={`mobile-nav-link ${currentPage === 'commands' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
         Commands
       </a>
-      <a href="/Premium/index.html" className={`mobile-nav-link ${currentPage === 'premium' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+      <a href="/Premium/" className={`mobile-nav-link ${currentPage === 'premium' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
         Premium
       </a>
       <a href="#" className={`mobile-nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'refund', 'invite-tracking', 'distribution', 'ships'].includes(currentPage) ? 'active' : ''}`} onClick={handleDocsClick}>
@@ -384,7 +384,7 @@ const NavBar = () => {
             <a href="/Commands/" className={`nav-link ${currentPage === 'commands' ? 'active' : ''}`}>
               Commands
             </a>
-            <a href="/Premium/index.html" className={`nav-link ${currentPage === 'premium' ? 'active' : ''}`}>
+            <a href="/Premium/" className={`nav-link ${currentPage === 'premium' ? 'active' : ''}`}>
               Premium
             </a>
             <a href="/docs/" className={`nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'refund'].includes(currentPage) ? 'active' : ''}`}>
