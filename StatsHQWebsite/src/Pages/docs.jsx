@@ -51,12 +51,12 @@ const DocsPage = () => {
   const leftMenuRef = useRef(null);
   const rightTocRef = useRef(null);
 
-  const pages = ["Introduction", "Set Up", "FAQ", "Invite Tracking", "Distribution", "Ships", "Privacy Policy", "Terms Of Service", "Cookie Policy"];
+  const pages = ["Introduction", "Set Up", "FAQ", "Invite Tracking", "Distribution", "Ships", "Privacy Policy", "Terms Of Service", "Cookie Policy", "Refund Policy"];
   
   const categories = {
     "The Basics": ["Introduction", "Set Up", "FAQ"],
     "Features": ["Invite Tracking", "Distribution", "Ships"],
-    "Legal": ["Privacy Policy", "Terms Of Service", "Cookie Policy"]
+    "Legal": ["Privacy Policy", "Terms Of Service", "Cookie Policy", "Refund Policy"]
   };
 
   // Map URL params to page names
@@ -69,7 +69,8 @@ const DocsPage = () => {
     'ships': 'Ships',
     'privacy': 'Privacy Policy',
     'terms': 'Terms Of Service',
-    'cookies': 'Cookie Policy'
+    'cookies': 'Cookie Policy',
+    'refund': 'Refund Policy'
   };
 
   // Map page names to URL params
@@ -82,7 +83,8 @@ const DocsPage = () => {
     'Ships': 'ships',
     'Privacy Policy': 'privacy',
     'Terms Of Service': 'terms',
-    'Cookie Policy': 'cookies'
+    'Cookie Policy': 'cookies',
+    'Refund Policy': 'refund'
   };
 
   // Simulate loading
@@ -196,6 +198,11 @@ const DocsPage = () => {
           title: "Cookie Policy",
           description: "Understand how we use cookies and similar technologies on our website to enhance your experience."
         };
+      case "Refund Policy":
+        return {
+          title: "Refund Policy",
+          description: "Understand our refund eligibility, request process, and your rights regarding purchases and subscriptions."
+        };
       default:
         return {
           title: "",
@@ -301,6 +308,18 @@ const DocsPage = () => {
           { id: "your-rights-cookies", title: "11. Your Rights" },
           { id: "cookie-contact", title: "12. Contact Us" },
           { id: "cookie-consent", title: "13. Consent" }
+        ];
+      case "Refund Policy":
+        return [
+          { id: "refund-eligibility", title: "1. Refund Eligibility" },
+          { id: "refund-requests", title: "2. Refund Requests" },
+          { id: "non-refundable", title: "3. Non-Refundable Purchases" },
+          { id: "approved-refunds", title: "4. Approved Refunds" },
+          { id: "chargebacks", title: "5. Chargebacks and Payment Disputes" },
+          { id: "fraud-prevention", title: "6. Fraud Prevention" },
+          { id: "consumer-rights", title: "7. Consumer Rights" },
+          { id: "refund-policy-changes", title: "8. Changes to This Policy" },
+          { id: "refund-contact", title: "9. Contact Information" }
         ];
       default:
         return [];
@@ -583,7 +602,7 @@ const DocsPage = () => {
           <div className="docs-content">
             <h2 id="what-are-ships" className="docs-heading">What are ships?</h2>
             <p className="docs-text">
-              Ships calculate the compatibility between two users in a server. They represent how well two members “match” based on their interaction patterns and activity inside the community.
+              Ships calculate the compatibility between two users in a server. They represent how well two members "match" based on their interaction patterns and activity inside the community.
             </p>
 
             <h2 id="how-ships-calculated" className="docs-heading">How are ships calculated?</h2>
@@ -886,6 +905,7 @@ const DocsPage = () => {
             <p className="docs-text">For questions about this Privacy Policy, data subject requests, or any privacy concerns:</p>
             <ul className="docs-list">
               <li><strong>Discord Support Server:</strong> <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">Join our support server</a> and create a post in the support channel.</li>
+              <li><strong>Email:</strong> <a href="mailto:statshqofficial@gmail.com" className="docs-link">statshqofficial@gmail.com</a></li>
             </ul>
           </div>
         );
@@ -988,7 +1008,7 @@ const DocsPage = () => {
 
             <h2 id="governing" className="docs-heading">11. Governing Law and Contact</h2>
             <p className="docs-text">These Terms are governed by applicable laws of the bot's operational jurisdiction.</p>
-            <p className="docs-text">For questions or disputes, contact the developers and owner of Stats through the <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">support discord server</a>.</p>
+            <p className="docs-text">For questions or disputes, contact the developers and owner of Stats through the <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">support discord server</a> or at <a href="mailto:statshqofficial@gmail.com" className="docs-link">statshqofficial@gmail.com</a>.</p>
           </div>
         );
 
@@ -1320,6 +1340,7 @@ const DocsPage = () => {
             </p>
             <ul className="docs-list">
               <li><strong>Discord:</strong> Join our <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">Support Server</a></li>
+              <li><strong>Email:</strong> <a href="mailto:statshqofficial@gmail.com" className="docs-link">statshqofficial@gmail.com</a></li>
             </ul>
 
             <h2 id="cookie-consent" className="docs-heading">13. Consent</h2>
@@ -1413,6 +1434,104 @@ const DocsPage = () => {
             <p className="docs-text">
               This Cookie Policy is part of and incorporated into our <a href="?page=privacy" className="docs-link">Privacy Policy</a> and <a href="?page=terms" className="docs-link">Terms of Service</a>.
             </p>
+          </div>
+        );
+
+      case "Refund Policy":
+        return (
+          <div className="docs-content">
+            <h1 id="refund-policy" className="docs-main-title">Refund Policy</h1>
+
+            <p className="docs-text">
+              <strong>Effective Date:</strong> 17 June 2026<br />
+              <strong>Last Updated:</strong> 17 June 2026
+            </p>
+
+            <p className="docs-text">
+              This Refund Policy applies to all products, subscriptions, services, and digital offerings provided through Stats ("we," "us," or "our") unless otherwise stated. By purchasing, subscribing to, or otherwise obtaining access to any paid product or service offered by Stats, you acknowledge and agree to this Refund Policy.
+            </p>
+
+            <h2 id="refund-eligibility" className="docs-heading">1. Refund Eligibility</h2>
+            <p className="docs-text">
+              Customers may request a refund within forty-eight (48) hours of the original purchase date and time. To be eligible for a refund, the following conditions must be met:
+            </p>
+            <ul className="docs-list">
+              <li>The refund request must be submitted within 48 hours of the original purchase</li>
+              <li>The purchase must be verifiable through our billing records</li>
+              <li>The request must be submitted through the methods described in this policy</li>
+            </ul>
+            <p className="docs-text">
+              Refund requests submitted after the 48-hour period are not eligible for a refund except where required by applicable law.
+            </p>
+
+            <h2 id="refund-requests" className="docs-heading">2. Refund Requests</h2>
+            <p className="docs-text">
+              Eligible refund requests may be submitted through the My Subscriptions page. The My Subscriptions page can be accessed from the user menu by clicking on your account name or profile picture located in the top-left corner of the website.
+            </p>
+            <p className="docs-text">
+              We may request additional information to verify ownership of a purchase before a refund is processed.
+            </p>
+
+            <h2 id="non-refundable" className="docs-heading">3. Non-Refundable Purchases</h2>
+            <p className="docs-text">
+              The following purchases and circumstances are generally not eligible for refunds:
+            </p>
+            <ul className="docs-list">
+              <li>Refund requests submitted more than 48 hours after the original purchase</li>
+              <li>Subscription renewal charges</li>
+              <li>Partial billing periods</li>
+              <li>Previously refunded purchases</li>
+              <li>Purchases associated with violations of our Terms of Service</li>
+              <li>Purchases associated with fraudulent, deceptive, or abusive activity</li>
+            </ul>
+            <p className="docs-text">
+              These restrictions apply except where prohibited by applicable law.
+            </p>
+
+            <h2 id="approved-refunds" className="docs-heading">4. Approved Refunds</h2>
+            <p className="docs-text">
+              If a refund request is approved, access to paid products, services, subscriptions, licenses, features, and other purchased benefits may be suspended, revoked, or terminated. Any associated entitlements, permissions, or premium features may be removed immediately upon processing of the refund. Continued use of refunded products or services is not permitted.
+            </p>
+            <p className="docs-text">
+              Approved refunds will be issued to the original payment method used for the purchase. Processing times may vary depending on the payment provider, financial institution, or payment method used.
+            </p>
+
+            <h2 id="chargebacks" className="docs-heading">5. Chargebacks and Payment Disputes</h2>
+            <p className="docs-text">
+              Customers are encouraged to contact support and request assistance before initiating a chargeback or payment dispute. We reserve the right to suspend or terminate access to products and services associated with transactions that are subject to a chargeback, payment dispute, or suspected fraudulent activity.
+            </p>
+
+            <h2 id="fraud-prevention" className="docs-heading">6. Fraud Prevention</h2>
+            <p className="docs-text">
+              Refund requests may be denied where there is reasonable evidence of:
+            </p>
+            <ul className="docs-list">
+              <li>Fraudulent activity</li>
+              <li>Abuse of the refund system</li>
+              <li>Unauthorized transactions</li>
+              <li>Misrepresentation of facts</li>
+              <li>Attempts to obtain products or services without payment</li>
+              <li>Violations of our Terms of Service</li>
+            </ul>
+
+            <h2 id="consumer-rights" className="docs-heading">7. Consumer Rights</h2>
+            <p className="docs-text">
+              Nothing in this Refund Policy limits, excludes, or replaces any rights that may be granted to consumers under applicable laws. Where local laws provide mandatory rights or remedies, those rights and remedies shall apply.
+            </p>
+
+            <h2 id="refund-policy-changes" className="docs-heading">8. Changes to This Policy</h2>
+            <p className="docs-text">
+              We may update this Refund Policy from time to time to reflect changes in our business practices, legal requirements, products, services, or operational procedures. Updates are reflected in the "Last Updated" date at the top of this policy. Continued use of our products or services after changes are published constitutes acceptance of the revised Refund Policy.
+            </p>
+
+            <h2 id="refund-contact" className="docs-heading">9. Contact Information</h2>
+            <p className="docs-text">
+              For questions regarding this Refund Policy or refund requests, please contact us:
+            </p>
+            <ul className="docs-list">
+              <li><strong>Discord:</strong> Join our <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">support discord server</a> and create a post in the support channel.</li>
+              <li><strong>Email:</strong> <a href="mailto:statshqofficial@gmail.com" className="docs-link">statshqofficial@gmail.com</a></li>
+            </ul>
           </div>
         );
 
