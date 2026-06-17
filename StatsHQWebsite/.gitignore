@@ -23,7 +23,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-vite.config.js
 postcss.config.cjs
 package.json
 package-lock.json
