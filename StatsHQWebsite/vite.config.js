@@ -28,7 +28,6 @@ export default defineConfig({
         voice: path.resolve(__dirname, 'Dashboard/Voice Activity/index.html'),
         activity: path.resolve(__dirname, 'Dashboard/Activity/index.html'),
         emojis: path.resolve(__dirname, 'Dashboard/Emoji Tracking/index.html'),
-        mentions: path.resolve(__dirname, 'Dashboard/Mentions/index.html'),
         invites: path.resolve(__dirname, 'Dashboard/Invite Tracking/index.html'),
         growth: path.resolve(__dirname, 'Dashboard/Growth/index.html'),
         settings: path.resolve(__dirname, 'Dashboard/Settings/index.html'),
