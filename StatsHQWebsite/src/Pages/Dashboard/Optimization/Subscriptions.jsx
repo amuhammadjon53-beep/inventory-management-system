@@ -5,7 +5,7 @@ import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
 import {
   Zap, Server, FileText, XCircle, Clock, CheckCircle,
-  Ban, AlertCircle, RotateCcw, RefreshCw, PauseCircle
+  Ban, AlertCircle, RotateCcw
 } from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
@@ -44,7 +44,7 @@ const STATUS_META = {
     color: "#f0a500",
     bg: "rgba(240,165,0,0.15)",
     border: "rgba(240,165,0,0.3)",
-    icon: <PauseCircle size={12} />,
+    icon: <Clock size={12} />,
   },
   past_due: {
     label: "Past Due",
@@ -81,8 +81,6 @@ const formatDate = (dateStr) => {
 };
 
 const formatCycle = (cycle) => (cycle === "yearly" ? "Yearly" : "Monthly");
-
-const isAutoRenewOff = (sub) => sub?.scheduled_change?.action === "cancel";
 
 // ============================================
 // LOADING SPINNER
@@ -152,7 +150,6 @@ const ConfirmModal = ({ title, message, confirmLabel, onConfirm, onCancel, loadi
 const SubscriptionCard = ({ sub, onCancel, onInvoice, invoiceLoading, cancelLoading }) => {
   const info = MODULE_INFO[sub.module_key] || { name: sub.module_key, icon: <Zap size={22} color="#aa00ff" /> };
   const statusMeta = getStatusMeta(sub.status);
-  const autoRenewOff = isAutoRenewOff(sub);
   const isActive = sub.status === "active" || sub.status === "trialing";
   const discountPct = sub.discount_pct ? (sub.discount_pct * 100).toFixed(0) : null;
 
@@ -198,8 +195,8 @@ const SubscriptionCard = ({ sub, onCancel, onInvoice, invoiceLoading, cancelLoad
         </div>
         {sub.current_period_end && isActive && (
           <div className="sub-detail-row">
-            <RefreshCw size={13} className="sub-detail-icon" />
-            <span className="sub-detail-label">{autoRenewOff ? "Ends" : "Renews"}</span>
+            <Clock size={13} className="sub-detail-icon" />
+            <span className="sub-detail-label">Renews</span>
             <span className="sub-detail-value">{formatDate(sub.current_period_end)}</span>
           </div>
         )}
@@ -223,21 +220,6 @@ const SubscriptionCard = ({ sub, onCancel, onInvoice, invoiceLoading, cancelLoad
           </div>
         )}
       </div>
-
-      {/* Auto-renew indicator (read-only for admin view) */}
-      {isActive && (
-        <div className="sub-autorenew-row">
-          {autoRenewOff
-            ? <PauseCircle size={14} color="#f0a500" />
-            : <RefreshCw size={14} color="#00b894" />}
-          <span className="sub-autorenew-label">Auto-renew</span>
-          <span className="sub-autorenew-sub">
-            {autoRenewOff
-              ? `Off — ends ${formatDate(sub.current_period_end)}`
-              : "On"}
-          </span>
-        </div>
-      )}
 
       <div className="sub-card-divider" />
 
@@ -830,14 +812,6 @@ const styles = `
   .sub-detail-label { font-size: 12px; color: #666; font-weight: 500; min-width: 62px; }
   .sub-detail-value { font-size: 13px; color: #ccc; font-weight: 500; }
   .sub-mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; color: #777; }
-
-  .sub-autorenew-row {
-    display: flex; align-items: center; gap: 8px; margin-top: 14px;
-    padding: 9px 12px; background: rgba(255,255,255,0.02);
-    border: 1px solid #2a2a2a; border-radius: 10px;
-  }
-  .sub-autorenew-label { font-size: 13px; font-weight: 600; color: #ccc; }
-  .sub-autorenew-sub { font-size: 12px; color: #666; margin-left: 4px; }
 
   .sub-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .sub-action-btn {

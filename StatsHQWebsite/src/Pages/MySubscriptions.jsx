@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Zap, Server, FileText, XCircle, RotateCcw, ChevronDown, Clock, CheckCircle, Ban, AlertCircle, RefreshCw, PauseCircle } from 'lucide-react';
+import { Zap, Server, FileText, XCircle, RotateCcw, Clock, CheckCircle, Ban, AlertCircle, RefreshCw } from 'lucide-react';
 import NavBar from '../Components/NavBar.jsx';
 import Footer from '../Components/Footer.jsx';
 
@@ -80,11 +80,6 @@ const formatDate = (dateStr) => {
 const formatCycle = (cycle) =>
   cycle === 'yearly' ? 'Yearly' : 'Monthly';
 
-// Auto-renew is considered "off" if Paddle has a scheduled cancellation
-// at the end of the current billing period.
-const isAutoRenewOff = (sub) =>
-  sub?.scheduled_change?.action === 'cancel';
-
 // ─── Filter tabs ────────────────────────────────────────────────────────────────
 const FILTERS = ['all', 'active', 'canceled', 'paused', 'past_due'];
 
@@ -112,15 +107,13 @@ const ConfirmModal = ({ title, message, confirmLabel, confirmClass, onConfirm, o
 
 // ─── SubscriptionCard ───────────────────────────────────────────────────────────
 const SubscriptionCard = ({
-  sub, onCancel, onRefund, onInvoice, onToggleAutoRenew,
-  invoiceLoading, cancelLoading, refundLoading, autoRenewLoading,
+  sub, onCancel, onRefund, onInvoice,
+  invoiceLoading, cancelLoading, refundLoading,
 }) => {
   const info = MODULE_INFO[sub.module_key] || { name: sub.module_key, icon: <Zap size={22} color="#aa00ff" /> };
   const statusMeta = getStatusMeta(sub.status);
   const eligible = sub.status === 'active' && isWithin48Hours(sub.created_at || sub.current_period_start);
   const discountPct = sub.discount_pct ? (sub.discount_pct * 100).toFixed(0) : null;
-  const autoRenewOff = isAutoRenewOff(sub);
-  const showAutoRenewToggle = sub.status === 'active' || sub.status === 'trialing';
 
   return (
     <div className="module-card">
@@ -173,13 +166,9 @@ const SubscriptionCard = ({
         </div>
         {sub.current_period_end && sub.status === 'active' && (
           <div className="detail-row">
-            <Clock size={13} className="detail-icon" />
+            <RefreshCw size={13} className="detail-icon" />
             <span className="detail-label">Renews</span>
-            <span className="detail-value">
-              {autoRenewOff
-                ? `Ends ${formatDate(sub.current_period_end)}`
-                : formatDate(sub.current_period_end)}
-            </span>
+            <span className="detail-value">{formatDate(sub.current_period_end)}</span>
           </div>
         )}
         {sub.canceled_at && (
@@ -196,35 +185,6 @@ const SubscriptionCard = ({
           </div>
         )}
       </div>
-
-      {/* Auto-renew toggle */}
-      {showAutoRenewToggle && (
-        <div className="autorenew-row">
-          <div className="autorenew-label-group">
-            {autoRenewOff ? <PauseCircle size={14} color="#f0a500" /> : <RefreshCw size={14} color="#00e07a" />}
-            <span className="autorenew-label">Auto-renew</span>
-            <span className="autorenew-sublabel">
-              {autoRenewOff
-                ? `Off — ends ${formatDate(sub.current_period_end)}`
-                : 'On'}
-            </span>
-          </div>
-          <button
-            className={`autorenew-toggle ${!autoRenewOff ? 'on' : 'off'}`}
-            role="switch"
-            aria-checked={!autoRenewOff}
-            onClick={() => onToggleAutoRenew(sub, autoRenewOff)}
-            disabled={autoRenewLoading}
-            title={autoRenewOff ? 'Turn auto-renew back on' : 'Turn auto-renew off'}
-          >
-            {autoRenewLoading ? (
-              <div className="btn-spinner-sm" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }} />
-            ) : (
-              <span className="autorenew-knob" />
-            )}
-          </button>
-        </div>
-      )}
 
       {/* 48-hour eligibility notice */}
       {eligible && (
@@ -301,10 +261,9 @@ const MySubscriptionsPage = () => {
   const [invoiceLoading, setInvoiceLoading] = useState(null);
   const [cancelLoading, setCancelLoading] = useState(null);
   const [refundLoading, setRefundLoading] = useState(null);
-  const [autoRenewLoading, setAutoRenewLoading] = useState(null);
 
   // Confirm modal state
-  const [modal, setModal] = useState(null); // { type: 'cancel'|'refund'|'autorenew-off', sub }
+  const [modal, setModal] = useState(null); // { type: 'cancel'|'refund', sub }
 
   const hasFetchedRef = useRef(false);
 
@@ -447,58 +406,6 @@ const MySubscriptionsPage = () => {
     } finally {
       setRefundLoading(null);
     }
-  };
-
-  // ─── Auto-renew toggle ───────────────────────────────────────────────────────
-  // Turning ON requires no confirmation. Turning OFF (i.e. scheduling a
-  // cancellation at period end) is confirmed via modal since it changes
-  // what happens to the subscription.
-  const requestToggleAutoRenew = (sub, currentlyOff) => {
-    if (currentlyOff) {
-      doToggleAutoRenew(sub, true);
-    } else {
-      setModal({ type: 'autorenew-off', sub });
-    }
-  };
-
-  const doToggleAutoRenew = async (sub, enable) => {
-    setAutoRenewLoading(sub.paddle_subscription_id);
-    try {
-      const res = await fetch(`${API_URL}/api/paddle/subscriptions/${sub.paddle_subscription_id}/auto-renew`, {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enable }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Failed to update auto-renew');
-
-      setSubscriptions(prev =>
-        prev.map(s =>
-          s.paddle_subscription_id === sub.paddle_subscription_id
-            ? {
-                ...s,
-                scheduled_change: enable
-                  ? null
-                  : { action: 'cancel', effective_at: 'next_billing_period' },
-              }
-            : s
-        )
-      );
-      setSuccessMsg(enable ? 'Auto-renew turned back on.' : 'Auto-renew turned off — subscription will end at period close.');
-      setTimeout(() => setSuccessMsg(null), 5000);
-    } catch (err) {
-      setError(err.message);
-      setTimeout(() => setError(null), 5000);
-    } finally {
-      setAutoRenewLoading(null);
-    }
-  };
-
-  const handleAutoRenewOffConfirm = () => {
-    const sub = modal.sub;
-    setModal(null);
-    doToggleAutoRenew(sub, false);
   };
 
   // ─── Filtered views ────────────────────────────────────────────────────────
@@ -647,11 +554,9 @@ const MySubscriptionsPage = () => {
                         onCancel={(s) => setModal({ type: 'cancel', sub: s })}
                         onRefund={(s) => setModal({ type: 'refund', sub: s })}
                         onInvoice={handleInvoice}
-                        onToggleAutoRenew={requestToggleAutoRenew}
                         invoiceLoading={invoiceLoading === sub.paddle_subscription_id}
                         cancelLoading={cancelLoading === sub.paddle_subscription_id}
                         refundLoading={refundLoading === sub.paddle_subscription_id}
-                        autoRenewLoading={autoRenewLoading === sub.paddle_subscription_id}
                       />
                     ))}
                   </div>
@@ -676,11 +581,9 @@ const MySubscriptionsPage = () => {
                         onCancel={(s) => setModal({ type: 'cancel', sub: s })}
                         onRefund={(s) => setModal({ type: 'refund', sub: s })}
                         onInvoice={handleInvoice}
-                        onToggleAutoRenew={requestToggleAutoRenew}
                         invoiceLoading={invoiceLoading === sub.paddle_subscription_id}
                         cancelLoading={cancelLoading === sub.paddle_subscription_id}
                         refundLoading={refundLoading === sub.paddle_subscription_id}
-                        autoRenewLoading={autoRenewLoading === sub.paddle_subscription_id}
                       />
                     ))}
                   </div>
@@ -707,39 +610,29 @@ const MySubscriptionsPage = () => {
           title={
             modal.type === 'cancel'
               ? 'Cancel subscription?'
-              : modal.type === 'refund'
-              ? 'Request a refund?'
-              : 'Turn off auto-renew?'
+              : 'Request a refund?'
           }
           message={
             modal.type === 'cancel'
               ? `This will immediately cancel your ${MODULE_INFO[modal.sub.module_key]?.name || modal.sub.module_key} subscription. Access will be revoked right away.`
-              : modal.type === 'refund'
-              ? `This will refund your $${parseFloat(modal.sub.final_price_usd || 0).toFixed(2)} payment and cancel the subscription. Funds typically arrive in 5–10 business days.`
-              : `Your ${MODULE_INFO[modal.sub.module_key]?.name || modal.sub.module_key} subscription will stay active until ${formatDate(modal.sub.current_period_end)}, then it won't renew. You can turn auto-renew back on anytime before then.`
+              : `This will refund your $${parseFloat(modal.sub.final_price_usd || 0).toFixed(2)} payment and cancel the subscription. Funds typically arrive in 5–10 business days.`
           }
           confirmLabel={
             modal.type === 'cancel'
               ? 'Yes, cancel it'
-              : modal.type === 'refund'
-              ? 'Yes, refund me'
-              : 'Yes, turn it off'
+              : 'Yes, refund me'
           }
           confirmClass={modal.type === 'cancel' ? 'danger' : 'warning'}
           onConfirm={
             modal.type === 'cancel'
               ? handleCancelConfirm
-              : modal.type === 'refund'
-              ? handleRefundConfirm
-              : handleAutoRenewOffConfirm
+              : handleRefundConfirm
           }
           onCancel={() => setModal(null)}
           loading={
             modal.type === 'cancel'
               ? cancelLoading === modal.sub.paddle_subscription_id
-              : modal.type === 'refund'
-              ? refundLoading === modal.sub.paddle_subscription_id
-              : autoRenewLoading === modal.sub.paddle_subscription_id
+              : refundLoading === modal.sub.paddle_subscription_id
           }
         />
       )}
@@ -909,37 +802,6 @@ const allStyles = `
   .detail-label { font-size: 12px; color: #555870; font-weight: 500; min-width: 54px; }
   .detail-value { font-size: 13px; color: #d0d0d0; font-weight: 500; }
   .detail-value.mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: #888b99; }
-
-  /* ── Auto-renew toggle row ── */
-  .autorenew-row {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-top: 16px; padding: 10px 14px;
-    background: rgba(255,255,255,0.02); border: 1px solid #2c2f3a; border-radius: 10px;
-    position: relative; z-index: 1;
-  }
-  .autorenew-label-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .autorenew-label { font-size: 13px; font-weight: 600; color: #d0d0d0; }
-  .autorenew-sublabel { font-size: 12px; color: #555870; }
-
-  .autorenew-toggle {
-    position: relative;
-    width: 42px; height: 24px; border-radius: 999px;
-    border: 1px solid #2c2f3a; cursor: pointer; flex-shrink: 0;
-    transition: background 0.2s ease, border-color 0.2s ease;
-    padding: 0;
-  }
-  .autorenew-toggle.on { background: rgba(0,224,122,0.25); border-color: rgba(0,224,122,0.5); }
-  .autorenew-toggle.off { background: rgba(136,139,153,0.15); border-color: #2c2f3a; }
-  .autorenew-toggle:disabled { cursor: not-allowed; opacity: 0.7; }
-  .autorenew-knob {
-    position: absolute; top: 2px; left: 2px;
-    width: 18px; height: 18px; border-radius: 50%;
-    background: #ffffff;
-    transition: transform 0.2s cubic-bezier(0.34,1.56,0.64,1);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
-  }
-  .autorenew-toggle.on .autorenew-knob { transform: translateX(18px); background: #00e07a; }
-  .autorenew-toggle.off .autorenew-knob { transform: translateX(0); background: #888b99; }
 
   /* ── Eligible notice ── */
   .eligible-notice {
