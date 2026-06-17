@@ -112,6 +112,7 @@ const NavBar = () => {
         else if (pageParam === 'privacy') setCurrentPage("privacy");
         else if (pageParam === 'terms') setCurrentPage("terms");
         else if (pageParam === 'cookies') setCurrentPage("cookies");
+        else if (pageParam === 'refund') setCurrentPage("refund");
         else if (pageParam === 'invite-tracking') setCurrentPage("invite-tracking");
         else if (pageParam === 'distribution') setCurrentPage("distribution");
         else if (pageParam === 'ships') setCurrentPage("ships");
@@ -167,7 +168,7 @@ const NavBar = () => {
     if (isMobileMenuOpen) {
       if (currentPage === "Dashboard") {
         setMenuLevel("Dashboard");
-      } else if (["introduction", "setup", "faq", "privacy", "terms", "cookies", "invite-tracking", "distribution", "ships"].includes(currentPage)) {
+      } else if (["introduction", "setup", "faq", "privacy", "terms", "cookies", "refund", "invite-tracking", "distribution", "ships"].includes(currentPage)) {
         setMenuLevel("docs");
       } else {
         setMenuLevel("main");
@@ -333,6 +334,9 @@ const NavBar = () => {
         <a href="/docs/?page=cookies" className={`mobile-nav-link ${currentPage === 'cookies' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           Cookie Policy
         </a>
+        <a href="/docs/?page=refund" className={`mobile-nav-link ${currentPage === 'refund' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+          Refund Policy
+        </a>
       </div>
     </div>
   );
@@ -351,7 +355,7 @@ const NavBar = () => {
       <a href="/Premium/index.html" className={`mobile-nav-link ${currentPage === 'premium' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
         Premium
       </a>
-      <a href="#" className={`mobile-nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'invite-tracking', 'distribution', 'ships'].includes(currentPage) ? 'active' : ''}`} onClick={handleDocsClick}>
+      <a href="#" className={`mobile-nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'refund', 'invite-tracking', 'distribution', 'ships'].includes(currentPage) ? 'active' : ''}`} onClick={handleDocsClick}>
         Docs
       </a>
       <a href="https://discord.gg/hreJvck8cK" className="mobile-nav-link" target="_blank" rel="noopener noreferrer" onClick={() => setIsMobileMenuOpen(false)}>
@@ -383,7 +387,7 @@ const NavBar = () => {
             <a href="/Premium/index.html" className={`nav-link ${currentPage === 'premium' ? 'active' : ''}`}>
               Premium
             </a>
-            <a href="/docs/" className={`nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies'].includes(currentPage) ? 'active' : ''}`}>
+            <a href="/docs/" className={`nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'refund'].includes(currentPage) ? 'active' : ''}`}>
               Docs
             </a>
             <a href="https://discord.gg/hreJvck8cK" className="nav-link" target="_blank" rel="noopener noreferrer">
