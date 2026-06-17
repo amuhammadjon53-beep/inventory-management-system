@@ -45,7 +45,8 @@ async def _request(
         ) as resp:
             body = await resp.json()
             if resp.status >= 400:
-                logger.error("Paddle API error %s %s -> %d %s", method, path, resp.status, body)
+                logger.error("Paddle API error %s %s -> %d %s",
+                             method, path, resp.status, body)
                 raise PaddleAPIError(resp.status, body)
             return body
 
@@ -173,6 +174,9 @@ async def generate_checkout_url(
 ) -> str:
     payload: Dict[str, Any] = {
         "items": [{"price_id": price_id, "quantity": quantity}],
+        "checkout": {
+            "url": "https://statshq.xyz/checkout/success"
+        },
     }
     if discount_id:
         payload["discount_id"] = discount_id
@@ -184,9 +188,7 @@ async def generate_checkout_url(
         payload["custom_data"] = custom_data
 
     resp = await _request("POST", "/transactions", payload)
-    logger.info(f"Paddle full transaction response: {resp}")           # ← add this
     checkout = resp.get("data", {}).get("checkout", {})
-    logger.info(f"Paddle checkout object: {checkout}")                 # ← and this
     return checkout.get("url", "")
 
 

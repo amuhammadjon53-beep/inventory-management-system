@@ -3139,7 +3139,8 @@ class DatabaseStats(commands.Cog):
                 # ----- seed: modules -----
                 # Pricing rule: yearly = monthly x 10 (2 months free, ~16.7% off)
                 optimization_monthly = 2.49
-                optimization_yearly = round(optimization_monthly * 10, 2)  # 24.90
+                optimization_yearly = round(
+                    optimization_monthly * 10, 2)  # 24.90
 
                 await conn.execute('''
                     INSERT INTO modules (
@@ -3150,38 +3151,57 @@ class DatabaseStats(commands.Cog):
                         $1, $2, $3, $4, $5, $6, $7, $8, $9
                     ) ON CONFLICT (module_key) DO NOTHING
                 ''',
-                    'optimization',
-                    'Optimization+',
-                    'Unlock scheduled resets, custom time periods, unlimited history syncs and indefinite data storage.',
-                    '1.1',
-                    optimization_monthly,
-                    optimization_yearly,
-                    'pro_01kv2cxndcxkfgrzzd8ay3tb11',
-                    'pri_01kv2czhp9jn6kd489rmtqgqg9',
-                    'pri_01kv2cyny93van4n4gjz58gayv'
-                )
-                print(f"  ✅ Seeded module: optimization (monthly=${optimization_monthly}, yearly=${optimization_yearly})")
+                                   'optimization',
+                                   'Optimization+',
+                                   'Unlock scheduled resets, custom time periods, unlimited history syncs and indefinite data storage.',
+                                   '1.1',
+                                   optimization_monthly,
+                                   optimization_yearly,
+                                   'pro_01kv2cxndcxkfgrzzd8ay3tb11',
+                                   'pri_01kv2czhp9jn6kd489rmtqgqg9',
+                                   'pri_01kv2cyny93van4n4gjz58gayv'
+                                   )
+                print(
+                    f"  ✅ Seeded module: optimization (monthly=${optimization_monthly}, yearly=${optimization_yearly})")
 
-                # ----- seed: multi-server discounts -----
-                discount_rows = [
-                    (2,  5, 'dsc_01kv2d0jq5sw5m51gsk80sggzw'),
-                    (3, 10, 'dsc_01kv2d149rm948wrmnh4w3ted3'),
-                    (4, 15, 'dsc_01kv2d1kqteswvfbe5j3yqjh19'),
-                    (5, 20, 'dsc_01kv2d20r8rrnr9ghsd1jza5p9'),
-                    (6, 25, 'dsc_01kv2d2d559d0c4sn3zs41y38k'),
-                    (7, 30, 'dsc_01kv2d2s0q9z5gyvpk2zcyqcbd'),
-                    (8, 35, 'dsc_01kv2d3ab0a1wfam7zyjaz2brb'),
-                    (9, 40, 'dsc_01kv2d3mz7tjn3pdmv967tyqnf'),
-                    (10, 45, 'dsc_01kv2d3y5eq5qeaq9tvjeq4h09'),
-                    (11, 50, 'dsc_01kv2d47wvdzc65cy8ay731z9s'),
+                # ----- fix: discount IDs were seeded with stale/incorrect Paddle discount IDs -----
+                # Correcting to match the live .env values (verified against Paddle directly)
+                discount_id_corrections = [
+                    (2,  'dsc_01kv2bng8jhyy0syctc9hj911y'),   # TWO_SERVERS
+                    (3,  'dsc_01kv2bp7bmkcbcdftyx9w87w4v'),   # THREE_SERVERS
+                    (4,  'dsc_01kv2bpktkg5fbwpdqwv85zttk'),   # FOUR_SERVERS
+                    (5,  'dsc_01kv2bpz1svapwwz4rjm7j90tb'),   # FIVE_SERVERS
+                    (6,  'dsc_01kv2bq8ydr2t2d55jsmqktqx8'),   # SIX_SERVERS
+                    (7,  'dsc_01kv2bqn42a4gybw1g4e7pbt0w'),   # SEVEN_SERVERS
+                    (8,  'dsc_01kv2brj58trbmx65e66xvajmq'),   # EIGHT_SERVERS
+                    (9,  'dsc_01kv2brykkn67hbvkthv6d3rcr'),   # NINE_SERVERS
+                    (10, 'dsc_01kv2bszdmjyv4j65wt9j45gc6'),   # TEN_SERVERS
+                    (11, 'dsc_01kv2bthk1stbryqq8xxw7cb0v'),   # ELEVEN_SERVERS
                 ]
-                for server_count, discount_pct, paddle_discount_id in discount_rows:
+                for server_count, correct_discount_id in discount_id_corrections:
                     await conn.execute('''
-                        INSERT INTO server_count_discounts (server_count, discount_pct, paddle_discount_id)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (server_count) DO NOTHING
-                    ''', server_count, discount_pct, paddle_discount_id)
-                print("  ✅ Seeded multi-server discounts")
+                        UPDATE server_count_discounts
+                        SET paddle_discount_id = $2
+                        WHERE server_count = $1
+                    ''', server_count, correct_discount_id)
+                print(
+                    "  ✅ Corrected server_count_discounts paddle_discount_id values to match live .env")
+
+                # ----- fix: optimization module's Paddle IDs were seeded incorrectly -----
+                await conn.execute('''
+                    UPDATE modules
+                    SET paddle_product_id = $1,
+                        paddle_monthly_price_id = $2,
+                        paddle_yearly_price_id = $3
+                    WHERE module_key = $4
+                ''',
+                                   'pro_01kv0mpav7ahkxmvr777er76ve',   # OPTIMIZATION
+                                   'pri_01kv0msyg5np26qbzq894qezap',   # MONTHLY_OPTIMIZATION
+                                   'pri_01kv0mx1mjrsnxxjp578dv62st',   # YEARLY_OPTIMIZATION
+                                   'optimization'
+                                   )
+                print(
+                    "  ✅ Corrected modules.paddle_product_id / price IDs to match live .env")
 
                 # ===== ADD PRIMARY KEYS AND CONSTRAINTS =====
                 print("\n" + "="*60)
@@ -18535,28 +18555,24 @@ class DatabaseStats(commands.Cog):
                     original=e
                 )
             raise
-        
-    
+
     async def get_all_modules(pool: asyncpg.Pool) -> List[Dict]:
         async with pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM modules WHERE is_active = TRUE ORDER BY module_number")
             return [dict(r) for r in rows]
-    
-    
+
     async def get_module_by_key(pool: asyncpg.Pool, module_key: str) -> Optional[Dict]:
         async with pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM modules WHERE module_key = $1", module_key)
             return dict(row) if row else None
-    
-    
+
     async def get_module_by_paddle_product(pool: asyncpg.Pool, paddle_product_id: str) -> Optional[Dict]:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM modules WHERE paddle_product_id = $1", paddle_product_id
             )
             return dict(row) if row else None
-    
-    
+
     async def get_module_by_paddle_price(pool: asyncpg.Pool, paddle_price_id: str) -> Optional[Dict]:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -18566,12 +18582,11 @@ class DatabaseStats(commands.Cog):
                 paddle_price_id,
             )
             return dict(row) if row else None
-    
-    
+
     # ──────────────────────────────────────────────────────────────────────────────
     # DISCOUNTS
     # ──────────────────────────────────────────────────────────────────────────────
-    
+
     async def get_discount_for_server_count(pool: asyncpg.Pool, server_count: int) -> Optional[Dict]:
         """Return the discount row for *exactly* server_count, or the highest available."""
         async with pool.acquire() as conn:
@@ -18583,18 +18598,16 @@ class DatabaseStats(commands.Cog):
                 capped,
             )
             return dict(row) if row else None
-    
-    
+
     async def get_all_discounts(pool: asyncpg.Pool) -> List[Dict]:
         async with pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM server_count_discounts ORDER BY server_count")
             return [dict(r) for r in rows]
-    
-    
+
     # ──────────────────────────────────────────────────────────────────────────────
     # CUSTOMERS
     # ──────────────────────────────────────────────────────────────────────────────
-    
+
     async def upsert_paddle_customer(
         pool: asyncpg.Pool,
         discord_id: str,
@@ -18613,28 +18626,25 @@ class DatabaseStats(commands.Cog):
                 discord_id, paddle_customer_id, email,
             )
             return dict(row)
-    
-    
+
     async def get_paddle_customer(pool: asyncpg.Pool, discord_id: str) -> Optional[Dict]:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM paddle_customers WHERE discord_id = $1", discord_id
             )
             return dict(row) if row else None
-    
-    
+
     async def get_paddle_customer_by_paddle_id(pool: asyncpg.Pool, paddle_customer_id: str) -> Optional[Dict]:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM paddle_customers WHERE paddle_customer_id = $1", paddle_customer_id
             )
             return dict(row) if row else None
-    
-    
+
     # ──────────────────────────────────────────────────────────────────────────────
     # SUBSCRIPTIONS
     # ──────────────────────────────────────────────────────────────────────────────
-    
+
     async def create_subscription(pool: asyncpg.Pool, data: Dict) -> Dict:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -18647,17 +18657,19 @@ class DatabaseStats(commands.Cog):
                     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
                 ) RETURNING *""",
                 data["discord_id"], data["guild_id"],
-                data["paddle_subscription_id"], data.get("paddle_transaction_id"),
-                data["paddle_customer_id"], data.get("module_id"), data.get("tier_id"),
+                data["paddle_subscription_id"], data.get(
+                    "paddle_transaction_id"),
+                data["paddle_customer_id"], data.get(
+                    "module_id"), data.get("tier_id"),
                 data["billing_cycle"], data["base_price_usd"],
                 data.get("discount_pct", 0), data["final_price_usd"],
                 data.get("server_count_at_purchase", 1),
                 data.get("status", "active"),
-                data.get("current_period_start"), data.get("current_period_end"),
+                data.get("current_period_start"), data.get(
+                    "current_period_end"),
             )
             return dict(row)
-    
-    
+
     async def get_subscription(pool: asyncpg.Pool, paddle_subscription_id: str) -> Optional[Dict]:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -18665,8 +18677,7 @@ class DatabaseStats(commands.Cog):
                 paddle_subscription_id,
             )
             return dict(row) if row else None
-    
-    
+
     async def get_subscriptions_for_user(pool: asyncpg.Pool, discord_id: str) -> List[Dict]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -18678,8 +18689,7 @@ class DatabaseStats(commands.Cog):
                 discord_id,
             )
             return [dict(r) for r in rows]
-    
-    
+
     async def get_subscriptions_for_guild(pool: asyncpg.Pool, guild_id: int) -> List[Dict]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -18691,8 +18701,7 @@ class DatabaseStats(commands.Cog):
                 guild_id,
             )
             return [dict(r) for r in rows]
-    
-    
+
     async def update_subscription_status(
         pool: asyncpg.Pool,
         paddle_subscription_id: str,
@@ -18720,12 +18729,11 @@ class DatabaseStats(commands.Cog):
                 canceled_at, cancel_at_period_end, paddle_transaction_id,
             )
             return dict(row) if row else None
-    
-    
+
     # ──────────────────────────────────────────────────────────────────────────────
     # GUILD MODULE ACCESS
     # ──────────────────────────────────────────────────────────────────────────────
-    
+
     async def grant_module_access(
         pool: asyncpg.Pool,
         guild_id: int,
@@ -18744,8 +18752,7 @@ class DatabaseStats(commands.Cog):
                 guild_id, module_id, subscription_id, discord_id,
             )
             return dict(row)
-    
-    
+
     async def revoke_module_access(pool: asyncpg.Pool, subscription_id: int) -> int:
         """Revoke all access rows tied to a subscription. Returns affected count."""
         async with pool.acquire() as conn:
@@ -18757,8 +18764,7 @@ class DatabaseStats(commands.Cog):
                 subscription_id,
             )
             return int(result.split()[-1])
-    
-    
+
     async def guild_has_module(pool: asyncpg.Pool, guild_id: int, module_key: str) -> bool:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -18771,8 +18777,7 @@ class DatabaseStats(commands.Cog):
                 guild_id, module_key,
             )
             return row is not None
-    
-    
+
     async def get_guild_active_modules(pool: asyncpg.Pool, guild_id: int) -> List[Dict]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -18788,12 +18793,11 @@ class DatabaseStats(commands.Cog):
                 guild_id,
             )
             return [dict(r) for r in rows]
-    
-    
+
     # ──────────────────────────────────────────────────────────────────────────────
     # TRANSACTIONS
     # ──────────────────────────────────────────────────────────────────────────────
-    
+
     async def log_transaction(pool: asyncpg.Pool, data: Dict) -> Dict:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -18806,15 +18810,16 @@ class DatabaseStats(commands.Cog):
                     status      = EXCLUDED.status,
                     raw_payload = EXCLUDED.raw_payload
                 RETURNING *""",
-                data.get("paddle_transaction_id"), data.get("paddle_subscription_id"),
+                data.get("paddle_transaction_id"), data.get(
+                    "paddle_subscription_id"),
                 data.get("paddle_customer_id"), data.get("discord_id"),
-                data.get("guild_id"), data.get("amount_usd"), data.get("currency", "USD"),
+                data.get("guild_id"), data.get(
+                    "amount_usd"), data.get("currency", "USD"),
                 data.get("status"), data.get("transaction_type"),
                 json.dumps(data.get("raw_payload", {})),
             )
             return dict(row)
-    
-    
+
     async def get_transactions_for_user(pool: asyncpg.Pool, discord_id: str) -> List[Dict]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -18822,8 +18827,7 @@ class DatabaseStats(commands.Cog):
                 discord_id,
             )
             return [dict(r) for r in rows]
-    
-    
+
     async def get_transactions_for_guild(pool: asyncpg.Pool, guild_id: int) -> List[Dict]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -18831,12 +18835,11 @@ class DatabaseStats(commands.Cog):
                 guild_id,
             )
             return [dict(r) for r in rows]
-    
-    
+
     # ──────────────────────────────────────────────────────────────────────────────
     # REFUNDS
     # ──────────────────────────────────────────────────────────────────────────────
-    
+
     async def log_refund(pool: asyncpg.Pool, data: Dict) -> Dict:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -18845,13 +18848,13 @@ class DatabaseStats(commands.Cog):
                     discord_id, guild_id, amount_usd, reason
                 ) VALUES ($1,$2,$3,$4,$5,$6)
                 RETURNING *""",
-                data.get("paddle_transaction_id"), data.get("paddle_subscription_id"),
+                data.get("paddle_transaction_id"), data.get(
+                    "paddle_subscription_id"),
                 data.get("discord_id"), data.get("guild_id"),
                 data.get("amount_usd"), data.get("reason"),
             )
             return dict(row)
-    
-    
+
     async def get_refunds_for_user(pool: asyncpg.Pool, discord_id: str) -> List[Dict]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -18859,12 +18862,11 @@ class DatabaseStats(commands.Cog):
                 discord_id,
             )
             return [dict(r) for r in rows]
-    
-    
+
     # ──────────────────────────────────────────────────────────────────────────────
     # WEBHOOK EVENT LOG
     # ──────────────────────────────────────────────────────────────────────────────
-    
+
     async def is_event_processed(pool: asyncpg.Pool, event_id: str) -> bool:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -18873,8 +18875,7 @@ class DatabaseStats(commands.Cog):
             if row is None:
                 return False
             return row["processed"]
-    
-    
+
     async def record_webhook_event(
         pool: asyncpg.Pool,
         event_id: str,
@@ -18888,8 +18889,7 @@ class DatabaseStats(commands.Cog):
                 ON CONFLICT (event_id) DO NOTHING""",
                 event_id, event_type, json.dumps(payload),
             )
-    
-    
+
     async def mark_event_processed(
         pool: asyncpg.Pool, event_id: str, error: Optional[str] = None
     ) -> None:
@@ -18902,7 +18902,6 @@ class DatabaseStats(commands.Cog):
                 WHERE event_id = $1""",
                 event_id, error is None, error,
             )
-
 
     # ======================================================================
     # CLEANUP TASKS - FIXED EXCEPTION HANDLING

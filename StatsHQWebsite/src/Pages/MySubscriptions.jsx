@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Zap, Server, FileText, XCircle, RotateCcw, Clock, CheckCircle, Ban, AlertCircle, RefreshCw } from 'lucide-react';
+import { Zap, Server, FileText, XCircle, RotateCcw, Clock, CheckCircle, Ban, AlertCircle, RefreshCw, ChevronDown, ChevronUp, Receipt } from 'lucide-react';
 import NavBar from '../Components/NavBar.jsx';
 import Footer from '../Components/Footer.jsx';
 
@@ -60,6 +60,31 @@ const STATUS_META = {
   },
 };
 
+// ─── Transaction status meta ────────────────────────────────────────────────────
+const TRANSACTION_STATUS_META = {
+  completed: {
+    label: 'Completed',
+    color: '#00e07a',
+    bg: 'rgba(0,224,122,0.08)',
+    border: 'rgba(0,224,122,0.25)',
+  },
+  failed: {
+    label: 'Failed',
+    color: '#ff6b6b',
+    bg: 'rgba(255,107,107,0.08)',
+    border: 'rgba(255,107,107,0.25)',
+  },
+  canceled: {
+    label: 'Canceled',
+    color: '#888b99',
+    bg: 'rgba(136,139,153,0.08)',
+    border: 'rgba(136,139,153,0.25)',
+  },
+};
+
+const getTransactionStatusMeta = (status) => 
+  TRANSACTION_STATUS_META[status] || TRANSACTION_STATUS_META['canceled'];
+
 const getStatusMeta = (status) => STATUS_META[status] || STATUS_META['canceled'];
 
 // ─── 48-hour refund/cancel eligibility ─────────────────────────────────────────
@@ -74,6 +99,14 @@ const formatDate = (dateStr) => {
   if (!dateStr) return '—';
   return new Date(dateStr).toLocaleDateString('en-US', {
     year: 'numeric', month: 'short', day: 'numeric',
+  });
+};
+
+const formatDateTime = (dateStr) => {
+  if (!dateStr) return '—';
+  return new Date(dateStr).toLocaleString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
   });
 };
 
@@ -107,13 +140,27 @@ const ConfirmModal = ({ title, message, confirmLabel, confirmClass, onConfirm, o
 
 // ─── SubscriptionCard ───────────────────────────────────────────────────────────
 const SubscriptionCard = ({
-  sub, onCancel, onRefund, onInvoice,
-  invoiceLoading, cancelLoading, refundLoading,
+  sub, 
+  onCancel, 
+  onRefund, 
+  onInvoice,
+  onTransactionInvoice,
+  invoiceLoading, 
+  cancelLoading, 
+  refundLoading,
+  transactionHistory,
+  onToggleHistory,
+  isHistoryExpanded,
 }) => {
   const info = MODULE_INFO[sub.module_key] || { name: sub.module_key, icon: <Zap size={22} color="#aa00ff" /> };
   const statusMeta = getStatusMeta(sub.status);
   const eligible = sub.status === 'active' && isWithin48Hours(sub.created_at || sub.current_period_start);
   const discountPct = sub.discount_pct ? (sub.discount_pct * 100).toFixed(0) : null;
+
+  const historyData = transactionHistory[sub.paddle_subscription_id];
+  const isLoading = historyData?.loading || false;
+  const transactions = historyData?.transactions || [];
+  const error = historyData?.error || null;
 
   return (
     <div className="module-card">
@@ -209,6 +256,16 @@ const SubscriptionCard = ({
           </button>
         )}
 
+        <button
+          className={`action-btn history-toggle-btn ${isHistoryExpanded ? 'active' : ''}`}
+          onClick={() => onToggleHistory(sub.paddle_subscription_id)}
+          disabled={isLoading}
+        >
+          <Receipt size={14} />
+          <span>{isHistoryExpanded ? 'Hide history' : 'View history'}</span>
+          {isHistoryExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+
         {eligible && (
           <>
             <button
@@ -230,6 +287,78 @@ const SubscriptionCard = ({
           </>
         )}
       </div>
+
+      {/* Invoice history expanded section */}
+      {isHistoryExpanded && (
+        <>
+          <div className="history-divider" />
+          <div className="history-section">
+            <div className="history-header">
+              <span className="history-title">Invoice History</span>
+              <span className="history-count">{transactions.length} transactions</span>
+            </div>
+
+            {isLoading ? (
+              <div className="history-loading">
+                <div className="btn-spinner-sm" />
+                <span>Loading transaction history...</span>
+              </div>
+            ) : error ? (
+              <div className="history-error">
+                <AlertCircle size={14} />
+                <span>{error}</span>
+              </div>
+            ) : transactions.length === 0 ? (
+              <div className="history-empty">
+                <span>No transaction history available yet.</span>
+              </div>
+            ) : (
+              <div className="history-list">
+                {transactions.map((tx, index) => {
+                  const txStatusMeta = getTransactionStatusMeta(tx.status);
+                  const isCompleted = tx.status === 'completed';
+                  const amount = tx.amount_usd != null && tx.amount_usd > 0 
+                    ? `$${parseFloat(tx.amount_usd).toFixed(2)}` 
+                    : '—';
+
+                  return (
+                    <div key={tx.paddle_transaction_id || index} className="history-item">
+                      <div className="history-item-main">
+                        <div className="history-item-left">
+                          <span className="history-item-date">{formatDateTime(tx.created_at)}</span>
+                          <span className="history-item-type">{tx.transaction_type || '—'}</span>
+                        </div>
+                        <div className="history-item-right">
+                          <span className="history-item-amount">{amount}</span>
+                          <span
+                            className="history-item-status"
+                            style={{
+                              color: txStatusMeta.color,
+                              background: txStatusMeta.bg,
+                              border: `1px solid ${txStatusMeta.border}`,
+                            }}
+                          >
+                            {txStatusMeta.label}
+                          </span>
+                          {isCompleted && tx.paddle_transaction_id && (
+                            <button
+                              className="history-item-invoice-btn"
+                              onClick={() => onTransactionInvoice(tx.paddle_transaction_id)}
+                              title="Get invoice for this transaction"
+                            >
+                              <FileText size={13} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {eligible && (
         <p className="module-footnote">
@@ -261,6 +390,10 @@ const MySubscriptionsPage = () => {
   const [invoiceLoading, setInvoiceLoading] = useState(null);
   const [cancelLoading, setCancelLoading] = useState(null);
   const [refundLoading, setRefundLoading] = useState(null);
+
+  // Invoice history state
+  const [transactionHistory, setTransactionHistory] = useState({});
+  const [historyInvoiceLoading, setHistoryInvoiceLoading] = useState(null);
 
   // Confirm modal state
   const [modal, setModal] = useState(null); // { type: 'cancel'|'refund', sub }
@@ -343,6 +476,125 @@ const MySubscriptionsPage = () => {
       setTimeout(() => setError(null), 5000);
     } finally {
       setInvoiceLoading(null);
+    }
+  };
+
+  // ─── Transaction Invoice ──────────────────────────────────────────────────
+  const handleTransactionInvoice = async (transactionId) => {
+    setHistoryInvoiceLoading(transactionId);
+    try {
+      const res = await fetch(`${API_URL}/api/paddle/transactions/${transactionId}/invoice`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Could not retrieve invoice');
+      const data = await res.json();
+      const url = data?.data?.url || data?.url;
+      if (!url) throw new Error('No invoice URL returned');
+      window.open(url, '_blank');
+    } catch (err) {
+      // Show error inline in the history section by updating the transaction history state
+      setTransactionHistory(prev => {
+        const subId = Object.keys(prev).find(key => 
+          prev[key]?.transactions?.some(tx => tx.paddle_transaction_id === transactionId)
+        );
+        if (!subId) return prev;
+        return {
+          ...prev,
+          [subId]: {
+            ...prev[subId],
+            error: err.message || 'Failed to retrieve invoice',
+          }
+        };
+      });
+      setTimeout(() => {
+        setTransactionHistory(prev => {
+          const subId = Object.keys(prev).find(key => 
+            prev[key]?.transactions?.some(tx => tx.paddle_transaction_id === transactionId)
+          );
+          if (!subId) return prev;
+          return {
+            ...prev,
+            [subId]: {
+              ...prev[subId],
+              error: null,
+            }
+          };
+        });
+      }, 5000);
+    } finally {
+      setHistoryInvoiceLoading(null);
+    }
+  };
+
+  // ─── Toggle Invoice History ──────────────────────────────────────────────
+  const toggleHistory = async (subscriptionId) => {
+    const current = transactionHistory[subscriptionId];
+    const isExpanded = current?.expanded || false;
+
+    if (isExpanded) {
+      // Just collapse
+      setTransactionHistory(prev => ({
+        ...prev,
+        [subscriptionId]: {
+          ...prev[subscriptionId],
+          expanded: false,
+        },
+      }));
+      return;
+    }
+
+    // Expand - fetch if not already loaded
+    if (!current?.transactions && !current?.loading) {
+      setTransactionHistory(prev => ({
+        ...prev,
+        [subscriptionId]: {
+          expanded: true,
+          loading: true,
+          transactions: [],
+          error: null,
+        },
+      }));
+
+      try {
+        const res = await fetch(`${API_URL}/api/paddle/transactions/subscription/${subscriptionId}`, {
+          credentials: 'include',
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.detail || `Failed to fetch transaction history: ${res.status}`);
+        }
+
+        const data = await res.json();
+        setTransactionHistory(prev => ({
+          ...prev,
+          [subscriptionId]: {
+            expanded: true,
+            loading: false,
+            transactions: data || [],
+            error: null,
+          },
+        }));
+      } catch (err) {
+        setTransactionHistory(prev => ({
+          ...prev,
+          [subscriptionId]: {
+            expanded: true,
+            loading: false,
+            transactions: [],
+            error: err.message || 'Failed to load transaction history',
+          },
+        }));
+      }
+    } else {
+      // Already loaded, just expand
+      setTransactionHistory(prev => ({
+        ...prev,
+        [subscriptionId]: {
+          ...prev[subscriptionId],
+          expanded: true,
+        },
+      }));
     }
   };
 
@@ -554,9 +806,13 @@ const MySubscriptionsPage = () => {
                         onCancel={(s) => setModal({ type: 'cancel', sub: s })}
                         onRefund={(s) => setModal({ type: 'refund', sub: s })}
                         onInvoice={handleInvoice}
+                        onTransactionInvoice={handleTransactionInvoice}
                         invoiceLoading={invoiceLoading === sub.paddle_subscription_id}
                         cancelLoading={cancelLoading === sub.paddle_subscription_id}
                         refundLoading={refundLoading === sub.paddle_subscription_id}
+                        transactionHistory={transactionHistory}
+                        onToggleHistory={toggleHistory}
+                        isHistoryExpanded={transactionHistory[sub.paddle_subscription_id]?.expanded || false}
                       />
                     ))}
                   </div>
@@ -581,9 +837,13 @@ const MySubscriptionsPage = () => {
                         onCancel={(s) => setModal({ type: 'cancel', sub: s })}
                         onRefund={(s) => setModal({ type: 'refund', sub: s })}
                         onInvoice={handleInvoice}
+                        onTransactionInvoice={handleTransactionInvoice}
                         invoiceLoading={invoiceLoading === sub.paddle_subscription_id}
                         cancelLoading={cancelLoading === sub.paddle_subscription_id}
                         refundLoading={refundLoading === sub.paddle_subscription_id}
+                        transactionHistory={transactionHistory}
+                        onToggleHistory={toggleHistory}
+                        isHistoryExpanded={transactionHistory[sub.paddle_subscription_id]?.expanded || false}
                       />
                     ))}
                   </div>
@@ -820,23 +1080,209 @@ const allStyles = `
     padding: 10px 16px; border-radius: 8px;
     font-size: 13px; font-weight: 600; cursor: pointer;
     transition: all 0.2s ease; white-space: nowrap;
+    background: transparent; border: 1px solid #2c2f3a; color: #888b99;
   }
+  .action-btn:hover:not(:disabled) { border-color: rgba(170,0,255,0.4); color: #d0d0d0; }
   .action-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+  .action-btn.active { border-color: rgba(170,0,255,0.5); color: #aa00ff; background: rgba(170,0,255,0.05); }
 
   .invoice-btn {
-    background: transparent; border: 1px solid rgba(170,0,255,0.35); color: #aa00ff;
+    border-color: rgba(170,0,255,0.35); color: #aa00ff;
   }
   .invoice-btn:hover:not(:disabled) { background: rgba(170,0,255,0.1); border-color: rgba(170,0,255,0.6); }
 
   .cancel-btn {
-    background: transparent; border: 1px solid rgba(255,107,107,0.35); color: #ff8888;
+    border-color: rgba(255,107,107,0.35); color: #ff8888;
   }
   .cancel-btn:hover:not(:disabled) { background: rgba(255,107,107,0.1); border-color: #ff6b6b; }
 
   .refund-btn {
-    background: transparent; border: 1px solid rgba(240,165,0,0.35); color: #f0a500;
+    border-color: rgba(240,165,0,0.35); color: #f0a500;
   }
   .refund-btn:hover:not(:disabled) { background: rgba(240,165,0,0.08); border-color: rgba(240,165,0,0.6); }
+
+  .history-toggle-btn {
+    border-color: rgba(170,0,255,0.25);
+  }
+  .history-toggle-btn:hover:not(:disabled) { border-color: rgba(170,0,255,0.5); color: #d0d0d0; }
+  .history-toggle-btn.active { border-color: rgba(170,0,255,0.5); color: #aa00ff; background: rgba(170,0,255,0.05); }
+
+  /* ── History section ── */
+  .history-divider {
+    height: 1px;
+    background-color: #2c2f3a;
+    margin: 16px 0 16px 0;
+    position: relative;
+    z-index: 1;
+  }
+
+  .history-section {
+    position: relative;
+    z-index: 1;
+    animation: slideDown 0.25s ease;
+  }
+
+  @keyframes slideDown {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+
+  .history-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #d0d0d0;
+    letter-spacing: 0.5px;
+  }
+
+  .history-count {
+    font-size: 12px;
+    color: #555870;
+    font-weight: 500;
+  }
+
+  .history-loading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 0;
+    color: #888b99;
+    font-size: 13px;
+  }
+
+  .history-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px;
+    background: rgba(255,107,107,0.08);
+    border: 1px solid rgba(255,107,107,0.2);
+    border-radius: 8px;
+    color: #ff8888;
+    font-size: 13px;
+  }
+
+  .history-empty {
+    padding: 12px 0;
+    color: #555870;
+    font-size: 13px;
+  }
+
+  .history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 400px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .history-list::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .history-list::-webkit-scrollbar-track {
+    background: rgba(44,47,58,0.3);
+    border-radius: 2px;
+  }
+
+  .history-list::-webkit-scrollbar-thumb {
+    background: rgba(170,0,255,0.3);
+    border-radius: 2px;
+  }
+
+  .history-item {
+    padding: 10px 12px;
+    background: rgba(20,21,28,0.5);
+    border: 1px solid rgba(44,47,58,0.5);
+    border-radius: 8px;
+    transition: border-color 0.2s ease;
+  }
+
+  .history-item:hover {
+    border-color: rgba(170,0,255,0.2);
+  }
+
+  .history-item-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .history-item-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .history-item-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .history-item-date {
+    font-size: 12px;
+    color: #888b99;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .history-item-type {
+    font-size: 12px;
+    color: #d0d0d0;
+    font-weight: 500;
+    text-transform: capitalize;
+    padding: 2px 8px;
+    background: rgba(44,47,58,0.5);
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  .history-item-amount {
+    font-size: 14px;
+    color: #ffffff;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .history-item-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .history-item-invoice-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 6px;
+    background: transparent;
+    border: 1px solid rgba(170,0,255,0.3);
+    border-radius: 6px;
+    color: #aa00ff;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .history-item-invoice-btn:hover {
+    background: rgba(170,0,255,0.1);
+    border-color: rgba(170,0,255,0.6);
+    transform: scale(1.05);
+  }
 
   /* ── Footnote ── */
   .module-footnote { margin-top: 12px; font-size: 11px; color: #555870; font-style: italic; position: relative; z-index: 1; }
@@ -986,6 +1432,17 @@ const allStyles = `
     .stats-bar { padding: 14px 18px; }
     .modal-box { padding: 28px 22px; }
     .modal-actions { flex-direction: column; }
+
+    .history-item-main {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .history-item-right {
+      width: 100%;
+      justify-content: flex-start;
+    }
   }
 
   @media (max-width: 480px) {
@@ -994,6 +1451,10 @@ const allStyles = `
     .filter-tab { padding: 6px 11px; font-size: 12px; }
     .module-footer { gap: 6px; }
     .action-btn { padding: 9px 12px; font-size: 12px; }
+
+    .history-item-date { font-size: 11px; }
+    .history-item-type { font-size: 11px; }
+    .history-item-amount { font-size: 13px; }
   }
 `;
 

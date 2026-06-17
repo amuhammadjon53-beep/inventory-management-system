@@ -1,3 +1,32 @@
+import uuid
+import logging
+import aiohttp
+import asyncpg
+from datetime import datetime, timedelta, date
+from typing import Optional, List, Dict, Any, Tuple, Union, Literal
+from contextlib import asynccontextmanager
+import asyncio
+import aiocron
+from fastapi import FastAPI, HTTPException, Request, Response, Depends, BackgroundTasks, Cookie, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse, JSONResponse
+from pydantic import BaseModel, Field, ConfigDict
+import uvicorn
+import pytz
+import traceback
+import numpy as np
+import random
+from pathlib import Path
+import site
+import json
+import sys
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any, List, Literal
+from datetime import datetime, timedelta, timezone, time
+import paddle_client
+from paddle_client import PaddleAPIError
+from paddle_webhooks import verify_webhook_signature, process_event
 from datetime import datetime, timedelta, date, timezone
 from fastapi.encoders import jsonable_encoder
 import threading
@@ -21,38 +50,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 import secrets
 import os
 from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env'))
-from paddle_webhooks import verify_webhook_signature, process_event
-from paddle_client import PaddleAPIError
-import paddle_client
-from datetime import datetime, timedelta, timezone, time
-from typing import Optional, Dict, Any, List, Literal
-from pydantic import BaseModel, Field
-from fastapi import FastAPI, HTTPException
-import sys
-import json
-import site
-from pathlib import Path
-import random
-import numpy as np
-import traceback
-import json
-import pytz
-from dotenv import load_dotenv
-import uvicorn
-from pydantic import BaseModel, Field, ConfigDict
-from fastapi.responses import RedirectResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, HTTPException, Request, Response, Depends, BackgroundTasks, Cookie, Query
-import aiocron
-import asyncio
-from contextlib import asynccontextmanager
-from typing import Optional, List, Dict, Any, Tuple, Union, Literal
-from datetime import datetime, timedelta, date
-import asyncpg
-import aiohttp
-import logging
-import uuid
+load_dotenv(os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), '..', '.env'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
@@ -19491,20 +19490,6 @@ class DatabaseStatsAPI:
             )
             return [dict(r) for r in rows]
 
-    async def get_subscriptions_for_guild(self, guild_id: int) -> List[Dict]:
-        if not self.pool:
-            return []
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT s.*, m.display_name AS module_name, m.module_key
-                   FROM subscriptions s
-                   LEFT JOIN modules m ON s.module_id = m.id
-                   WHERE s.guild_id = $1 AND s.status = 'active'
-                   ORDER BY s.created_at DESC""",
-                guild_id,
-            )
-            return [dict(r) for r in rows]
-
     async def update_subscription_status(
         self,
         paddle_subscription_id: str,
@@ -19717,6 +19702,40 @@ class DatabaseStatsAPI:
                    WHERE event_id = $1""",
                 event_id, error is None, error,
             )
+
+    async def get_transaction(self, paddle_transaction_id: str) -> Optional[Dict]:
+        """
+        Get a single transaction record by its Paddle transaction ID.
+        Used to verify local created_at for refund-window checks, and as a
+        building block for invoice history lookups.
+        """
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM payment_transactions WHERE paddle_transaction_id = $1",
+                paddle_transaction_id,
+            )
+            return dict(row) if row else None
+
+    async def get_transactions_for_subscription(self, paddle_subscription_id: str) -> List[Dict]:
+        """
+        Get all locally-recorded transactions for a given subscription,
+        most recent first. This powers invoice history — each row here
+        corresponds to a completed/failed/canceled transaction Paddle sent
+        us via webhook, and each completed one has a real Paddle invoice
+        retrievable via paddle_client.get_transaction_invoice(paddle_transaction_id).
+        """
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM payment_transactions
+                   WHERE paddle_subscription_id = $1
+                   ORDER BY created_at DESC""",
+                paddle_subscription_id,
+            )
+            return [dict(r) for r in rows]
 
 
 # ======================================================================
@@ -44124,6 +44143,49 @@ async def set_auto_renew(
         logger.error(f"Error in set_auto_renew: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+PADDLE_STAFF_DISCORD_IDS = {"1428927519515611141", "591655972414685229"}
+
+
+@app.get("/api/paddle/subscriptions/guild/{guild_id}")
+async def get_subscriptions_for_guild(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get all active subscriptions for a guild.
+    Restricted to: guild admins (ADMINISTRATOR or MANAGE_GUILD permission),
+    or staff accounts in PADDLE_STAFF_DISCORD_IDS.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid guild_id format")
+
+    try:
+        discord_id = str(user.get('id') or user.get('discord_id'))
+
+        if discord_id not in PADDLE_STAFF_DISCORD_IDS:
+            # 0x8 = ADMINISTRATOR only — matches the dashboard's own access
+            # gate and the cancel endpoint's rule. MANAGE_GUILD is NOT enough.
+            permissions = await auth_db.get_user_permissions_from_db(discord_id, guild_id)
+            is_admin = bool(permissions and permissions & 0x8)
+            if not is_admin:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Not authorized to view this guild's subscriptions"
+                )
+
+        subscriptions = await db_stats.get_subscriptions_for_guild(guild_id_int)
+        return subscriptions
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_subscriptions_for_guild: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/paddle/subscriptions/{paddle_subscription_id}/refund")
 async def refund_subscription(
@@ -44135,6 +44197,9 @@ async def refund_subscription(
     Issue a refund for the most recent completed transaction on a subscription.
     Body: { "reason": "..." } required. Optional: { "amount": "9.99" } for partial refund.
     Allowed callers: subscription owner only.
+    Server-side enforced: refund is only allowed within 48 hours of the most
+    recent completed transaction's created_at — matches the eligibility window
+    shown in the UI, but enforced here so it can't be bypassed client-side.
     DB update is handled automatically by the adjustment.created webhook.
     """
     if not user:
@@ -44172,6 +44237,33 @@ async def refund_subscription(
             raise HTTPException(
                 status_code=400, detail="Most recent transaction is not completed")
 
+        # ── 48-hour refund window, enforced server-side ────────────────────────
+        # Pull the matching row from payment_transactions to get a reliable
+        # created_at — this is the row written by _handle_transaction_completed
+        # in paddle_webhooks.py, so it should exist for any completed transaction.
+        txn_record = await db_stats.get_transaction(latest_transaction["id"])
+        if not txn_record or not txn_record.get("created_at"):
+            logger.error(
+                "Refund blocked: no local transaction record for %s (sub %s)",
+                latest_transaction["id"], paddle_subscription_id
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Could not verify transaction eligibility for refund"
+            )
+
+        txn_created_at = txn_record["created_at"]
+        if txn_created_at.tzinfo is None:
+            txn_created_at = txn_created_at.replace(tzinfo=timezone.utc)
+
+        age = datetime.now(timezone.utc) - txn_created_at
+        if age > timedelta(hours=48):
+            raise HTTPException(
+                status_code=400,
+                detail="Refund window has expired. Refunds are only available "
+                       "within 48 hours of the most recent payment."
+            )
+
         result = await paddle_client.create_refund(
             transaction_id=latest_transaction["id"],
             reason=reason,
@@ -44188,10 +44280,10 @@ async def refund_subscription(
         logger.error(f"Error in refund_subscription: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ============================================
 # PADDLE: GUILD MODULE ACCESS ENDPOINTS
 # ============================================
+
 
 @app.get("/api/paddle/guild-module-access/{guild_id}/active")
 async def get_guild_active_modules(
@@ -44317,8 +44409,8 @@ async def is_event_processed(
     except Exception as e:
         logger.error(f"Error in is_event_processed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
-    
+
+
 @app.get("/api/paddle/transactions/{paddle_transaction_id}/invoice")
 async def get_transaction_invoice(
     paddle_transaction_id: str,
@@ -44334,6 +44426,43 @@ async def get_transaction_invoice(
         raise HTTPException(status_code=e.status, detail=e.body)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/paddle/transactions/subscription/{paddle_subscription_id}")
+async def get_transactions_for_subscription(
+    paddle_subscription_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Get the full transaction history for one subscription — powers the
+    "invoice history" view, one row per billing period (plus any
+    cancellation/failure records logged along the way).
+    Allowed callers: subscription owner only.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discord_id = str(user.get('id') or user.get('discord_id'))
+
+        sub = await db_stats.get_subscription(paddle_subscription_id)
+        if not sub:
+            raise HTTPException(
+                status_code=404, detail="Subscription not found")
+        if sub["discord_id"] != discord_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to view this subscription's transactions"
+            )
+
+        transactions = await db_stats.get_transactions_for_subscription(paddle_subscription_id)
+        return transactions
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_transactions_for_subscription: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============================================
 # PUBLIC ENDPOINTS (No Authentication Required)
 # ============================================
