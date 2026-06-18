@@ -1,3 +1,4 @@
+import uuid  # add to top-level imports if not already present
 import uuid
 import logging
 import aiohttp
@@ -20,13 +21,26 @@ from pathlib import Path
 import site
 import json
 import sys
+import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Literal
 from datetime import datetime, timedelta, timezone, time
-import paddle_client
-from paddle_client import PaddleAPIError
-from paddle_webhooks import verify_webhook_signature, process_event
+try:
+    from . import paddle_client
+    from .paddle_client import PaddleAPIError
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import paddle_client
+    from paddle_client import PaddleAPIError
+    
+try:
+    from . import paddle_webhooks
+    from .paddle_webhooks import verify_webhook_signature, process_event
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import paddle_webhooks
+    from paddle_webhooks import verify_webhook_signature, process_event
 from datetime import datetime, timedelta, date, timezone
 from fastapi.encoders import jsonable_encoder
 import threading
@@ -48,7 +62,6 @@ import re
 from datetime import datetime, time
 from pydantic import BaseModel, Field, field_validator, model_validator
 import secrets
-import os
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(
     os.path.abspath(__file__)), '..', '.env'))
@@ -19736,6 +19749,285 @@ class DatabaseStatsAPI:
                 paddle_subscription_id,
             )
             return [dict(r) for r in rows]
+
+    async def get_subscriptions_for_guild(self, guild_id: int) -> List[Dict]:
+        """Get all subscriptions for a guild (used for duplicate-sub checks and the guild subscriptions endpoint)."""
+        if not self.pool:
+            return []
+
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT s.*, m.display_name AS module_name, m.module_key
+                       FROM subscriptions s
+                       LEFT JOIN modules m ON s.module_id = m.id
+                       WHERE s.guild_id = $1
+                       ORDER BY s.created_at DESC""",
+                    guild_id,
+                )
+                return [dict(r) for r in rows]
+        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+            raise DatabaseConnectionError(
+                "Database connection does not exist while getting guild subscriptions",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while getting guild subscriptions",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.QueryCanceledError as e:
+            raise DatabaseTimeoutError(
+                "Database operation timed out while getting guild subscriptions",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Database error getting guild subscriptions",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except Exception as e:
+            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+                raise DatabaseQueryError(
+                    "Unexpected error getting guild subscriptions",
+                    context={'guild_id': guild_id},
+                    original=e
+                )
+            raise
+
+    # ======================================================================
+    # PADDLE: SUBSCRIPTION SERVER SWITCHING
+    # ======================================================================
+
+    async def switch_subscription_guild(
+        self,
+        paddle_subscription_id: str,
+        old_guild_id: int,
+        new_guild_id: int,
+    ) -> Optional[Dict]:
+        """
+        Move an active subscription from one guild to another.
+        - Revokes guild_module_access rows tied to this subscription on the old guild
+        - Grants guild_module_access on the new guild
+        - Updates subscriptions.guild_id
+        All in a single transaction so it can't half-apply.
+        """
+        if not self.pool:
+            return None
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                sub = await conn.fetchrow(
+                    "SELECT * FROM subscriptions WHERE paddle_subscription_id = $1",
+                    paddle_subscription_id,
+                )
+                if not sub:
+                    return None
+
+                # Revoke access on the old guild for this subscription
+                await conn.execute(
+                    """UPDATE guild_module_access SET
+                           is_active  = FALSE,
+                           revoked_at = NOW()
+                       WHERE subscription_id = $1 AND guild_id = $2 AND is_active = TRUE""",
+                    sub["id"], old_guild_id,
+                )
+
+                # Update the subscription's guild_id
+                updated = await conn.fetchrow(
+                    """UPDATE subscriptions SET
+                           guild_id   = $2,
+                           updated_at = NOW()
+                       WHERE id = $1
+                       RETURNING *""",
+                    sub["id"], new_guild_id,
+                )
+
+                # Grant access on the new guild (only if module_id is set —
+                # tier-based subs would need a different access-grant path)
+                if sub["module_id"] is not None:
+                    await conn.execute(
+                        """INSERT INTO guild_module_access (guild_id, module_id, subscription_id, discord_id, is_active)
+                           VALUES ($1, $2, $3, $4, TRUE)
+                           ON CONFLICT (guild_id, module_id, subscription_id) DO UPDATE SET
+                               is_active  = TRUE,
+                               revoked_at = NULL""",
+                        new_guild_id, sub["module_id"], sub["id"], sub["discord_id"],
+                    )
+
+                return dict(updated) if updated else None
+
+    async def log_subscription_guild_switch(
+        self,
+        paddle_subscription_id: str,
+        discord_id: str,
+        old_guild_id: int,
+        new_guild_id: int,
+    ) -> None:
+        """Audit trail for server switches. Table created in migrations."""
+        if not self.pool:
+            return
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO subscription_guild_switches
+                       (paddle_subscription_id, discord_id, old_guild_id, new_guild_id)
+                   VALUES ($1, $2, $3, $4)""",
+                paddle_subscription_id, discord_id, old_guild_id, new_guild_id,
+            )
+
+    # ======================================================================
+    # STAFF: COMP / GRANT SUBSCRIPTIONS (audited, non-Paddle access grants)
+    # ======================================================================
+
+    async def create_staff_grant(
+        self,
+        discord_id: str,
+        guild_id: int,
+        module_id: int,
+        granted_by_discord_id: str,
+        reason: str,
+        expires_at: Optional[datetime] = None,
+    ) -> Dict:
+        """
+        Create a staff-granted subscription row. This is NOT a Paddle
+        subscription — paddle_subscription_id is a synthetic, clearly-tagged
+        value so it can never collide with or be confused for a real Paddle
+        sub, and so refund/cancel logic can detect and special-case it.
+
+        expires_at=None means "no expiry set by policy" but the row still
+        carries granted_by + reason for auditing; callers should still pass
+        a far-future date rather than leaving this open-ended where possible.
+        """
+        synthetic_sub_id = f"staff_grant_{uuid.uuid4().hex[:24]}"
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """INSERT INTO subscriptions (
+                        discord_id, guild_id, paddle_subscription_id, paddle_transaction_id,
+                        paddle_customer_id, module_id, billing_cycle,
+                        base_price_usd, discount_pct, final_price_usd,
+                        status, current_period_start, current_period_end,
+                        source, granted_by, grant_reason
+                    ) VALUES (
+                        $1,$2,$3,NULL,$4,$5,'monthly',0,0,0,
+                        'active',NOW(),$6,'staff_grant',$7,$8
+                    ) RETURNING *""",
+                    discord_id, guild_id, synthetic_sub_id,
+                    "staff_grant",  # paddle_customer_id placeholder, satisfies NOT NULL
+                    module_id, expires_at,
+                    granted_by_discord_id, reason,
+                )
+
+                await conn.execute(
+                    """INSERT INTO guild_module_access (guild_id, module_id, subscription_id, discord_id, is_active)
+                    VALUES ($1, $2, $3, $4, TRUE)
+                    ON CONFLICT (guild_id, module_id, subscription_id) DO UPDATE SET
+                        is_active  = TRUE,
+                        revoked_at = NULL""",
+                    guild_id, module_id, row["id"], discord_id,
+                )
+
+                return dict(row)
+
+
+    async def get_staff_grants_for_guild(self, guild_id: int) -> List[Dict]:
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT s.*, m.display_name AS module_name, m.module_key
+                FROM subscriptions s
+                LEFT JOIN modules m ON s.module_id = m.id
+                WHERE s.guild_id = $1 AND s.source = 'staff_grant'
+                ORDER BY s.created_at DESC""",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+
+
+    async def get_staff_grants_by_grantor(self, grantor_discord_id: str) -> List[Dict]:
+        """Get all staff grants issued by a specific staff member."""
+        if not self.pool:
+            return []
+        
+        query = """
+            SELECT 
+                s.paddle_subscription_id,
+                s.discord_id,
+                s.guild_id,
+                s.guild_name,
+                s.module_id,
+                s.status,
+                s.created_at,
+                s.current_period_start,
+                s.current_period_end,
+                s.granted_by,
+                s.grant_reason,
+                s.source,
+                s.revoked_by_discord_id,
+                s.revoked_at,
+                m.module_key,
+                m.display_name as module_name
+            FROM subscriptions s
+            LEFT JOIN modules m ON s.module_id = m.id
+            WHERE s.source = 'staff_grant'
+                AND s.granted_by = $1
+            ORDER BY s.created_at DESC
+        """
+        
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, grantor_discord_id)
+            return [dict(row) for row in rows]
+
+
+    async def revoke_staff_grant(self, paddle_subscription_id: str, revoked_by_discord_id: str) -> Optional[Dict]:
+        """Revoke a staff grant. Only operates on source='staff_grant' rows — refuses to touch real Paddle subs."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Check if it's actually a staff grant
+                sub = await conn.fetchrow(
+                    "SELECT * FROM subscriptions WHERE paddle_subscription_id = $1 AND source = 'staff_grant'",
+                    paddle_subscription_id,
+                )
+                if not sub:
+                    return None
+
+                # Update subscription status
+                updated = await conn.fetchrow(
+                    """UPDATE subscriptions SET
+                        status      = 'canceled',
+                        canceled_at = NOW(),
+                        updated_at  = NOW(),
+                        revoked_by_discord_id = $2,
+                        revoked_at = NOW()
+                    WHERE id = $1
+                    RETURNING *""",
+                    sub["id"],
+                    revoked_by_discord_id
+                )
+                
+                # Revoke guild module access
+                await conn.execute(
+                    """UPDATE guild_module_access SET
+                        is_active  = FALSE,
+                        revoked_at = NOW()
+                    WHERE subscription_id = $1 AND is_active = TRUE""",
+                    sub["id"],
+                )
+                
+                # Log the revocation
+                await conn.execute(
+                    """INSERT INTO staff_grant_revocations (paddle_subscription_id, revoked_by_discord_id)
+                    VALUES ($1, $2)""",
+                    paddle_subscription_id, revoked_by_discord_id,
+                )
+                
+                return dict(updated) if updated else None
 
 
 # ======================================================================
@@ -43897,7 +44189,7 @@ async def get_paddle_customer_me(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
         customer = await db_stats.get_paddle_customer(discord_id)
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
@@ -43920,7 +44212,7 @@ async def upsert_paddle_customer(
 
     try:
         body = await request.json()
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
         paddle_customer_id = body.get('paddle_customer_id')
         email = body.get('email')
 
@@ -43972,32 +44264,11 @@ async def get_subscriptions_for_user_me(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
         subscriptions = await db_stats.get_subscriptions_for_user(discord_id)
         return subscriptions
     except Exception as e:
         logger.error(f"Error in get_subscriptions_for_user_me: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# STATIC: must be above /{paddle_subscription_id}
-@app.get("/api/paddle/subscriptions/guild/{guild_id}")
-async def get_subscriptions_for_guild(
-    guild_id: str,
-    user: Optional[Dict] = Depends(get_current_user)
-):
-    """Get all active subscriptions for a guild"""
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    try:
-        guild_id_int = int(guild_id)
-        subscriptions = await db_stats.get_subscriptions_for_guild(guild_id_int)
-        return subscriptions
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid guild_id format")
-    except Exception as e:
-        logger.error(f"Error in get_subscriptions_for_guild: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -44045,7 +44316,7 @@ async def cancel_subscription(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
 
         sub = await db_stats.get_subscription(paddle_subscription_id)
         if not sub:
@@ -44103,7 +44374,7 @@ async def set_auto_renew(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
 
         sub = await db_stats.get_subscription(paddle_subscription_id)
         if not sub:
@@ -44165,7 +44436,7 @@ async def get_subscriptions_for_guild(
         raise HTTPException(status_code=400, detail="Invalid guild_id format")
 
     try:
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
 
         if discord_id not in PADDLE_STAFF_DISCORD_IDS:
             # 0x8 = ADMINISTRATOR only — matches the dashboard's own access
@@ -44206,7 +44477,7 @@ async def refund_subscription(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
 
         sub = await db_stats.get_subscription(paddle_subscription_id)
         if not sub:
@@ -44338,7 +44609,7 @@ async def get_transactions_for_user_me(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
         transactions = await db_stats.get_transactions_for_user(discord_id)
         return transactions
     except Exception as e:
@@ -44379,7 +44650,7 @@ async def get_refunds_for_user_me(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
         refunds = await db_stats.get_refunds_for_user(discord_id)
         return refunds
     except Exception as e:
@@ -44443,7 +44714,7 @@ async def get_transactions_for_subscription(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        discord_id = str(user.get('id') or user.get('discord_id'))
+        discord_id = str(user.get('discord_id') or user.get('id'))
 
         sub = await db_stats.get_subscription(paddle_subscription_id)
         if not sub:
@@ -44463,6 +44734,322 @@ async def get_transactions_for_subscription(
         logger.error(f"Error in get_transactions_for_subscription: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ============================================
+# PADDLE: SUBSCRIPTION SERVER SWITCHING
+# ============================================
+
+
+@app.patch("/api/paddle/subscriptions/{paddle_subscription_id}/switch-guild")
+async def switch_subscription_guild(
+    paddle_subscription_id: str,
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Move an active subscription to a different guild the user administers.
+    Body: { "new_guild_id": "123456789012345678" }
+
+    Rules enforced server-side:
+    - Caller must own the subscription
+    - Subscription must be active (no moving canceled/refunded subs)
+    - Caller must have ADMINISTRATOR permission on the NEW guild (can't park
+      a subscription on a server you don't control)
+    - New guild must not already have an active subscription for this module
+      (mirrors the duplicate-sub guard in /checkout)
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        discord_id = str(user.get('discord_id') or user.get('id'))
+
+        body = await request.json()
+        new_guild_id_raw = body.get("new_guild_id")
+        if not new_guild_id_raw:
+            raise HTTPException(
+                status_code=400, detail="'new_guild_id' is required")
+        try:
+            new_guild_id = int(new_guild_id_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400, detail="'new_guild_id' must be a valid integer")
+
+        sub = await db_stats.get_subscription(paddle_subscription_id)
+        if not sub:
+            raise HTTPException(
+                status_code=404, detail="Subscription not found")
+        if sub["discord_id"] != discord_id:
+            raise HTTPException(
+                status_code=403, detail="Not authorized to modify this subscription")
+        if sub["status"] != "active":
+            raise HTTPException(
+                status_code=400, detail="Only active subscriptions can be switched to a new server")
+
+        old_guild_id = sub["guild_id"]
+        if new_guild_id == old_guild_id:
+            raise HTTPException(
+                status_code=400, detail="This subscription is already on that server")
+
+        # Caller must administer the destination server
+        permissions = await auth_db.get_user_permissions_from_db(discord_id, str(new_guild_id))
+        is_admin = bool(permissions and permissions & 0x8)
+        if not is_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="You must be an Administrator on the destination server to move a subscription there"
+            )
+
+        # Duplicate-subscription guard on destination guild
+        module = await db_stats.get_module_by_key(sub.get("module_key")) if sub.get("module_key") else None
+        if module:
+            existing_dest_subs = await db_stats.get_subscriptions_for_guild(new_guild_id)
+            already_active = any(
+                s.get("module_key") == sub.get(
+                    "module_key") and s.get("status") == "active"
+                for s in existing_dest_subs
+            )
+            if already_active:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The destination server already has an active subscription for this module."
+                )
+
+        updated = await db_stats.switch_subscription_guild(
+            paddle_subscription_id=paddle_subscription_id,
+            old_guild_id=old_guild_id,
+            new_guild_id=new_guild_id,
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=500, detail="Failed to switch subscription server")
+
+        await db_stats.log_subscription_guild_switch(
+            paddle_subscription_id=paddle_subscription_id,
+            discord_id=discord_id,
+            old_guild_id=old_guild_id,
+            new_guild_id=new_guild_id,
+        )
+
+        return updated
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in switch_subscription_guild: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# STAFF: COMP / GRANT SUBSCRIPTIONS
+# Restricted to PADDLE_STAFF_DISCORD_IDS (defined earlier alongside the
+# guild-subscriptions endpoint). These are audited, non-Paddle access
+# grants — never silent, never untracked.
+# ============================================
+
+@app.post("/api/paddle/staff/grants")
+async def create_staff_grant(
+    request: Request,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Staff-only: grant comp access to a module for a guild, without going
+    through Paddle checkout. Creates a real, auditable subscription row
+    tagged source='staff_grant' with granted_by + reason recorded.
+
+    Body:
+        guild_id    (str, required)
+        module_key  (str, required) — or "all" to grant every active module
+        reason      (str, required) — shown in audit log, e.g. "partner deal Q3"
+        expires_in_days (int, optional, default 365) — grants are NOT
+            infinite by default; pass a larger number if you really need
+            multi-year comp access, but there's always an expiry recorded.
+
+    Returns the created subscription(s).
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    discord_id = str(user.get('discord_id') or user.get('id'))
+    
+    logger.info(f"Staff grant attempt: user dict keys={list(user.keys())}, resolved discord_id={discord_id!r}, in set={discord_id in PADDLE_STAFF_DISCORD_IDS}")
+    
+    if discord_id not in PADDLE_STAFF_DISCORD_IDS:
+        raise HTTPException(status_code=403, detail="Staff access required")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    guild_id_raw = body.get("guild_id")
+    module_key = body.get("module_key")
+    reason = body.get("reason")
+    expires_in_days = body.get("expires_in_days", 365)
+
+    if not guild_id_raw:
+        raise HTTPException(status_code=400, detail="'guild_id' is required")
+    if not module_key:
+        raise HTTPException(status_code=400, detail="'module_key' is required")
+    if not reason or not reason.strip():
+        raise HTTPException(
+            status_code=400, detail="'reason' is required for the audit log")
+
+    try:
+        guild_id = int(guild_id_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400, detail="'guild_id' must be a valid integer")
+
+    try:
+        expires_in_days = int(expires_in_days)
+        if expires_in_days <= 0 or expires_in_days > 3650:  # cap at 10 years
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400, detail="'expires_in_days' must be a positive integer (max 3650)")
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+
+    try:
+        if module_key == "all":
+            modules = await db_stats.get_all_modules()
+            if not modules:
+                raise HTTPException(
+                    status_code=404, detail="No active modules found")
+        else:
+            mod = await db_stats.get_module_by_key(module_key)
+            if not mod:
+                raise HTTPException(
+                    status_code=404, detail=f"Unknown module '{module_key}'")
+            modules = [mod]
+
+        created = []
+        for mod in modules:
+            row = await db_stats.create_staff_grant(
+                # subscription "owner" defaults to the guild itself;
+                discord_id=str(guild_id),
+                # adjust if you'd rather attribute to a specific member
+                guild_id=guild_id,
+                module_id=mod["id"],
+                granted_by_discord_id=discord_id,
+                reason=reason.strip(),
+                expires_at=expires_at,
+            )
+            created.append(row)
+
+        logger.info(
+            f"Staff grant: staff={discord_id} guild={guild_id} modules={[m['module_key'] for m in modules]} "
+            f"expires={expires_at.isoformat()} reason={reason!r}"
+        )
+
+        return {"granted": created, "expires_at": expires_at.isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in create_staff_grant: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/paddle/staff/grants/guild/{guild_id}")
+async def get_staff_grants_for_guild(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Staff-only: list comp grants for a guild (for the search modal's results view)."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    discord_id = str(user.get('discord_id') or user.get('id'))
+    if discord_id not in PADDLE_STAFF_DISCORD_IDS:
+        raise HTTPException(status_code=403, detail="Staff access required")
+
+    try:
+        guild_id_int = int(guild_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid guild_id format")
+
+    try:
+        grants = await db_stats.get_staff_grants_for_guild(guild_id_int)
+        return grants
+    except Exception as e:
+        logger.error(f"Error in get_staff_grants_for_guild: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/paddle/staff/grants/{paddle_subscription_id}")
+async def revoke_staff_grant(
+    paddle_subscription_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Staff-only: revoke a previously-created comp grant."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    discord_id = str(user.get('discord_id') or user.get('id'))
+    if discord_id not in PADDLE_STAFF_DISCORD_IDS:
+        raise HTTPException(status_code=403, detail="Staff access required")
+
+    try:
+        result = await db_stats.revoke_staff_grant(paddle_subscription_id, discord_id)
+        if not result:
+            raise HTTPException(
+                status_code=404, detail="Staff grant not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in revoke_staff_grant: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# Add this new endpoint after the existing staff grant endpoints
+
+@app.get("/api/paddle/staff/grants/my-grants")
+async def get_my_staff_grants(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Staff-only: get all grants issued by the current staff member.
+    Returns all comp grants this staff member has created, ordered by created_at desc.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    discord_id = str(user.get('discord_id') or user.get('id'))
+    if discord_id not in PADDLE_STAFF_DISCORD_IDS:
+        raise HTTPException(status_code=403, detail="Staff access required")
+
+    try:
+        grants = await db_stats.get_staff_grants_by_grantor(discord_id)
+        return grants
+    except Exception as e:
+        logger.error(f"Error in get_my_staff_grants: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/paddle/staff/grants/guild/{guild_id}")
+async def get_staff_grants_for_guild(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Staff-only: list comp grants for a guild (for the search modal's results view)."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    discord_id = str(user.get('discord_id') or user.get('id'))
+    if discord_id not in PADDLE_STAFF_DISCORD_IDS:
+        raise HTTPException(status_code=403, detail="Staff access required")
+
+    try:
+        guild_id_int = int(guild_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid guild_id format")
+
+    try:
+        grants = await db_stats.get_staff_grants_for_guild(guild_id_int)
+        return grants
+    except Exception as e:
+        logger.error(f"Error in get_staff_grants_for_guild: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 # ============================================
 # PUBLIC ENDPOINTS (No Authentication Required)
 # ============================================

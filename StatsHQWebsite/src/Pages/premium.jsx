@@ -62,8 +62,8 @@ const PremiumPage = () => {
     setErrorMessage(null);
 
     const monthly = mod.monthlyPrice;
-    const YEARLY_DISCOUNT = 0.17;
-    const yearlyEffectiveMonthly = monthly * (1 - YEARLY_DISCOUNT);
+    // Yearly = 2 months free: pay for 10 months, covered for 12.
+    const yearlyEffectiveMonthly = (monthly * 10) / 12;
     const price = billingCycle === 'monthly' ? monthly : yearlyEffectiveMonthly;
 
     try {
@@ -128,8 +128,6 @@ const PremiumPage = () => {
     },
   ];
 
-  const YEARLY_DISCOUNT = 0.17;
-
   return (
     <>
       <NavBar />
@@ -160,11 +158,11 @@ const PremiumPage = () => {
               Monthly
             </button>
             <button
-              className={`toggle-btn ${billingCycle === 'yearly' ? 'active' : ''}`}
+              className={`toggle-btn yearly-btn ${billingCycle === 'yearly' ? 'active' : ''}`}
               onClick={() => setBillingCycle('yearly')}
             >
               Yearly
-              <span className="discount-badge">-17%</span>
+              <span className="discount-badge">2 months free</span>
             </button>
           </div>
 
@@ -177,8 +175,10 @@ const PremiumPage = () => {
               const hasError = errorMessage?.id === mod.id;
 
               const monthly = mod.monthlyPrice;
-              const yearlyEffectiveMonthly = monthly * (1 - YEARLY_DISCOUNT);
-              const yearlyTotal = yearlyEffectiveMonthly * 10;
+              // Yearly = 2 months free: total billed is monthly * 10,
+              // and the displayed "per month" rate is that total spread over 12 months.
+              const yearlyTotal = monthly * 10;
+              const yearlyEffectiveMonthly = yearlyTotal / 12;
 
               const displayPrice = billingCycle === 'monthly' ? monthly : yearlyEffectiveMonthly;
               const footnote = billingCycle === 'monthly'
@@ -454,10 +454,15 @@ const PremiumPage = () => {
           gap: 8px;
           min-width: 110px;
           justify-content: center;
+          white-space: nowrap;
         }
 
         .toggle-btn.active {
           color: #ffffff;
+        }
+
+        .toggle-btn.yearly-btn {
+          padding-left: 72px;
         }
 
         .discount-badge {
@@ -468,6 +473,7 @@ const PremiumPage = () => {
           border-radius: 6px;
           color: #ffffff;
           transition: background 0.25s ease, color 0.25s ease;
+          white-space: nowrap;
         }
 
         .toggle-btn:not(.active) .discount-badge {

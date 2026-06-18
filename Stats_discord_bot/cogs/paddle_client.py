@@ -6,7 +6,6 @@ import aiohttp
 
 logger = logging.getLogger("paddle_client")
 
-PADDLE_API_KEY = os.getenv("PADDLE_API_KEY", "")
 PADDLE_ENV = os.getenv("PADDLE_ENV", "sandbox")
 
 BASE_URL = (
@@ -15,10 +14,28 @@ BASE_URL = (
     else "https://api.paddle.com"
 )
 
-HEADERS = {
-    "Authorization": f"Bearer {PADDLE_API_KEY}",
-    "Content-Type": "application/json",
-}
+
+def _get_headers() -> Dict[str, str]:
+    """
+    Build the auth headers fresh on every request.
+
+    NOTE: this used to be a module-level HEADERS dict built once at import
+    time from os.getenv("PADDLE_API_KEY", ""). If the env var wasn't set yet
+    when this module was first imported (e.g. load_dotenv() ran after this
+    import, or systemd env wasn't wired up the way we expected), HEADERS
+    would get permanently baked in as "Bearer " (empty token) for the life
+    of the process — even if the env var was correct by the time a request
+    actually fired. That's what was causing Paddle's
+    'authentication_malformed' 403s. Building the header dict per-request
+    avoids the staleness entirely.
+    """
+    api_key = os.getenv("PADDLE_API_KEY", "")
+    if not api_key:
+        logger.error("PADDLE_API_KEY is not set or empty at request time")
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
 
 class PaddleAPIError(Exception):
@@ -39,7 +56,7 @@ async def _request(
         async with session.request(
             method,
             url,
-            headers=HEADERS,
+            headers=_get_headers(),
             json=payload,
             params=params,
         ) as resp:

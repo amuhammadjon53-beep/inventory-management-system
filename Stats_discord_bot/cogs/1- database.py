@@ -3203,6 +3203,47 @@ class DatabaseStats(commands.Cog):
                 print(
                     "  ✅ Corrected modules.paddle_product_id / price IDs to match live .env")
 
+                # ----- subscription_guild_switches (audit log for server-switching) -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS subscription_guild_switches (
+                        id                      SERIAL PRIMARY KEY,
+                        paddle_subscription_id  TEXT NOT NULL,
+                        discord_id              TEXT NOT NULL,
+                        old_guild_id            BIGINT NOT NULL,
+                        new_guild_id            BIGINT NOT NULL,
+                        switched_at             TIMESTAMPTZ DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: subscription_guild_switches")
+
+                # ----- staff_grant_revocations (audit log for revoking comp grants) -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS staff_grant_revocations (
+                        id                      SERIAL PRIMARY KEY,
+                        paddle_subscription_id  TEXT NOT NULL,
+                        revoked_by_discord_id   TEXT NOT NULL,
+                        revoked_at              TIMESTAMPTZ DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: staff_grant_revocations")
+
+                # ----- subscriptions: add columns to support staff grants -----
+                # source: 'paddle' (default, real purchase) | 'staff_grant' (comp access)
+                # granted_by / grant_reason: only populated for source='staff_grant'
+                await conn.execute('''
+                    ALTER TABLE subscriptions
+                        ADD COLUMN IF NOT EXISTS source        TEXT NOT NULL DEFAULT 'paddle',
+                        ADD COLUMN IF NOT EXISTS granted_by    TEXT,
+                        ADD COLUMN IF NOT EXISTS grant_reason  TEXT
+                ''')
+                print(
+                    "  ✅ Added source/granted_by/grant_reason columns to subscriptions")
+
+                await conn.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_subscriptions_source ON subscriptions(source)
+                ''')
+                print("  ✅ Created/verified index: idx_subscriptions_source")
+
                 # ===== ADD PRIMARY KEYS AND CONSTRAINTS =====
                 print("\n" + "="*60)
                 print("🔑 ADDING PRIMARY KEYS AND CONSTRAINTS")
@@ -3259,6 +3300,9 @@ class DatabaseStats(commands.Cog):
                     "ALTER TABLE member_leaves_hourly ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
                     "ALTER TABLE slash_commands_daily ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
                     "ALTER TABLE invite_tracking ADD COLUMN IF NOT EXISTS encrypted_username TEXT",
+                    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS revoked_by_discord_id TEXT",
+                    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ",
+                    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS guild_name TEXT",
                 ]
 
                 for query in alter_queries:

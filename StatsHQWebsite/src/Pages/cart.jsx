@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Trash2, ShoppingCart, Server, Zap } from 'lucide-react';
+import { Trash2, ShoppingCart, Server, Settings } from 'lucide-react';
 import NavBar from '../Components/NavBar.jsx';
 import Footer from '../Components/Footer.jsx';
 
@@ -11,7 +11,7 @@ const API_URL = window.location.origin;
 const MODULE_INFO = {
   'optimization-plus': {
     name: 'Optimization+',
-    icon: <Zap size={28} color="#aa00ff" />,
+    icon: <Settings size={28} color="#aa00ff" />,
     monthlyPrice: 2.49,
     yearlyPrice: 24.90,
   },

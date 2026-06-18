@@ -4,7 +4,7 @@ import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
 import {
-  Zap, Server, FileText, XCircle, Clock, CheckCircle,
+  Settings, Server, FileText, XCircle, Clock, CheckCircle,
   Ban, AlertCircle, RotateCcw
 } from "lucide-react";
 
@@ -20,7 +20,7 @@ const PRIVILEGED_USERS = ["1428927519515611141", "591655972414685229"];
 const MODULE_INFO = {
   "optimization-plus": {
     name: "Optimization+",
-    icon: <Zap size={22} color="#aa00ff" />,
+    icon: <Settings size={22} color="#aa00ff" />,
   },
 };
 
@@ -148,7 +148,7 @@ const ConfirmModal = ({ title, message, confirmLabel, onConfirm, onCancel, loadi
 // ============================================
 
 const SubscriptionCard = ({ sub, onCancel, onInvoice, invoiceLoading, cancelLoading }) => {
-  const info = MODULE_INFO[sub.module_key] || { name: sub.module_key, icon: <Zap size={22} color="#aa00ff" /> };
+  const info = MODULE_INFO[sub.module_key] || { name: sub.module_key, icon: <Settings size={22} color="#aa00ff" /> };
   const statusMeta = getStatusMeta(sub.status);
   const isActive = sub.status === "active" || sub.status === "trialing";
   const discountPct = sub.discount_pct ? (sub.discount_pct * 100).toFixed(0) : null;

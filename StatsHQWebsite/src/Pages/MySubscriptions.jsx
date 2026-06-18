@@ -1,18 +1,30 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Zap, Server, FileText, XCircle, RotateCcw, Clock, CheckCircle, Ban, AlertCircle, RefreshCw, ChevronDown, ChevronUp, Receipt } from 'lucide-react';
+import {
+  Settings, Server, FileText, XCircle, RotateCcw, Clock, CheckCircle, Ban,
+  AlertCircle, RefreshCw, ChevronDown, ChevronUp, Receipt, ArrowRightLeft,
+  KeyRound, ShieldCheck, X, Search
+} from 'lucide-react';
 import NavBar from '../Components/NavBar.jsx';
 import Footer from '../Components/Footer.jsx';
 
 const API_URL = window.location.origin;
 
+// Staff/privileged accounts — mirrors PADDLE_STAFF_DISCORD_IDS on the backend.
+// The backend re-checks this independently; this is only used to decide
+// whether to show the staff panel in the UI.
+const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
+
 // ─── Module registry ────────────────────────────────────────────────────────────
 const MODULE_INFO = {
   'optimization-plus': {
     name: 'Optimization+',
-    icon: <Zap size={22} color="#aa00ff" />,
+    icon: <Settings size={22} color="#aa00ff" />,
   },
 };
+
+const getModuleInfo = (moduleKey) =>
+  MODULE_INFO[moduleKey] || { name: moduleKey, icon: <Settings size={22} color="#aa00ff" /> };
 
 // ─── Status helpers ─────────────────────────────────────────────────────────────
 const STATUS_META = {
@@ -82,7 +94,7 @@ const TRANSACTION_STATUS_META = {
   },
 };
 
-const getTransactionStatusMeta = (status) => 
+const getTransactionStatusMeta = (status) =>
   TRANSACTION_STATUS_META[status] || TRANSACTION_STATUS_META['canceled'];
 
 const getStatusMeta = (status) => STATUS_META[status] || STATUS_META['canceled'];
@@ -113,11 +125,17 @@ const formatDateTime = (dateStr) => {
 const formatCycle = (cycle) =>
   cycle === 'yearly' ? 'Yearly' : 'Monthly';
 
+const formatNumber = (num) => {
+  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+  if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+  return (num || 0).toString();
+};
+
 // ─── Filter tabs ────────────────────────────────────────────────────────────────
 const FILTERS = ['all', 'active', 'canceled', 'paused', 'past_due'];
 
 // ─── ConfirmModal ───────────────────────────────────────────────────────────────
-const ConfirmModal = ({ title, message, confirmLabel, confirmClass, onConfirm, onCancel, loading }) => (
+const ConfirmModal = ({ title, message, confirmLabel, confirmClass, onConfirm, onCancel, loading, disabled }) => (
   <div className="modal-overlay" onClick={onCancel}>
     <div className="modal-box" onClick={(e) => e.stopPropagation()}>
       <h3 className="modal-title">{title}</h3>
@@ -129,7 +147,7 @@ const ConfirmModal = ({ title, message, confirmLabel, confirmClass, onConfirm, o
         <button
           className={`modal-confirm-btn ${confirmClass || ''}`}
           onClick={onConfirm}
-          disabled={loading}
+          disabled={loading || disabled}
         >
           {loading ? <><div className="btn-spinner" /><span>Processing...</span></> : confirmLabel}
         </button>
@@ -138,24 +156,510 @@ const ConfirmModal = ({ title, message, confirmLabel, confirmClass, onConfirm, o
   </div>
 );
 
+// ─── SwitchServerModal ──────────────────────────────────────────────────────────
+const SwitchServerModal = ({ sub, servers, serversLoading, onConfirm, onCancel, loading, error }) => {
+  const [targetGuildId, setTargetGuildId] = useState('');
+  const eligibleServers = servers.filter(s => s.id !== sub.guild_id?.toString() && s.id !== sub.guild_id);
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-icon-badge">
+          <ArrowRightLeft size={20} color="#aa00ff" />
+        </div>
+        <h3 className="modal-title">Move to a different server</h3>
+        <p className="modal-message">
+          Move the {getModuleInfo(sub.module_key).name} subscription off{' '}
+          <strong style={{ color: '#d0d0d0' }}>{sub.guild_name || sub.guild_id}</strong>{' '}
+          and onto another server you administer. Access on the current server
+          will be revoked immediately and granted on the new one.
+        </p>
+
+        {serversLoading ? (
+          <div className="switch-servers-loading">
+            <div className="btn-spinner-sm" />
+            <span>Loading your servers...</span>
+          </div>
+        ) : eligibleServers.length === 0 ? (
+          <div className="switch-empty-notice">
+            <AlertCircle size={14} />
+            <span>No other admin-eligible servers found.</span>
+          </div>
+        ) : (
+          <div className="switch-server-list">
+            {eligibleServers.map(s => (
+              <button
+                key={s.id}
+                className={`switch-server-option ${targetGuildId === s.id ? 'selected' : ''}`}
+                onClick={() => setTargetGuildId(s.id)}
+              >
+                <img
+                  src={s.iconUrl || 'https://cdn.discordapp.com/embed/avatars/0.png'}
+                  alt=""
+                  className="switch-server-icon"
+                  onError={(e) => { e.target.src = 'https://cdn.discordapp.com/embed/avatars/0.png'; }}
+                />
+                <span className="switch-server-name">{s.name}</span>
+                {targetGuildId === s.id && <CheckCircle size={16} color="#aa00ff" />}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {error && (
+          <div className="switch-error-notice">
+            <AlertCircle size={14} />
+            <span>{error}</span>
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button className="modal-cancel-btn" onClick={onCancel} disabled={loading}>
+            Cancel
+          </button>
+          <button
+            className="modal-confirm-btn primary"
+            onClick={() => onConfirm(targetGuildId)}
+            disabled={loading || !targetGuildId}
+          >
+            {loading ? <><div className="btn-spinner" /><span>Moving...</span></> : 'Move subscription'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── StaffGrantPanel ────────────────────────────────────────────────────────────
+const StaffGrantPanel = ({ apiUrl, onGranted }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [guildIdInput, setGuildIdInput] = useState('');
+  const [moduleKey, setModuleKey] = useState('all');
+  const [reason, setReason] = useState('');
+  const [expiresInDays, setExpiresInDays] = useState(365);
+
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupError, setLookupError] = useState(null);
+  const [lookedUpGuild, setLookedUpGuild] = useState(null);
+
+  const [grantLoading, setGrantLoading] = useState(false);
+  const [grantError, setGrantError] = useState(null);
+  const [grantSuccess, setGrantSuccess] = useState(null);
+
+  const handleLookup = async () => {
+    const trimmed = guildIdInput.trim();
+    if (!trimmed) {
+      setLookupError('Enter a server ID first.');
+      return;
+    }
+    setLookupLoading(true);
+    setLookupError(null);
+    setLookedUpGuild(null);
+    setGrantSuccess(null);
+    try {
+      const res = await fetch(`${apiUrl}/api/admin/lookup-server/${trimmed}`, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const result = await res.json();
+      if (result.success && result.found) {
+        setLookedUpGuild(result.server);
+      } else {
+        setLookupError(result.message || 'Server not found or bot is not in this server.');
+      }
+    } catch (err) {
+      setLookupError('Failed to look up server. Please try again.');
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+
+  const handleGrant = async () => {
+    if (!lookedUpGuild) return;
+    if (!reason.trim()) {
+      setGrantError("A reason is required — it's recorded in the audit log.");
+      return;
+    }
+    setGrantLoading(true);
+    setGrantError(null);
+    try {
+      const res = await fetch(`${apiUrl}/api/paddle/staff/grants`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          guild_id: lookedUpGuild.id,
+          module_key: moduleKey,
+          reason: reason.trim(),
+          expires_in_days: Number(expiresInDays) || 365,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to create grant');
+
+      setGrantSuccess(
+        `Granted ${moduleKey === 'all' ? 'all modules' : moduleKey} to ${lookedUpGuild.name} until ${formatDate(data.expires_at)}.`
+      );
+      setLookedUpGuild(null);
+      setGuildIdInput('');
+      setReason('');
+      if (onGranted) onGranted();
+    } catch (err) {
+      setGrantError(err.message);
+    } finally {
+      setGrantLoading(false);
+    }
+  };
+
+  return (
+    <div className="staff-panel-wrap">
+      <button className="staff-toggle-btn" onClick={() => setExpanded(!expanded)}>
+        <KeyRound size={14} />
+        <span>{expanded ? 'Hide staff tools' : 'Staff tools — grant server access'}</span>
+        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+
+      {expanded && (
+        <div className="staff-panel">
+          <div className="staff-panel-header">
+            <ShieldCheck size={16} color="#aa00ff" />
+            <span>Grant comp access by server ID</span>
+          </div>
+          <p className="staff-panel-subtext">
+            Look up a server by Discord ID, then grant module access without a
+            Paddle purchase. Every grant is recorded with your account and a reason, and expires automatically.
+          </p>
+
+          <div className="staff-lookup-row">
+            <div className="staff-input-wrap">
+              <Search size={14} className="staff-input-icon" />
+              <input
+                type="text"
+                className="staff-text-input"
+                placeholder="Server ID (e.g. 123456789012345678)"
+                value={guildIdInput}
+                onChange={(e) => { setGuildIdInput(e.target.value); setGrantSuccess(null); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleLookup(); }}
+              />
+            </div>
+            <button className="staff-lookup-btn" onClick={handleLookup} disabled={lookupLoading}>
+              {lookupLoading ? <div className="btn-spinner-sm" /> : 'Look up'}
+            </button>
+          </div>
+
+          {lookupError && (
+            <div className="switch-error-notice">
+              <AlertCircle size={14} />
+              <span>{lookupError}</span>
+            </div>
+          )}
+
+          {grantSuccess && (
+            <div className="staff-success-notice">
+              <CheckCircle size={14} />
+              <span>{grantSuccess}</span>
+            </div>
+          )}
+
+          {lookedUpGuild && (
+            <div className="staff-result-card">
+              <div className="staff-result-server">
+                <img
+                  src={lookedUpGuild.icon_url || 'https://cdn.discordapp.com/embed/avatars/0.png'}
+                  alt=""
+                  className="staff-result-icon"
+                  onError={(e) => { e.target.src = 'https://cdn.discordapp.com/embed/avatars/0.png'; }}
+                />
+                <div className="staff-result-info">
+                  <div className="staff-result-name">{lookedUpGuild.name}</div>
+                  <div className="staff-result-meta">
+                    ID: {lookedUpGuild.id} · {formatNumber(lookedUpGuild.member_count)} members
+                  </div>
+                </div>
+              </div>
+
+              <div className="staff-form-grid">
+                <label className="staff-field">
+                  <span className="staff-field-label">Module</span>
+                  <select
+                    className="staff-select"
+                    value={moduleKey}
+                    onChange={(e) => setModuleKey(e.target.value)}
+                  >
+                    <option value="all">All modules</option>
+                    {Object.entries(MODULE_INFO).map(([key, info]) => (
+                      <option key={key} value={key}>{info.name}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="staff-field">
+                  <span className="staff-field-label">Expires in (days)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3650}
+                    className="staff-number-input"
+                    value={expiresInDays}
+                    onChange={(e) => setExpiresInDays(e.target.value)}
+                  />
+                </label>
+              </div>
+
+              <label className="staff-field" style={{ marginTop: '12px' }}>
+                <span className="staff-field-label">Reason (required, audit log)</span>
+                <input
+                  type="text"
+                  className="staff-text-input full-width"
+                  placeholder="e.g. partner deal, internal test server"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                />
+              </label>
+
+              {grantError && (
+                <div className="switch-error-notice" style={{ marginTop: '12px' }}>
+                  <AlertCircle size={14} />
+                  <span>{grantError}</span>
+                </div>
+              )}
+
+              <div className="staff-result-actions">
+                <button className="staff-discard-btn" onClick={() => setLookedUpGuild(null)}>
+                  Discard
+                </button>
+                <button className="staff-grant-btn" onClick={handleGrant} disabled={grantLoading}>
+                  {grantLoading ? <><div className="btn-spinner-sm" /><span>Granting...</span></> : 'Grant access'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── StaffGrantsList ────────────────────────────────────────────────────────────
+const StaffGrantsList = ({ apiUrl, onGrantRevoked }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [grants, setGrants] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [revokingId, setRevokingId] = useState(null);
+  const [revokeConfirm, setRevokeConfirm] = useState(null);
+
+  const fetchMyGrants = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${apiUrl}/api/paddle/staff/grants/my-grants`, {
+        credentials: 'include',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+      if (!res.ok) throw new Error('Failed to fetch grants');
+      const data = await res.json();
+      setGrants(data || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRevoke = async (grant) => {
+    setRevokingId(grant.paddle_subscription_id);
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/paddle/staff/grants/${grant.paddle_subscription_id}`,
+        {
+          method: 'DELETE',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to revoke grant');
+      }
+      // Remove from list or update status
+      setGrants(prev => prev.filter(g => g.paddle_subscription_id !== grant.paddle_subscription_id));
+      if (onGrantRevoked) onGrantRevoked();
+      setRevokeConfirm(null);
+    } catch (err) {
+      setError(err.message);
+      setTimeout(() => setError(null), 5000);
+    } finally {
+      setRevokingId(null);
+    }
+  };
+
+  const toggleExpand = () => {
+    const newExpanded = !expanded;
+    setExpanded(newExpanded);
+    if (newExpanded && grants.length === 0) {
+      fetchMyGrants();
+    }
+  };
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'active': return '#00e07a';
+      case 'canceled': return '#ff6b6b';
+      case 'refunded': return '#888b99';
+      default: return '#888b99';
+    }
+  };
+
+  const getModuleDisplay = (moduleKey) => {
+    return MODULE_INFO[moduleKey]?.name || moduleKey || 'Unknown';
+  };
+
+  return (
+    <div className="staff-panel-wrap" style={{ marginTop: '12px' }}>
+      <button className="staff-toggle-btn" onClick={toggleExpand}>
+        <KeyRound size={14} />
+        <span>{expanded ? 'Hide my grants' : `My grants (${grants.length})`}</span>
+        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+
+      {expanded && (
+        <div className="staff-panel">
+          <div className="staff-panel-header">
+            <ShieldCheck size={16} color="#aa00ff" />
+            <span>Grants you've issued</span>
+            <button 
+              className="staff-refresh-btn"
+              onClick={fetchMyGrants}
+              disabled={loading}
+            >
+              <RefreshCw size={13} className={loading ? 'spinning' : ''} />
+            </button>
+          </div>
+          <p className="staff-panel-subtext">
+            All comp grants you've created. Each grant is automatically revoked
+            if the subscription is canceled or expires.
+          </p>
+
+          {loading ? (
+            <div className="history-loading">
+              <div className="btn-spinner-sm" />
+              <span>Loading your grants...</span>
+            </div>
+          ) : error ? (
+            <div className="history-error">
+              <AlertCircle size={14} />
+              <span>{error}</span>
+            </div>
+          ) : grants.length === 0 ? (
+            <div className="history-empty">
+              <span>You haven't issued any comp grants yet.</span>
+            </div>
+          ) : (
+            <div className="grants-list">
+              {grants.map(grant => (
+                <div key={grant.paddle_subscription_id} className="grant-item">
+                  <div className="grant-header">
+                    <div className="grant-server">
+                      <span className="grant-guild-name">
+                        {grant.guild_name || grant.guild_id}
+                      </span>
+                      <span className="grant-module">
+                        {getModuleDisplay(grant.module_key)}
+                      </span>
+                    </div>
+                    <span 
+                      className="grant-status"
+                      style={{ color: getStatusColor(grant.status) }}
+                    >
+                      {grant.status}
+                    </span>
+                  </div>
+                  
+                  <div className="grant-details">
+                    <div className="grant-detail">
+                      <Clock size={12} />
+                      <span>Created {formatDate(grant.created_at)}</span>
+                    </div>
+                    {grant.current_period_end && (
+                      <div className="grant-detail">
+                        <Clock size={12} />
+                        <span>Expires {formatDate(grant.current_period_end)}</span>
+                      </div>
+                    )}
+                    {grant.grant_reason && (
+                      <div className="grant-detail reason">
+                        <span className="reason-label">Reason:</span>
+                        <span className="reason-text">"{grant.grant_reason}"</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {grant.status === 'active' && (
+                    <div className="grant-actions">
+                      <button
+                        className="grant-revoke-btn"
+                        onClick={() => setRevokeConfirm(grant)}
+                        disabled={revokingId === grant.paddle_subscription_id}
+                      >
+                        {revokingId === grant.paddle_subscription_id ? (
+                          <><div className="btn-spinner-sm" /><span>Revoking...</span></>
+                        ) : (
+                          <><XCircle size={13} /><span>Revoke access</span></>
+                        )}
+                      </button>
+                    </div>
+                  )}
+
+                  {grant.status === 'canceled' && (
+                    <div className="grant-revoked-badge">
+                      <XCircle size={12} color="#ff6b6b" />
+                      <span>Revoked</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Revoke confirmation modal */}
+      {revokeConfirm && (
+        <ConfirmModal
+          title="Revoke comp grant?"
+          message={`This will immediately revoke ${getModuleDisplay(revokeConfirm.module_key)} access for ${revokeConfirm.guild_name || revokeConfirm.guild_id}. This action cannot be undone.`}
+          confirmLabel="Yes, revoke access"
+          confirmClass="danger"
+          onConfirm={() => handleRevoke(revokeConfirm)}
+          onCancel={() => setRevokeConfirm(null)}
+          loading={revokingId === revokeConfirm.paddle_subscription_id}
+        />
+      )}
+    </div>
+  );
+};
+
 // ─── SubscriptionCard ───────────────────────────────────────────────────────────
 const SubscriptionCard = ({
-  sub, 
-  onCancel, 
-  onRefund, 
+  sub,
+  onCancel,
+  onRefund,
   onInvoice,
   onTransactionInvoice,
-  invoiceLoading, 
-  cancelLoading, 
+  onSwitchServer,
+  invoiceLoading,
+  cancelLoading,
   refundLoading,
   transactionHistory,
   onToggleHistory,
   isHistoryExpanded,
 }) => {
-  const info = MODULE_INFO[sub.module_key] || { name: sub.module_key, icon: <Zap size={22} color="#aa00ff" /> };
+  const info = getModuleInfo(sub.module_key);
   const statusMeta = getStatusMeta(sub.status);
   const eligible = sub.status === 'active' && isWithin48Hours(sub.created_at || sub.current_period_start);
   const discountPct = sub.discount_pct ? (sub.discount_pct * 100).toFixed(0) : null;
+  const isStaffGrant = sub.source === 'staff_grant';
 
   const historyData = transactionHistory[sub.paddle_subscription_id];
   const isLoading = historyData?.loading || false;
@@ -172,10 +676,14 @@ const SubscriptionCard = ({
         <div className="module-title-group">
           <h2 className="module-name">{info.name}</h2>
           <span className="module-price">
-            ${parseFloat(sub.final_price_usd || 0).toFixed(2)}
-            {' '}/ {formatCycle(sub.billing_cycle).toLowerCase()}
-            {discountPct && (
-              <span className="discount-pill"> · {discountPct}% off</span>
+            {isStaffGrant ? (
+              <span className="staff-grant-pill">Staff grant</span>
+            ) : (
+              <>
+                ${parseFloat(sub.final_price_usd || 0).toFixed(2)}
+                {' '}/ {formatCycle(sub.billing_cycle).toLowerCase()}
+                {discountPct && <span className="discount-pill"> · {discountPct}% off</span>}
+              </>
             )}
           </span>
         </div>
@@ -204,7 +712,7 @@ const SubscriptionCard = ({
         <div className="detail-row">
           <Clock size={13} className="detail-icon" />
           <span className="detail-label">Billing</span>
-          <span className="detail-value">{formatCycle(sub.billing_cycle)}</span>
+          <span className="detail-value">{isStaffGrant ? 'Comp access' : formatCycle(sub.billing_cycle)}</span>
         </div>
         <div className="detail-row">
           <CheckCircle size={13} className="detail-icon" />
@@ -214,7 +722,7 @@ const SubscriptionCard = ({
         {sub.current_period_end && sub.status === 'active' && (
           <div className="detail-row">
             <RefreshCw size={13} className="detail-icon" />
-            <span className="detail-label">Renews</span>
+            <span className="detail-label">{isStaffGrant ? 'Expires' : 'Renews'}</span>
             <span className="detail-value">{formatDate(sub.current_period_end)}</span>
           </div>
         )}
@@ -265,6 +773,16 @@ const SubscriptionCard = ({
           <span>{isHistoryExpanded ? 'Hide history' : 'View history'}</span>
           {isHistoryExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </button>
+
+        {sub.status === 'active' && (
+          <button
+            className="action-btn switch-btn"
+            onClick={() => onSwitchServer(sub)}
+          >
+            <ArrowRightLeft size={14} />
+            <span>Switch server</span>
+          </button>
+        )}
 
         {eligible && (
           <>
@@ -317,8 +835,8 @@ const SubscriptionCard = ({
                 {transactions.map((tx, index) => {
                   const txStatusMeta = getTransactionStatusMeta(tx.status);
                   const isCompleted = tx.status === 'completed';
-                  const amount = tx.amount_usd != null && tx.amount_usd > 0 
-                    ? `$${parseFloat(tx.amount_usd).toFixed(2)}` 
+                  const amount = tx.amount_usd != null && tx.amount_usd > 0
+                    ? `$${parseFloat(tx.amount_usd).toFixed(2)}`
                     : '—';
 
                   return (
@@ -378,6 +896,7 @@ const MySubscriptionsPage = () => {
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [showLoginOverlay, setShowLoginOverlay] = useState(false);
+  const [isPrivileged, setIsPrivileged] = useState(false);
 
   const [subscriptions, setSubscriptions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -398,6 +917,13 @@ const MySubscriptionsPage = () => {
   // Confirm modal state
   const [modal, setModal] = useState(null); // { type: 'cancel'|'refund', sub }
 
+  // Server-switch state
+  const [switchModalSub, setSwitchModalSub] = useState(null);
+  const [userServers, setUserServers] = useState([]);
+  const [userServersLoading, setUserServersLoading] = useState(false);
+  const [switchLoading, setSwitchLoading] = useState(false);
+  const [switchError, setSwitchError] = useState(null);
+
   const hasFetchedRef = useRef(false);
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
@@ -412,6 +938,8 @@ const MySubscriptionsPage = () => {
         const data = await res.json();
         if (data.authenticated) {
           setUser(data.user);
+          const uid = String(data.user.id || data.user.discord_id || '');
+          setIsPrivileged(PRIVILEGED_USERS.includes(uid));
         } else {
           setShowLoginOverlay(true);
         }
@@ -492,33 +1020,23 @@ const MySubscriptionsPage = () => {
       if (!url) throw new Error('No invoice URL returned');
       window.open(url, '_blank');
     } catch (err) {
-      // Show error inline in the history section by updating the transaction history state
       setTransactionHistory(prev => {
-        const subId = Object.keys(prev).find(key => 
+        const subId = Object.keys(prev).find(key =>
           prev[key]?.transactions?.some(tx => tx.paddle_transaction_id === transactionId)
         );
         if (!subId) return prev;
         return {
           ...prev,
-          [subId]: {
-            ...prev[subId],
-            error: err.message || 'Failed to retrieve invoice',
-          }
+          [subId]: { ...prev[subId], error: err.message || 'Failed to retrieve invoice' }
         };
       });
       setTimeout(() => {
         setTransactionHistory(prev => {
-          const subId = Object.keys(prev).find(key => 
+          const subId = Object.keys(prev).find(key =>
             prev[key]?.transactions?.some(tx => tx.paddle_transaction_id === transactionId)
           );
           if (!subId) return prev;
-          return {
-            ...prev,
-            [subId]: {
-              ...prev[subId],
-              error: null,
-            }
-          };
+          return { ...prev, [subId]: { ...prev[subId], error: null } };
         });
       }, 5000);
     } finally {
@@ -532,27 +1050,17 @@ const MySubscriptionsPage = () => {
     const isExpanded = current?.expanded || false;
 
     if (isExpanded) {
-      // Just collapse
       setTransactionHistory(prev => ({
         ...prev,
-        [subscriptionId]: {
-          ...prev[subscriptionId],
-          expanded: false,
-        },
+        [subscriptionId]: { ...prev[subscriptionId], expanded: false },
       }));
       return;
     }
 
-    // Expand - fetch if not already loaded
     if (!current?.transactions && !current?.loading) {
       setTransactionHistory(prev => ({
         ...prev,
-        [subscriptionId]: {
-          expanded: true,
-          loading: true,
-          transactions: [],
-          error: null,
-        },
+        [subscriptionId]: { expanded: true, loading: true, transactions: [], error: null },
       }));
 
       try {
@@ -568,32 +1076,21 @@ const MySubscriptionsPage = () => {
         const data = await res.json();
         setTransactionHistory(prev => ({
           ...prev,
-          [subscriptionId]: {
-            expanded: true,
-            loading: false,
-            transactions: data || [],
-            error: null,
-          },
+          [subscriptionId]: { expanded: true, loading: false, transactions: data || [], error: null },
         }));
       } catch (err) {
         setTransactionHistory(prev => ({
           ...prev,
           [subscriptionId]: {
-            expanded: true,
-            loading: false,
-            transactions: [],
+            expanded: true, loading: false, transactions: [],
             error: err.message || 'Failed to load transaction history',
           },
         }));
       }
     } else {
-      // Already loaded, just expand
       setTransactionHistory(prev => ({
         ...prev,
-        [subscriptionId]: {
-          ...prev[subscriptionId],
-          expanded: true,
-        },
+        [subscriptionId]: { ...prev[subscriptionId], expanded: true },
       }));
     }
   };
@@ -657,6 +1154,69 @@ const MySubscriptionsPage = () => {
       setTimeout(() => setError(null), 5000);
     } finally {
       setRefundLoading(null);
+    }
+  };
+
+  // ─── Server switching ──────────────────────────────────────────────────────
+  const openSwitchModal = async (sub) => {
+    setSwitchModalSub(sub);
+    setSwitchError(null);
+    if (userServers.length === 0) {
+      setUserServersLoading(true);
+      try {
+        const res = await fetch(`${API_URL}/api/user/servers`, {
+          credentials: 'include',
+          headers: { 'Cache-Control': 'no-cache' },
+        });
+        if (!res.ok) throw new Error('Failed to fetch your servers');
+        const data = await res.json();
+        const processed = (data || []).map(s => ({
+          ...s,
+          iconUrl: s.icon
+            ? `https://cdn.discordapp.com/icons/${s.id}/${s.icon}.png?size=64`
+            : 'https://cdn.discordapp.com/embed/avatars/0.png',
+        }));
+        setUserServers(processed);
+      } catch (err) {
+        setSwitchError(err.message);
+      } finally {
+        setUserServersLoading(false);
+      }
+    }
+  };
+
+  const handleSwitchConfirm = async (newGuildId) => {
+    if (!switchModalSub || !newGuildId) return;
+    setSwitchLoading(true);
+    setSwitchError(null);
+    try {
+      const res = await fetch(
+        `${API_URL}/api/paddle/subscriptions/${switchModalSub.paddle_subscription_id}/switch-guild`,
+        {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ new_guild_id: newGuildId }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to switch server');
+
+      const newServer = userServers.find(s => s.id === newGuildId);
+      setSubscriptions(prev =>
+        prev.map(s =>
+          s.paddle_subscription_id === switchModalSub.paddle_subscription_id
+            ? { ...s, guild_id: newGuildId, guild_name: newServer?.name || s.guild_name }
+            : s
+        )
+      );
+      setSuccessMsg(`Moved subscription to ${newServer?.name || 'the new server'}.`);
+      setTimeout(() => setSuccessMsg(null), 5000);
+      setSwitchModalSub(null);
+    } catch (err) {
+      setSwitchError(err.message);
+    } finally {
+      setSwitchLoading(false);
     }
   };
 
@@ -771,6 +1331,14 @@ const MySubscriptionsPage = () => {
             </div>
           )}
 
+          {/* Staff tools */}
+          {isPrivileged && (
+            <>
+              <StaffGrantPanel apiUrl={API_URL} onGranted={fetchSubscriptions} />
+              <StaffGrantsList apiUrl={API_URL} onGrantRevoked={fetchSubscriptions} />
+            </>
+          )}
+
           {/* Messages */}
           {error && <div className="global-error">{error}</div>}
           {successMsg && <div className="global-success">{successMsg}</div>}
@@ -783,7 +1351,7 @@ const MySubscriptionsPage = () => {
             </div>
           ) : subscriptions.length === 0 ? (
             <div className="empty-cart">
-              <Zap size={48} color="#aa00ff" />
+              <Settings size={48} color="#aa00ff" />
               <h2>No subscriptions yet</h2>
               <p>Browse available modules and power up your servers.</p>
               <a href="/Premium/index.html" className="browse-link">Browse Modules</a>
@@ -807,6 +1375,7 @@ const MySubscriptionsPage = () => {
                         onRefund={(s) => setModal({ type: 'refund', sub: s })}
                         onInvoice={handleInvoice}
                         onTransactionInvoice={handleTransactionInvoice}
+                        onSwitchServer={openSwitchModal}
                         invoiceLoading={invoiceLoading === sub.paddle_subscription_id}
                         cancelLoading={cancelLoading === sub.paddle_subscription_id}
                         refundLoading={refundLoading === sub.paddle_subscription_id}
@@ -838,6 +1407,7 @@ const MySubscriptionsPage = () => {
                         onRefund={(s) => setModal({ type: 'refund', sub: s })}
                         onInvoice={handleInvoice}
                         onTransactionInvoice={handleTransactionInvoice}
+                        onSwitchServer={openSwitchModal}
                         invoiceLoading={invoiceLoading === sub.paddle_subscription_id}
                         cancelLoading={cancelLoading === sub.paddle_subscription_id}
                         refundLoading={refundLoading === sub.paddle_subscription_id}
@@ -864,36 +1434,37 @@ const MySubscriptionsPage = () => {
         </div>
       </div>
 
-      {/* Confirm modal */}
+      {/* Cancel/Refund confirm modal */}
       {modal && (
         <ConfirmModal
-          title={
-            modal.type === 'cancel'
-              ? 'Cancel subscription?'
-              : 'Request a refund?'
-          }
+          title={modal.type === 'cancel' ? 'Cancel subscription?' : 'Request a refund?'}
           message={
             modal.type === 'cancel'
-              ? `This will immediately cancel your ${MODULE_INFO[modal.sub.module_key]?.name || modal.sub.module_key} subscription. Access will be revoked right away.`
+              ? `This will immediately cancel your ${getModuleInfo(modal.sub.module_key).name} subscription. Access will be revoked right away.`
               : `This will refund your $${parseFloat(modal.sub.final_price_usd || 0).toFixed(2)} payment and cancel the subscription. Funds typically arrive in 5–10 business days.`
           }
-          confirmLabel={
-            modal.type === 'cancel'
-              ? 'Yes, cancel it'
-              : 'Yes, refund me'
-          }
+          confirmLabel={modal.type === 'cancel' ? 'Yes, cancel it' : 'Yes, refund me'}
           confirmClass={modal.type === 'cancel' ? 'danger' : 'warning'}
-          onConfirm={
-            modal.type === 'cancel'
-              ? handleCancelConfirm
-              : handleRefundConfirm
-          }
+          onConfirm={modal.type === 'cancel' ? handleCancelConfirm : handleRefundConfirm}
           onCancel={() => setModal(null)}
           loading={
             modal.type === 'cancel'
               ? cancelLoading === modal.sub.paddle_subscription_id
               : refundLoading === modal.sub.paddle_subscription_id
           }
+        />
+      )}
+
+      {/* Switch server modal */}
+      {switchModalSub && (
+        <SwitchServerModal
+          sub={switchModalSub}
+          servers={userServers}
+          serversLoading={userServersLoading}
+          onConfirm={handleSwitchConfirm}
+          onCancel={() => { setSwitchModalSub(null); setSwitchError(null); }}
+          loading={switchLoading}
+          error={switchError}
         />
       )}
 
@@ -972,7 +1543,7 @@ const allStyles = `
 
   /* ── Filter tabs ── */
   .filter-tabs {
-    display: flex; gap: 8px; margin-bottom: 32px;
+    display: flex; gap: 8px; margin-bottom: 20px;
     max-width: 520px; margin-left: auto; margin-right: auto;
     flex-wrap: wrap;
   }
@@ -994,6 +1565,172 @@ const allStyles = `
     background: rgba(170,0,255,0.15); color: #aa00ff; border-radius: 10px;
   }
   .filter-tab.active .tab-count { background: rgba(170,0,255,0.25); }
+
+  /* ── Staff panel ── */
+  .staff-panel-wrap {
+    max-width: 520px; margin: 0 auto 24px; display: flex; flex-direction: column;
+  }
+  .staff-toggle-btn {
+    display: flex; align-items: center; gap: 8px;
+    align-self: flex-start;
+    padding: 8px 16px;
+    background: rgba(170,0,255,0.06); border: 1px solid rgba(170,0,255,0.3);
+    border-radius: 20px; color: #aa00ff; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; transition: all 0.2s ease;
+  }
+  .staff-toggle-btn:hover { background: rgba(170,0,255,0.12); border-color: rgba(170,0,255,0.5); }
+
+  .staff-panel {
+    margin-top: 12px;
+    background: #14151c; border: 1px solid rgba(170,0,255,0.3); border-radius: 16px;
+    padding: 22px;
+    animation: slideDown 0.2s ease;
+  }
+  .staff-panel-header {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 14px; font-weight: 700; color: #ffffff; margin-bottom: 6px;
+  }
+  .staff-panel-subtext {
+    font-size: 12.5px; color: #888b99; line-height: 1.55; margin-bottom: 18px;
+  }
+
+  .staff-lookup-row { display: flex; gap: 10px; }
+  .staff-input-wrap { position: relative; flex: 1; }
+  .staff-input-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #555870; }
+  .staff-text-input {
+    width: 100%; padding: 11px 14px 11px 36px;
+    background: #0a0a0a; border: 1px solid #2c2f3a; border-radius: 10px;
+    color: #ffffff; font-size: 13px; font-family: 'SF Mono', 'Fira Code', monospace;
+    transition: border-color 0.2s ease;
+  }
+  .staff-text-input.full-width { padding-left: 14px; font-family: inherit; }
+  .staff-text-input:focus { outline: none; border-color: #aa00ff; }
+  .staff-text-input::placeholder { color: #555870; }
+
+  .staff-lookup-btn {
+    padding: 11px 20px; background: rgba(170,0,255,0.12); border: 1px solid rgba(170,0,255,0.4);
+    border-radius: 10px; color: #aa00ff; font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s ease; white-space: nowrap;
+    display: flex; align-items: center; justify-content: center; min-width: 84px;
+  }
+  .staff-lookup-btn:hover:not(:disabled) { background: rgba(170,0,255,0.2); border-color: #aa00ff; }
+  .staff-lookup-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .staff-success-notice {
+    display: flex; align-items: center; gap: 7px; margin-top: 14px; padding: 10px 12px;
+    background: rgba(0,224,122,0.07); border: 1px solid rgba(0,224,122,0.25); border-radius: 8px;
+    font-size: 12.5px; color: #00e07a;
+  }
+
+  .staff-result-card {
+    margin-top: 16px; padding: 16px; background: #0a0a0a;
+    border: 1px solid #2c2f3a; border-radius: 12px;
+  }
+  .staff-result-server { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .staff-result-icon { width: 44px; height: 44px; border-radius: 50%; border: 2px solid rgba(170,0,255,0.4); object-fit: cover; }
+  .staff-result-info { flex: 1; min-width: 0; }
+  .staff-result-name { font-size: 15px; font-weight: 700; color: #ffffff; }
+  .staff-result-meta { font-size: 12px; color: #888b99; margin-top: 2px; }
+
+  .staff-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .staff-field { display: flex; flex-direction: column; gap: 6px; }
+  .staff-field-label { font-size: 11.5px; color: #888b99; font-weight: 600; letter-spacing: 0.3px; }
+  .staff-select, .staff-number-input {
+    padding: 10px 12px; background: #0a0a0a; border: 1px solid #2c2f3a; border-radius: 8px;
+    color: #ffffff; font-size: 13px;
+  }
+  .staff-select:focus, .staff-number-input:focus { outline: none; border-color: #aa00ff; }
+
+  .staff-result-actions { display: flex; gap: 10px; margin-top: 18px; }
+  .staff-discard-btn {
+    flex: 1; padding: 10px; background: transparent; border: 1px solid #2c2f3a;
+    color: #888b99; font-size: 13px; font-weight: 600; border-radius: 8px; cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .staff-discard-btn:hover { border-color: #444; color: #d0d0d0; }
+  .staff-grant-btn {
+    flex: 2; padding: 10px; border: none; border-radius: 8px;
+    background: linear-gradient(135deg, #aa00ff, #7700cc); color: #ffffff;
+    font-size: 13px; font-weight: 700; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: all 0.2s ease;
+  }
+  .staff-grant-btn:hover:not(:disabled) { box-shadow: 0 4px 16px rgba(170,0,255,0.4); }
+  .staff-grant-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .staff-grant-pill {
+    display: inline-flex; align-items: center; padding: 2px 9px;
+    background: rgba(170,0,255,0.12); border: 1px solid rgba(170,0,255,0.3);
+    color: #aa00ff; border-radius: 10px; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.3px;
+  }
+
+  /* ── Staff grants list ── */
+  .staff-refresh-btn {
+    display: flex; align-items: center; justify-content: center;
+    margin-left: auto; padding: 4px 6px;
+    background: transparent; border: 1px solid rgba(170,0,255,0.3);
+    border-radius: 6px; color: #aa00ff; cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .staff-refresh-btn:hover:not(:disabled) { background: rgba(170,0,255,0.1); }
+  .staff-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .spinning { animation: spin 0.8s linear infinite; }
+
+  .grants-list { display: flex; flex-direction: column; gap: 12px; max-height: 400px; overflow-y: auto; padding-right: 4px; }
+  .grants-list::-webkit-scrollbar { width: 4px; }
+  .grants-list::-webkit-scrollbar-thumb { background: rgba(170,0,255,0.3); border-radius: 2px; }
+
+  .grant-item {
+    padding: 14px 16px;
+    background: #0a0a0a;
+    border: 1px solid #2c2f3a;
+    border-radius: 10px;
+    transition: border-color 0.2s ease;
+  }
+  .grant-item:hover { border-color: rgba(170,0,255,0.3); }
+
+  .grant-header {
+    display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
+  }
+  .grant-server { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .grant-guild-name { font-size: 14px; font-weight: 600; color: #ffffff; }
+  .grant-module {
+    font-size: 12px; color: #aa00ff; font-weight: 500;
+    padding: 2px 8px; background: rgba(170,0,255,0.1); border-radius: 4px;
+  }
+  .grant-status { font-size: 12px; font-weight: 600; text-transform: capitalize; }
+
+  .grant-details { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+  .grant-detail {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: #888b99;
+  }
+  .grant-detail.reason { flex-wrap: wrap; }
+  .reason-label { font-weight: 500; color: #555870; }
+  .reason-text { color: #d0d0d0; font-style: italic; }
+
+  .grant-actions { margin-top: 10px; display: flex; gap: 8px; }
+  .grant-revoke-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 14px;
+    background: rgba(255,107,107,0.1);
+    border: 1px solid rgba(255,107,107,0.3);
+    border-radius: 6px;
+    color: #ff8888; font-size: 12px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .grant-revoke-btn:hover:not(:disabled) { background: rgba(255,107,107,0.2); border-color: #ff6b6b; }
+  .grant-revoke-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .grant-revoked-badge {
+    display: flex; align-items: center; gap: 6px;
+    margin-top: 10px; padding: 4px 10px;
+    background: rgba(255,107,107,0.08);
+    border: 1px solid rgba(255,107,107,0.2);
+    border-radius: 4px;
+    font-size: 12px; color: #ff888b;
+  }
 
   /* ── Section headers ── */
   .sub-section { margin-bottom: 40px; }
@@ -1091,6 +1828,11 @@ const allStyles = `
   }
   .invoice-btn:hover:not(:disabled) { background: rgba(170,0,255,0.1); border-color: rgba(170,0,255,0.6); }
 
+  .switch-btn {
+    border-color: rgba(91,156,246,0.35); color: #5b9cf6;
+  }
+  .switch-btn:hover:not(:disabled) { background: rgba(91,156,246,0.1); border-color: rgba(91,156,246,0.6); }
+
   .cancel-btn {
     border-color: rgba(255,107,107,0.35); color: #ff8888;
   }
@@ -1183,19 +1925,9 @@ const allStyles = `
     padding-right: 4px;
   }
 
-  .history-list::-webkit-scrollbar {
-    width: 4px;
-  }
-
-  .history-list::-webkit-scrollbar-track {
-    background: rgba(44,47,58,0.3);
-    border-radius: 2px;
-  }
-
-  .history-list::-webkit-scrollbar-thumb {
-    background: rgba(170,0,255,0.3);
-    border-radius: 2px;
-  }
+  .history-list::-webkit-scrollbar { width: 4px; }
+  .history-list::-webkit-scrollbar-track { background: rgba(44,47,58,0.3); border-radius: 2px; }
+  .history-list::-webkit-scrollbar-thumb { background: rgba(170,0,255,0.3); border-radius: 2px; }
 
   .history-item {
     padding: 10px 12px;
@@ -1204,85 +1936,29 @@ const allStyles = `
     border-radius: 8px;
     transition: border-color 0.2s ease;
   }
-
-  .history-item:hover {
-    border-color: rgba(170,0,255,0.2);
-  }
+  .history-item:hover { border-color: rgba(170,0,255,0.2); }
 
   .history-item-main {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
   }
-
-  .history-item-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .history-item-right {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .history-item-date {
-    font-size: 12px;
-    color: #888b99;
-    font-weight: 500;
-    white-space: nowrap;
-  }
-
+  .history-item-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .history-item-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .history-item-date { font-size: 12px; color: #888b99; font-weight: 500; white-space: nowrap; }
   .history-item-type {
-    font-size: 12px;
-    color: #d0d0d0;
-    font-weight: 500;
-    text-transform: capitalize;
-    padding: 2px 8px;
-    background: rgba(44,47,58,0.5);
-    border-radius: 4px;
-    white-space: nowrap;
+    font-size: 12px; color: #d0d0d0; font-weight: 500; text-transform: capitalize;
+    padding: 2px 8px; background: rgba(44,47,58,0.5); border-radius: 4px; white-space: nowrap;
   }
-
-  .history-item-amount {
-    font-size: 14px;
-    color: #ffffff;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-
+  .history-item-amount { font-size: 14px; color: #ffffff; font-weight: 600; white-space: nowrap; }
   .history-item-status {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 600;
-    white-space: nowrap;
+    display: inline-block; padding: 2px 8px; border-radius: 12px;
+    font-size: 11px; font-weight: 600; white-space: nowrap;
   }
-
   .history-item-invoice-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 4px 6px;
-    background: transparent;
-    border: 1px solid rgba(170,0,255,0.3);
-    border-radius: 6px;
-    color: #aa00ff;
-    cursor: pointer;
-    transition: all 0.2s ease;
+    display: flex; align-items: center; justify-content: center; padding: 4px 6px;
+    background: transparent; border: 1px solid rgba(170,0,255,0.3); border-radius: 6px;
+    color: #aa00ff; cursor: pointer; transition: all 0.2s ease;
   }
-
-  .history-item-invoice-btn:hover {
-    background: rgba(170,0,255,0.1);
-    border-color: rgba(170,0,255,0.6);
-    transform: scale(1.05);
-  }
+  .history-item-invoice-btn:hover { background: rgba(170,0,255,0.1); border-color: rgba(170,0,255,0.6); transform: scale(1.05); }
 
   /* ── Footnote ── */
   .module-footnote { margin-top: 12px; font-size: 11px; color: #555870; font-style: italic; position: relative; z-index: 1; }
@@ -1357,9 +2033,15 @@ const allStyles = `
   }
   @keyframes slideUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
 
+  .modal-icon-badge {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: rgba(170,0,255,0.1); border: 1px solid rgba(170,0,255,0.3);
+    display: flex; align-items: center; justify-content: center; margin-bottom: 16px;
+  }
+
   .modal-title { font-size: 20px; font-weight: 700; color: #ffffff; margin-bottom: 12px; }
-  .modal-message { font-size: 14px; color: #888b99; line-height: 1.65; margin-bottom: 28px; }
-  .modal-actions { display: flex; gap: 10px; }
+  .modal-message { font-size: 14px; color: #888b99; line-height: 1.65; margin-bottom: 20px; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 8px; }
 
   .modal-cancel-btn {
     flex: 1; padding: 12px; background: transparent; border: 1px solid #2c2f3a;
@@ -1379,7 +2061,38 @@ const allStyles = `
   .modal-confirm-btn.danger:hover:not(:disabled) { box-shadow: 0 4px 16px rgba(255,68,68,0.4); }
   .modal-confirm-btn.warning { background: linear-gradient(135deg, #f0a500, #c07800); }
   .modal-confirm-btn.warning:hover:not(:disabled) { box-shadow: 0 4px 16px rgba(240,165,0,0.4); }
+  .modal-confirm-btn.primary { background: linear-gradient(135deg, #aa00ff, #7700cc); }
+  .modal-confirm-btn.primary:hover:not(:disabled) { box-shadow: 0 4px 16px rgba(170,0,255,0.4); }
   .modal-confirm-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+
+  /* ── Switch server modal extras ── */
+  .switch-servers-loading {
+    display: flex; align-items: center; gap: 10px; padding: 16px 0;
+    color: #888b99; font-size: 13px;
+  }
+  .switch-empty-notice, .switch-error-notice {
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    border-radius: 8px; font-size: 12.5px; margin-bottom: 4px;
+  }
+  .switch-empty-notice { background: rgba(240,165,0,0.07); border: 1px solid rgba(240,165,0,0.2); color: #f0a500; }
+  .switch-error-notice { background: rgba(255,107,107,0.08); border: 1px solid rgba(255,107,107,0.2); color: #ff8888; }
+
+  .switch-server-list {
+    display: flex; flex-direction: column; gap: 8px; max-height: 260px;
+    overflow-y: auto; margin-bottom: 16px; padding-right: 2px;
+  }
+  .switch-server-list::-webkit-scrollbar { width: 4px; }
+  .switch-server-list::-webkit-scrollbar-thumb { background: rgba(170,0,255,0.3); border-radius: 2px; }
+
+  .switch-server-option {
+    display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+    background: #0a0a0a; border: 1px solid #2c2f3a; border-radius: 10px;
+    cursor: pointer; transition: all 0.2s ease; text-align: left;
+  }
+  .switch-server-option:hover { border-color: rgba(170,0,255,0.4); }
+  .switch-server-option.selected { border-color: #aa00ff; background: rgba(170,0,255,0.06); }
+  .switch-server-icon { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+  .switch-server-name { flex: 1; font-size: 13.5px; color: #d0d0d0; font-weight: 500; }
 
   /* ── Loader & auth ── */
   .state-container {
@@ -1432,17 +2145,11 @@ const allStyles = `
     .stats-bar { padding: 14px 18px; }
     .modal-box { padding: 28px 22px; }
     .modal-actions { flex-direction: column; }
+    .staff-form-grid { grid-template-columns: 1fr; }
+    .staff-lookup-row { flex-direction: column; }
 
-    .history-item-main {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 8px;
-    }
-
-    .history-item-right {
-      width: 100%;
-      justify-content: flex-start;
-    }
+    .history-item-main { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .history-item-right { width: 100%; justify-content: flex-start; }
   }
 
   @media (max-width: 480px) {
