@@ -25,7 +25,8 @@ import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Literal
-from datetime import datetime, timedelta, timezone, time
+from datetime import datetime, timedelta, timezone, time as dt_time
+import time
 try:
     from . import paddle_client
     from .paddle_client import PaddleAPIError
@@ -33,7 +34,7 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import paddle_client
     from paddle_client import PaddleAPIError
-    
+
 try:
     from . import paddle_webhooks
     from .paddle_webhooks import verify_webhook_signature, process_event
@@ -19934,7 +19935,6 @@ class DatabaseStatsAPI:
 
                 return dict(row)
 
-
     async def get_staff_grants_for_guild(self, guild_id: int) -> List[Dict]:
         if not self.pool:
             return []
@@ -19949,12 +19949,11 @@ class DatabaseStatsAPI:
             )
             return [dict(r) for r in rows]
 
-
     async def get_staff_grants_by_grantor(self, grantor_discord_id: str) -> List[Dict]:
         """Get all staff grants issued by a specific staff member."""
         if not self.pool:
             return []
-        
+
         query = """
             SELECT 
                 s.paddle_subscription_id,
@@ -19979,11 +19978,10 @@ class DatabaseStatsAPI:
                 AND s.granted_by = $1
             ORDER BY s.created_at DESC
         """
-        
+
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query, grantor_discord_id)
             return [dict(row) for row in rows]
-
 
     async def revoke_staff_grant(self, paddle_subscription_id: str, revoked_by_discord_id: str) -> Optional[Dict]:
         """Revoke a staff grant. Only operates on source='staff_grant' rows — refuses to touch real Paddle subs."""
@@ -20010,7 +20008,7 @@ class DatabaseStatsAPI:
                     sub["id"],
                     revoked_by_discord_id
                 )
-                
+
                 # Revoke guild module access
                 await conn.execute(
                     """UPDATE guild_module_access SET
@@ -20019,14 +20017,14 @@ class DatabaseStatsAPI:
                     WHERE subscription_id = $1 AND is_active = TRUE""",
                     sub["id"],
                 )
-                
+
                 # Log the revocation
                 await conn.execute(
                     """INSERT INTO staff_grant_revocations (paddle_subscription_id, revoked_by_discord_id)
                     VALUES ($1, $2)""",
                     paddle_subscription_id, revoked_by_discord_id,
                 )
-                
+
                 return dict(updated) if updated else None
 
 
@@ -37568,7 +37566,7 @@ async def create_advanced_reset_schedule(request: CreateAdvancedScheduleRequest)
                 minute = int(parts[1]) if len(parts) > 1 else 0
                 second = int(parts[2]) if len(parts) > 2 else 0
                 time_objects.append(
-                    time(hour=hour, minute=minute, second=second))
+                    dt_time(hour=hour, minute=minute, second=second))
 
         # Build human-readable description
         human_readable = build_human_readable_schedule(
@@ -37979,7 +37977,7 @@ async def update_reset_schedule(request: UpdateScheduleRequest):
                     minute = int(parts[1]) if len(parts) > 1 else 0
                     second = int(parts[2]) if len(parts) > 2 else 0
                     time_objects.append(
-                        time(hour=hour, minute=minute, second=second))
+                        dt_time(hour=hour, minute=minute, second=second))
                 updates.append(f"recurring_times = ${param_counter}")
                 params.append(time_objects)
                 param_counter += 1
@@ -44870,9 +44868,10 @@ async def create_staff_grant(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     discord_id = str(user.get('discord_id') or user.get('id'))
-    
-    logger.info(f"Staff grant attempt: user dict keys={list(user.keys())}, resolved discord_id={discord_id!r}, in set={discord_id in PADDLE_STAFF_DISCORD_IDS}")
-    
+
+    logger.info(
+        f"Staff grant attempt: user dict keys={list(user.keys())}, resolved discord_id={discord_id!r}, in set={discord_id in PADDLE_STAFF_DISCORD_IDS}")
+
     if discord_id not in PADDLE_STAFF_DISCORD_IDS:
         raise HTTPException(status_code=403, detail="Staff access required")
 
@@ -45000,8 +44999,9 @@ async def revoke_staff_grant(
     except Exception as e:
         logger.error(f"Error in revoke_staff_grant: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 # Add this new endpoint after the existing staff grant endpoints
+
 
 @app.get("/api/paddle/staff/grants/my-grants")
 async def get_my_staff_grants(
