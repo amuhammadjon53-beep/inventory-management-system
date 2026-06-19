@@ -2940,6 +2940,35 @@ class DatabaseStats(commands.Cog):
                 ''')
                 print("  ✅ Created/verified table: reset_schedules")
 
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS history_sync_progress (
+                        guild_id BIGINT NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        cursor_message_id BIGINT,
+                        pending_ceiling_message_id BIGINT,
+                        synced_ceiling_messages BIGINT,
+                        synced_ceiling_mentions BIGINT,
+                        synced_ceiling_emoji BIGINT,
+                        messages_processed BIGINT NOT NULL DEFAULT 0,
+                        mentions_processed BIGINT NOT NULL DEFAULT 0,
+                        emoji_processed BIGINT NOT NULL DEFAULT 0,
+                        started_at TIMESTAMPTZ,
+                        updated_at TIMESTAMPTZ,
+                        last_caught_up_at TIMESTAMPTZ,
+                        error_message TEXT,
+                        PRIMARY KEY (guild_id, channel_id)
+                    )
+                ''')
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_history_sync_progress_guild '
+                    'ON history_sync_progress(guild_id)'
+                )
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_history_sync_progress_status '
+                    'ON history_sync_progress(guild_id, status)'
+                )
+
                 # ===================================================================
                 # ===== PADDLE PAYMENT SYSTEM TABLES =====
                 # ===================================================================
@@ -18946,6 +18975,627 @@ class DatabaseStats(commands.Cog):
                 WHERE event_id = $1""",
                 event_id, error is None, error,
             )
+
+    STAT_FLAGS = ('messages', 'mentions', 'emoji')
+    CEILING_COLUMN = {
+        'messages': 'synced_ceiling_messages',
+        'mentions': 'synced_ceiling_mentions',
+        'emoji': 'synced_ceiling_emoji',
+    }
+    STAT_COUNTER_COLUMN = {
+        'messages': 'messages_processed',
+        'mentions': 'mentions_processed',
+        'emoji': 'emoji_processed',
+    }
+
+    async def init_guild_history_sync(self, guild, channel_ids=None) -> int:
+        """Seed 'pending' rows for a guild's text channels (or a specific
+        subset via channel_ids). Purely a convenience for showing a status
+        list before any sync has run - sync_channel_history() will create
+        its own row on first call regardless. Returns channels queued."""
+        if not self.pool:
+            return 0
+
+        text_channels = [
+            c for c in guild.text_channels
+            if (not channel_ids or c.id in channel_ids)
+        ]
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                for channel in text_channels:
+                    await conn.execute('''
+                        INSERT INTO history_sync_progress (guild_id, channel_id, status)
+                        VALUES ($1, $2, 'pending')
+                        ON CONFLICT (guild_id, channel_id) DO NOTHING
+                    ''', guild.id, channel.id)
+
+        return len(text_channels)
+
+    async def get_guild_history_sync_status(self, guild_id: int) -> dict:
+        """Read-only summary, recomputed live from history_sync_progress
+        (no separately-maintained counters to drift out of sync, which
+        matters now that channels can flip between idle/in_progress
+        repeatedly instead of completing once and staying that way).
+
+        Each channel row reports three independent ceilings AND three
+        independent processed-counts - a channel can be 'idle' for
+        messages/mentions while still NULL/0 for emoji, so 'idle_channels'
+        below means "no walk currently running", not "fully synced on
+        every stat type". Use the per-channel ceiling/processed fields to
+        check completeness or volume of a specific stat."""
+        if not self.pool:
+            return {'status': 'no_pool'}
+
+        async with self.pool.acquire() as conn:
+            channel_rows = await conn.fetch('''
+                SELECT channel_id, status,
+                       synced_ceiling_messages, synced_ceiling_mentions, synced_ceiling_emoji,
+                       messages_processed, mentions_processed, emoji_processed,
+                       last_caught_up_at, error_message
+                FROM history_sync_progress WHERE guild_id = $1
+            ''', guild_id)
+
+        if not channel_rows:
+            return {'status': 'not_started', 'channels': []}
+
+        return {
+            'total_channels': len(channel_rows),
+            'idle_channels': sum(1 for r in channel_rows if r['status'] == 'idle'),
+            'in_progress_channels': sum(1 for r in channel_rows if r['status'] == 'in_progress'),
+            'pending_channels': sum(1 for r in channel_rows if r['status'] == 'pending'),
+            'failed_channels': sum(1 for r in channel_rows if r['status'] == 'failed'),
+            'messages_never_synced': sum(1 for r in channel_rows if r['synced_ceiling_messages'] is None),
+            'mentions_never_synced': sum(1 for r in channel_rows if r['synced_ceiling_mentions'] is None),
+            'emoji_never_synced': sum(1 for r in channel_rows if r['synced_ceiling_emoji'] is None),
+            'total_messages_processed': sum(r['messages_processed'] for r in channel_rows),
+            'total_mentions_processed': sum(r['mentions_processed'] for r in channel_rows),
+            'total_emoji_processed': sum(r['emoji_processed'] for r in channel_rows),
+            'channels': [dict(r) for r in channel_rows],
+        }
+
+    async def reset_channel_history_sync(self, guild_id: int, channel_id: int, stats=None):
+        """Wipe a channel's progress so the next sync_channel_history() call
+        does a full walk from genesis again for the selected stat type(s).
+
+        stats: iterable of any of 'messages', 'mentions', 'emoji'. None (default)
+        resets all three, matching the old behavior. Pass a subset (e.g.
+        ['emoji']) to backfill just that stat type across the channel's
+        ENTIRE history without re-walking/double-counting stats that are
+        already caught up - a normal gap-fill only re-walks messages newer
+        than a stat's own ceiling, it won't retroactively add a stat type
+        to a range that's already covered under that stat's ceiling.
+
+        Each reset stat's OWN processed counter is zeroed along with its
+        ceiling (a fresh genesis walk should start that stat's count from
+        0); counters for stats NOT being reset are left untouched.
+
+        NOTE: cursor_message_id and pending_ceiling_message_id are walk-level
+        (shared across all stat types in a given walk), so they're always
+        cleared here regardless of which stats you reset - there's no
+        in-progress walk left to resume once any ceiling has been rewound."""
+        if stats is None:
+            stats = self.STAT_FLAGS
+        stats = list(stats)
+        invalid = set(stats) - set(self.STAT_FLAGS)
+        if invalid:
+            raise ValueError(f"Unknown stat type(s): {invalid}")
+
+        set_clauses = ["status = 'pending'",
+                       "cursor_message_id = NULL",
+                       "pending_ceiling_message_id = NULL",
+                       "last_caught_up_at = NULL",
+                       "error_message = NULL",
+                       "updated_at = NOW()"]
+        for stat in stats:
+            set_clauses.append(f"{self.CEILING_COLUMN[stat]} = NULL")
+            set_clauses.append(f"{self.STAT_COUNTER_COLUMN[stat]} = 0")
+
+        query = f'''
+            UPDATE history_sync_progress
+            SET {', '.join(set_clauses)}
+            WHERE guild_id = $1 AND channel_id = $2
+        '''
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, guild_id, channel_id)
+
+    # ======================================================================
+    # PROGRESS BOOKKEEPING (internal)
+    # ======================================================================
+
+    async def _wait_for_history_rate_limit(self):
+        """Gates every Discord history() call this module makes, via the
+        dedicated HISTORYSYNC type - a soft-capped 1 req/s target that can
+        borrow unused quota from the hard-capped types (autoroles, counters,
+        syncing, api) but never pushes total traffic past the global 50 req/s
+        ceiling. Using RateLimitType.API here would be wrong: API is one of
+        the hard-capped types (5 req/s, reserved for other API traffic) and
+        sharing it would let a long history walk starve unrelated API calls
+        that need that same hard cap."""
+        while not await self.rate_limiter.acquire(RateLimitType.HISTORYSYNC, timeout=30.0):
+            await asyncio.sleep(5)
+
+    async def _update_history_sync_progress(self, guild_id, channel_id, cursor, pending_ceiling, page_counts):
+        """Persist mid-walk progress. Upserts so this works whether or not
+        a row already exists. Each of messages/mentions/emoji_processed is
+        incremented by THIS page's delta for that specific stat (not the
+        walk's overall page size), so each stays an honest lifetime total
+        of rows actually written to that stat's own table - a page that's
+        fully new for emoji but mostly already-covered for messages won't
+        inflate messages_processed just because emoji did a lot of work.
+
+        page_counts: dict with keys 'messages', 'mentions', 'emoji' ->
+        int, the count of messages THIS page contributed to that specific
+        stat type (0 for any stat not run this walk).
+
+        cursor/pending_ceiling are walk-level, not per-stat - the walk pages
+        through Discord history once regardless of how many stat types are
+        enabled, so there's only ever one position to persist here."""
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO history_sync_progress
+                    (guild_id, channel_id, status, cursor_message_id,
+                     pending_ceiling_message_id, messages_processed,
+                     mentions_processed, emoji_processed, started_at, updated_at)
+                VALUES ($1, $2, 'in_progress', $3, $4, $5, $6, $7, NOW(), NOW())
+                ON CONFLICT (guild_id, channel_id) DO UPDATE SET
+                    status = 'in_progress',
+                    cursor_message_id = EXCLUDED.cursor_message_id,
+                    pending_ceiling_message_id = EXCLUDED.pending_ceiling_message_id,
+                    messages_processed = history_sync_progress.messages_processed + EXCLUDED.messages_processed,
+                    mentions_processed = history_sync_progress.mentions_processed + EXCLUDED.mentions_processed,
+                    emoji_processed = history_sync_progress.emoji_processed + EXCLUDED.emoji_processed,
+                    started_at = COALESCE(history_sync_progress.started_at, NOW()),
+                    updated_at = NOW()
+            ''', guild_id, channel_id, cursor, pending_ceiling,
+                               page_counts.get('messages', 0), page_counts.get('mentions', 0), page_counts.get('emoji', 0))
+
+    async def _mark_history_sync_failed(self, guild_id, channel_id, error_message: str):
+        """Marks failed WITHOUT touching cursor/pending_ceiling, so a retry
+        can resume from exactly where it crashed instead of starting over."""
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE history_sync_progress
+                SET status = 'failed', error_message = $3, updated_at = NOW()
+                WHERE guild_id = $1 AND channel_id = $2
+            ''', guild_id, channel_id, (error_message or '')[:500])
+
+    async def _mark_channel_caught_up(self, guild_id, channel_id, new_ceiling, stats_run):
+        """Called when a walk reaches its stop point (genesis, or every
+        enabled stat's target crossed). Advances ONLY the ceiling columns
+        for stat types actually run this walk (stats_run) - a stat type
+        that was disabled for this call keeps whatever ceiling it already
+        had, so a partial-flag walk can't accidentally mark an untouched
+        stat type as caught up.
+
+        Flips status back to 'idle' - NOT a permanent terminal state, just
+        "no walk currently running". messages_processed already incremented
+        per-page, not touched here."""
+        set_clauses = ["status = 'idle'",
+                       "cursor_message_id = NULL",
+                       "pending_ceiling_message_id = NULL",
+                       "last_caught_up_at = NOW()",
+                       "updated_at = NOW()",
+                       "error_message = NULL"]
+        for stat in stats_run:
+            col = self.CEILING_COLUMN[stat]
+            set_clauses.append(f"{col} = COALESCE($3, {col})")
+
+        query = f'''
+            UPDATE history_sync_progress
+            SET {', '.join(set_clauses)}
+            WHERE guild_id = $1 AND channel_id = $2
+        '''
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, guild_id, channel_id, new_ceiling)
+
+    # ======================================================================
+    # AGGREGATION (in-memory, per page of messages)
+    # ======================================================================
+
+    def _aggregate_history_page(self, messages_for_stat):
+        """Bucket a page of discord.Message objects into hourly aggregates.
+        Mirrors the live on_message tracking logic, minus reactions and
+        minus anything that needs DB round trips per-message.
+
+        messages_for_stat: dict with any of the keys 'messages', 'mentions',
+        'emoji', each mapping to the list of discord.Message objects that
+        stat type should aggregate THIS call. Since each stat type now has
+        its own ceiling (see sync_channel_history), the three lists are
+        often different slices of the same underlying page - e.g. 'emoji'
+        might get the full page while 'messages' only gets the few entries
+        newer than its own, more-recently-advanced ceiling. Omitting a key
+        (or passing an empty list) skips that bucket type entirely, saving
+        DB write volume and, for emoji, the regex extraction pass - this
+        does NOT save Discord API calls, since the full page is already in
+        hand regardless of which stats use it.
+
+        Each stat type's list is walked independently (rather than one
+        shared loop with sync_* booleans) precisely because the lists can
+        now differ in length and content - there's no longer one shared
+        page to loop over once."""
+        message_buckets = {}   # (hour, user_id) -> {...}
+        mention_buckets = {}   # (hour, mentioned_id, mentioner_id) -> {...}
+        emoji_buckets = {}     # (hour, user_id, emoji_str, is_custom) -> {...}
+
+        for message in messages_for_stat.get('messages', []):
+            if message.webhook_id is not None or message.author is None:
+                continue
+            created_at = ensure_aware(message.created_at)
+            hour = created_at.replace(minute=0, second=0, microsecond=0)
+            user_id = message.author.id
+
+            encrypted_username = self.encrypt_username(str(message.author))
+            key = (hour, user_id)
+            b = message_buckets.setdefault(key, {
+                'message_count': 0, 'total_chars': 0, 'attachment_count': 0,
+                'embed_count': 0, 'is_bot': message.author.bot,
+                'encrypted_username': encrypted_username,
+            })
+            b['message_count'] += 1
+            b['total_chars'] += len(message.content or '')
+            if message.attachments:
+                b['attachment_count'] += 1
+            if message.embeds:
+                b['embed_count'] += 1
+
+        for message in messages_for_stat.get('mentions', []):
+            if message.webhook_id is not None or message.author is None:
+                continue
+            created_at = ensure_aware(message.created_at)
+            hour = created_at.replace(minute=0, second=0, microsecond=0)
+            user_id = message.author.id
+            is_bot = message.author.bot
+
+            for mentioned_user in message.mentions:
+                if mentioned_user.id == user_id:
+                    continue
+                mkey = (hour, mentioned_user.id, user_id)
+                mb = mention_buckets.setdefault(mkey, {
+                    'mention_count': 0, 'is_bot': is_bot,
+                    'encrypted_username': self.encrypt_username(str(mentioned_user)),
+                })
+                mb['mention_count'] += 1
+
+        for message in messages_for_stat.get('emoji', []):
+            if message.webhook_id is not None or message.author is None:
+                continue
+            created_at = ensure_aware(message.created_at)
+            hour = created_at.replace(minute=0, second=0, microsecond=0)
+            user_id = message.author.id
+            is_bot = message.author.bot
+
+            content = (message.content or '').strip()
+            if content:
+                for ed in self._extract_all_emojis_from_content(content):
+                    ekey = (hour, user_id, ed['emoji_str'], ed['is_custom'])
+                    eb = emoji_buckets.setdefault(
+                        ekey, {'usage_count': 0, 'is_bot': is_bot})
+                    eb['usage_count'] += 1
+
+        return message_buckets, mention_buckets, emoji_buckets
+
+    # ======================================================================
+    # BULK UPSERTS (one query per table per page, via unnest)
+    # ======================================================================
+
+    async def _bulk_upsert_message_buckets(self, conn, guild_id, channel_id, category_id, buckets):
+        if not buckets:
+            return
+
+        hours, user_ids, msg_counts, chars, attach, embeds, is_bots, usernames = (
+            [], [], [], [], [], [], [], []
+        )
+        for (hour, user_id), data in buckets.items():
+            hours.append(hour)
+            user_ids.append(user_id)
+            msg_counts.append(data['message_count'])
+            chars.append(data['total_chars'])
+            attach.append(data['attachment_count'])
+            embeds.append(data['embed_count'])
+            is_bots.append(data['is_bot'])
+            usernames.append(data['encrypted_username'])
+
+        await conn.execute('''
+            INSERT INTO message_tracking_hourly
+                (hour, guild_id, user_id, channel_id, category_id, message_count,
+                 total_chars, attachment_count, embed_count, is_bot, encrypted_username)
+            SELECT h, $2, u, $3, $4, mc, tc, ac, ec, ib, un
+            FROM unnest(
+                $1::timestamptz[], $5::bigint[], $6::int[], $7::int[],
+                $8::int[], $9::int[], $10::boolean[], $11::text[]
+            ) AS t(h, u, mc, tc, ac, ec, ib, un)
+            ON CONFLICT (guild_id, user_id, channel_id, hour) DO UPDATE SET
+                message_count = message_tracking_hourly.message_count + EXCLUDED.message_count,
+                total_chars = message_tracking_hourly.total_chars + EXCLUDED.total_chars,
+                attachment_count = message_tracking_hourly.attachment_count + EXCLUDED.attachment_count,
+                embed_count = message_tracking_hourly.embed_count + EXCLUDED.embed_count,
+                encrypted_username = COALESCE(
+                    message_tracking_hourly.encrypted_username, EXCLUDED.encrypted_username
+                )
+        ''', hours, guild_id, channel_id, category_id, user_ids, msg_counts, chars, attach, embeds, is_bots, usernames)
+
+    async def _bulk_upsert_mention_buckets(self, conn, guild_id, channel_id, category_id, buckets):
+        if not buckets:
+            return
+
+        hours, mentioned_ids, mentioner_ids, counts, is_bots, usernames = (
+            [], [], [], [], [], []
+        )
+        for (hour, mentioned_id, mentioner_id), data in buckets.items():
+            hours.append(hour)
+            mentioned_ids.append(mentioned_id)
+            mentioner_ids.append(mentioner_id)
+            counts.append(data['mention_count'])
+            is_bots.append(data['is_bot'])
+            usernames.append(data['encrypted_username'])
+
+        await conn.execute('''
+            INSERT INTO user_mentions_hourly
+                (hour, guild_id, mentioned_user_id, mentioner_user_id, channel_id, category_id,
+                 mention_count, is_bot, encrypted_username)
+            SELECT h, $2, mu, mr, $3, $4, mc, ib, un
+            FROM unnest(
+                $1::timestamptz[], $5::bigint[], $6::bigint[], $7::int[], $8::boolean[], $9::text[]
+            ) AS t(h, mu, mr, mc, ib, un)
+            ON CONFLICT (guild_id, mentioned_user_id, mentioner_user_id, channel_id, hour) DO UPDATE SET
+                mention_count = user_mentions_hourly.mention_count + EXCLUDED.mention_count,
+                encrypted_username = COALESCE(
+                    user_mentions_hourly.encrypted_username, EXCLUDED.encrypted_username
+                )
+        ''', hours, guild_id, channel_id, category_id, mentioned_ids, mentioner_ids, counts, is_bots, usernames)
+
+    async def _bulk_upsert_emoji_buckets(self, conn, guild_id, channel_id, category_id, buckets):
+        if not buckets:
+            return
+
+        hours, user_ids, emoji_strs, is_customs, counts, is_bots = (
+            [], [], [], [], [], []
+        )
+        for (hour, user_id, emoji_str, is_custom), data in buckets.items():
+            hours.append(hour)
+            user_ids.append(user_id)
+            emoji_strs.append(emoji_str)
+            is_customs.append(is_custom)
+            counts.append(data['usage_count'])
+            is_bots.append(data['is_bot'])
+
+        await conn.execute('''
+            INSERT INTO emoji_usage_hourly
+                (hour, guild_id, user_id, channel_id, category_id, emoji_str, is_custom,
+                 usage_count, usage_type, is_bot)
+            SELECT h, $2, u, $3, $4, es, ic, uc, 'message', ib
+            FROM unnest(
+                $1::timestamptz[], $5::bigint[], $6::text[], $7::boolean[], $8::int[], $9::boolean[]
+            ) AS t(h, u, es, ic, uc, ib)
+            ON CONFLICT (guild_id, user_id, channel_id, emoji_str, usage_type, hour) DO UPDATE SET
+                usage_count = emoji_usage_hourly.usage_count + EXCLUDED.usage_count
+        ''', hours, guild_id, channel_id, category_id, user_ids, emoji_strs, is_customs, counts, is_bots)
+
+    # ======================================================================
+    # MAIN ENTRY POINT
+    # ======================================================================
+
+    async def sync_channel_history(
+        self,
+        channel,
+        page_size: int = 100,
+        max_pages=None,
+        stop_before=None,
+        sync_messages: bool = True,
+        sync_mentions: bool = True,
+        sync_emoji: bool = True,
+    ) -> dict:
+        """
+        Bring one text channel's stats up to date with reality. Safe to
+        call repeatedly, any time - it figures out on its own whether
+        there's a genesis-to-now first sync to do, a gap to close (bot
+        was offline/kicked for a while), or nothing at all to do.
+
+        Each of messages/mentions/emoji tracks its OWN ceiling
+        (synced_ceiling_messages / _mentions / _emoji). This means you can
+        sync messages today and emoji three days later without re-walking
+        or double-counting the range messages already covered - each
+        stat's ceiling only advances for the stat types enabled on a given
+        call. If a stat type was never synced (its ceiling is NULL), this
+        call walks all the way to genesis for just that stat type, even if
+        the other enabled stat types are caught up to a much more recent
+        ceiling - all enabled stat types ride along on the SAME page walk
+        (so you pay for the Discord API calls once), they just stop
+        contributing rows to their own table once their own target is
+        crossed.
+
+        page_size: messages per Discord API call (limit= on history()).
+                   Discord's hard cap is 100; this is also the default.
+        max_pages: stop after this many Discord API calls on THIS call
+                   (None = run until caught up). Useful for testing on a
+                   slice before committing to a multi-hour run, or for
+                   spreading a big gap across multiple invocations.
+        stop_before: datetime to anchor the FIRST page at on a channel
+                   where NONE of the enabled stat types have ever been
+                   synced, instead of channel.guild.me.joined_at. Pass
+                   this explicitly if guild.me.joined_at might be
+                   unavailable. Has no effect on a gap-fill (those always
+                   start from "now").
+        sync_messages/sync_mentions/sync_emoji: which stat types to
+                   capture (and advance the ceiling for) this walk.
+                   Doesn't change API call count - only DB write volume,
+                   CPU, and which ceiling(s) move.
+
+        Returns one of:
+            {'status': 'already_up_to_date', 'synced_through': {...}}
+            {'status': 'caught_up', 'processed': {'messages': N, 'mentions': N, 'emoji': N}, 'synced_through': <id>}
+            {'status': 'paused', 'processed': {'messages': N, 'mentions': N, 'emoji': N}, 'cursor': <id>}
+            {'status': 'failed', 'reason': str}
+
+        'processed' only contains keys for stat types enabled this call -
+        a stat you didn't pass sync_X=True for simply isn't a key in the
+        dict, rather than being reported as 0 (0 would wrongly imply it
+        was checked and found to have nothing new).
+        """
+        if not self.pool:
+            return {'status': 'error', 'reason': 'no_pool'}
+
+        enabled = {
+            'messages': sync_messages,
+            'mentions': sync_mentions,
+            'emoji': sync_emoji,
+        }
+        stats_run = [s for s in self.STAT_FLAGS if enabled[s]]
+        if not stats_run:
+            return {'status': 'error', 'reason': 'no_stat_types_enabled'}
+
+        guild_id = channel.guild.id
+        channel_id = channel.id
+        category_id = channel.category_id
+
+        # Make sure a row exists so downstream UPDATEs always have something
+        # to act on, even on the very first call for this channel.
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO history_sync_progress (guild_id, channel_id, status)
+                VALUES ($1, $2, 'pending')
+                ON CONFLICT (guild_id, channel_id) DO NOTHING
+            ''', guild_id, channel_id)
+            progress = await conn.fetchrow('''
+                SELECT * FROM history_sync_progress WHERE guild_id = $1 AND channel_id = $2
+            ''', guild_id, channel_id)
+
+        # targets: dict of stat -> ceiling-id-or-None, ONLY for stats enabled this call.
+        if progress['status'] == 'in_progress':
+            # Resuming a walk that was paused mid-way (max_pages, or a restart).
+            # The targets are re-read from each enabled stat's own ceiling - this
+            # is safe even mid-resume because ceilings are only ever written by
+            # _mark_channel_caught_up, which only fires once a walk fully ends.
+            cursor = progress['cursor_message_id']
+            targets = {s: progress[self.CEILING_COLUMN[s]] for s in stats_run}
+            walk_snapshot = progress['pending_ceiling_message_id']
+        else:
+            ceilings = {s: progress[self.CEILING_COLUMN[s]] for s in stats_run}
+            if all(c is not None for c in ceilings.values()):
+                # Every enabled stat already has a ceiling - cheaply check whether
+                # there's actually anything new before doing any real work. Uses
+                # the OLDEST of the enabled ceilings as the peek threshold, since
+                # that's the one furthest behind and therefore the one that
+                # determines whether a walk is needed at all.
+                oldest_ceiling = min(ceilings.values())
+                await self._wait_for_history_rate_limit()
+                peek = [msg async for msg in channel.history(limit=1)]
+                if not peek or peek[0].id <= oldest_ceiling:
+                    return {'status': 'already_up_to_date', 'synced_through': ceilings}
+
+                cursor = None              # start from the absolute newest message
+                targets = ceilings         # each stat stops at its OWN ceiling
+                walk_snapshot = None
+            else:
+                # At least one enabled stat has never been synced (NULL ceiling),
+                # so this walk must reach genesis for that stat regardless of
+                # where the other enabled stats' ceilings sit. Anchor the cursor
+                # at join time ONLY if NONE of the enabled stats have a ceiling
+                # yet - if some do, we still need to start from "now" so the
+                # already-ceilinged stats see (and skip) the gap between their
+                # ceiling and now, while the NULL stat walks the whole way down.
+                if all(c is None for c in ceilings.values()):
+                    cutoff = stop_before or getattr(
+                        channel.guild.me, 'joined_at', None)
+                    cursor = discord.utils.time_snowflake(
+                        cutoff, high=False) if cutoff else None
+                else:
+                    cursor = None
+                # mix of None (walk to genesis) and real ids
+                targets = ceilings
+                walk_snapshot = None
+
+        totals_by_stat = {s: 0 for s in stats_run}
+        pages_done = 0
+        reached_end = False
+
+        while True:
+            await self._wait_for_history_rate_limit()
+
+            before_obj = discord.Object(id=cursor) if cursor else None
+
+            try:
+                page = [msg async for msg in channel.history(limit=page_size, before=before_obj)]
+            except discord.Forbidden:
+                await self._mark_history_sync_failed(guild_id, channel_id, "missing permissions")
+                return {'status': 'failed', 'reason': 'forbidden'}
+            except discord.HTTPException as e:
+                await self._mark_history_sync_failed(guild_id, channel_id, str(e))
+                return {'status': 'failed', 'reason': str(e)}
+
+            if not page:
+                reached_end = True
+                break
+
+            if walk_snapshot is None:
+                # First page of this walk (fresh, not resumed) - this becomes the
+                # new ceiling, for whichever stats are running, once the walk
+                # finishes. Captured once, never recomputed on resumed calls, or
+                # the ceiling would silently creep forward past messages this
+                # walk never actually processed.
+                walk_snapshot = page[0].id
+
+            # Per-stat trim: each enabled stat only aggregates the slice of this
+            # page that's newer than ITS OWN target. A stat with target=None
+            # (never synced) takes the whole page; a stat with a real ceiling
+            # only takes messages newer than that ceiling, even on the same page
+            # another stat is still fully consuming.
+            trimmed_by_stat = {
+                s: [m for m in page if targets[s] is None or m.id > targets[s]]
+                for s in stats_run
+            }
+
+            # Per-stat page counts: how many messages THIS page contributed to
+            # each stat's own table - used both for the DB counters and for the
+            # final per-stat totals returned to the caller.
+            page_counts = {s: len(trimmed_by_stat[s]) for s in stats_run}
+
+            if any(trimmed_by_stat.values()):
+                message_buckets, mention_buckets, emoji_buckets = self._aggregate_history_page(
+                    trimmed_by_stat)
+
+                async with self.pool.acquire() as conn:
+                    async with conn.transaction():
+                        if 'messages' in stats_run:
+                            await self._bulk_upsert_message_buckets(conn, guild_id, channel_id, category_id, message_buckets)
+                        if 'mentions' in stats_run:
+                            await self._bulk_upsert_mention_buckets(conn, guild_id, channel_id, category_id, mention_buckets)
+                        if 'emoji' in stats_run:
+                            await self._bulk_upsert_emoji_buckets(conn, guild_id, channel_id, category_id, emoji_buckets)
+
+            crossed_all_targets = all(
+                targets[s] is not None and page[-1].id <= targets[s]
+                for s in stats_run
+            )
+            hit_genesis = len(page) < page_size
+            cursor = page[-1].id
+
+            await self._update_history_sync_progress(guild_id, channel_id, cursor, walk_snapshot, page_counts)
+            for s in stats_run:
+                totals_by_stat[s] += page_counts[s]
+
+            if crossed_all_targets or hit_genesis:
+                reached_end = True
+                break
+
+            pages_done += 1
+            if max_pages is not None and pages_done >= max_pages:
+                break
+
+        if reached_end:
+            await self._mark_channel_caught_up(guild_id, channel_id, walk_snapshot, stats_run)
+            return {
+                'status': 'caught_up',
+                'processed': totals_by_stat,
+                'synced_through': walk_snapshot,
+            }
+
+        return {
+            'status': 'paused',
+            'processed': totals_by_stat,
+            'cursor': cursor,
+        }
 
     # ======================================================================
     # CLEANUP TASKS - FIXED EXCEPTION HANDLING

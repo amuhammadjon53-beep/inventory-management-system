@@ -42,7 +42,6 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import paddle_webhooks
     from paddle_webhooks import verify_webhook_signature, process_event
-from datetime import datetime, timedelta, date, timezone
 from fastapi.encoders import jsonable_encoder
 import threading
 import base64
@@ -1390,7 +1389,492 @@ class GetCartResponse(BaseModel):
     cart: List[Dict[str, Any]] = []
     total_price_usd: float = 0.0
     error: Optional[str] = None
+ 
+ 
+class DiscordForbiddenError(Exception):
+    """Raised on a 403 from Discord's REST API (missing permissions)."""
+    pass
+ 
+ 
+class DiscordAPIError(Exception):
+    """Raised on any other non-2xx response from Discord's REST API."""
+    pass
 
+DISCORD_EPOCH_MS = 1420070400000
+ 
+# How long to sleep (seconds) when a rate-limit is hit before retrying once.
+_RATE_LIMIT_RETRY_CAP = 30.0
+
+
+def _time_snowflake(dt, high: bool = False) -> int:
+    """Reimplementation of discord.utils.time_snowflake (no REST/gateway
+    equivalent exists) - converts a datetime into the snowflake that would
+    have been minted at that moment, for use as a `before=` cursor anchor."""
+    ms = int(dt.timestamp() * 1000) - DISCORD_EPOCH_MS
+    if high:
+        return (ms << 22) | 0x3FFFFF
+    return ms << 22
+
+
+def _format_discord_user(author: dict) -> str:
+    """Reimplementation of str(discord.User) from a REST author dict.
+    Discord's new username system has discriminator '0' (no #tag); the
+    legacy system has a real 4-digit discriminator."""
+    username = author.get('username', 'unknown')
+    discriminator = author.get('discriminator')
+    if discriminator and discriminator != '0':
+        return f"{username}#{discriminator}"
+    return username
+
+
+class _RestMessage:
+    """Thin adapter so _aggregate_history_page's logic can stay nearly
+    identical to the discord.py-object version, instead of rewriting every
+    attribute access as dict lookups inline. Wraps one raw message dict
+    from Discord's REST API."""
+
+    def __init__(self, data: dict):
+        self._data = data
+        self.id = int(data['id'])
+        self.webhook_id = data.get('webhook_id')
+        author = data.get('author')
+        self.author = _RestUser(author) if author else None
+        self.created_at = datetime.fromisoformat(
+            data['timestamp'].replace('Z', '+00:00'))
+        self.content = data.get('content', '')
+        self.attachments = data.get('attachments', [])
+        self.embeds = data.get('embeds', [])
+        self.mentions = [_RestUser(m) for m in data.get('mentions', [])]
+
+
+class _RestUser:
+    """Thin adapter for a REST author/mention dict."""
+
+    def __init__(self, data: dict):
+        self.id = int(data['id'])
+        self.bot = bool(data.get('bot', False))
+        self._data = data
+
+    def __str__(self):
+        return _format_discord_user(self._data)
+
+
+    def _aggregate_history_page(self, messages_for_stat):
+        """UNCHANGED IN LOGIC from the discord.py-object version - only the
+        message objects passed in are now _RestMessage wrappers instead of
+        discord.Message. All attribute accesses (.webhook_id, .author.id,
+        .author.bot, .created_at, .content, .attachments, .embeds,
+        .mentions) work identically because of the adapter classes above."""
+        message_buckets = {}   # (hour, user_id) -> {...}
+        mention_buckets = {}   # (hour, mentioned_id, mentioner_id) -> {...}
+        emoji_buckets = {}     # (hour, user_id, emoji_str, is_custom) -> {...}
+
+        for message in messages_for_stat.get('messages', []):
+            if message.webhook_id is not None or message.author is None:
+                continue
+            created_at = ensure_aware(message.created_at)
+            hour = created_at.replace(minute=0, second=0, microsecond=0)
+            user_id = message.author.id
+
+            encrypted_username = self.encrypt_username(str(message.author))
+            key = (hour, user_id)
+            b = message_buckets.setdefault(key, {
+                'message_count': 0, 'total_chars': 0, 'attachment_count': 0,
+                'embed_count': 0, 'is_bot': message.author.bot,
+                'encrypted_username': encrypted_username,
+            })
+            b['message_count'] += 1
+            b['total_chars'] += len(message.content or '')
+            if message.attachments:
+                b['attachment_count'] += 1
+            if message.embeds:
+                b['embed_count'] += 1
+
+        for message in messages_for_stat.get('mentions', []):
+            if message.webhook_id is not None or message.author is None:
+                continue
+            created_at = ensure_aware(message.created_at)
+            hour = created_at.replace(minute=0, second=0, microsecond=0)
+            user_id = message.author.id
+            is_bot = message.author.bot
+
+            for mentioned_user in message.mentions:
+                if mentioned_user.id == user_id:
+                    continue
+                mkey = (hour, mentioned_user.id, user_id)
+                mb = mention_buckets.setdefault(mkey, {
+                    'mention_count': 0, 'is_bot': is_bot,
+                    'encrypted_username': self.encrypt_username(str(mentioned_user)),
+                })
+                mb['mention_count'] += 1
+
+        for message in messages_for_stat.get('emoji', []):
+            if message.webhook_id is not None or message.author is None:
+                continue
+            created_at = ensure_aware(message.created_at)
+            hour = created_at.replace(minute=0, second=0, microsecond=0)
+            user_id = message.author.id
+            is_bot = message.author.bot
+
+            content = (message.content or '').strip()
+            if content:
+                for ed in self._extract_all_emojis_from_content(content):
+                    ekey = (hour, user_id, ed['emoji_str'], ed['is_custom'])
+                    eb = emoji_buckets.setdefault(
+                        ekey, {'usage_count': 0, 'is_bot': is_bot})
+                    eb['usage_count'] += 1
+
+        return message_buckets, mention_buckets, emoji_buckets
+
+
+    # ------------------------------------------------------------------
+    # Internal helper: call discord_api.get_channel_history with one
+    # automatic retry on rate-limit, then fail hard on 403 or other errors.
+    # Returns the raw JSON list, or raises on unrecoverable failure.
+    # ------------------------------------------------------------------
+
+    async def _fetch_channel_history(self, guild_id: int, channel_id: int,
+                                    before=None, limit: int = 100) -> list | None:
+        """
+        Wraps discord_api.get_channel_history with:
+        - one automatic retry after sleeping retry_after on 429
+        - 'forbidden' sentinel (None) on 403 so callers can mark-and-bail
+        - re-raise on any other ExternalAPIError
+
+        Returns:
+            list of raw message dicts on success
+            None if the channel is forbidden (403)
+        """
+        for attempt in range(2):
+            try:
+                return await discord_api.get_channel_history(
+                    channel_id, before=before, limit=limit)
+            except ExternalAPIRateLimitError as e:
+                if attempt == 0:
+                    retry_after = min(
+                        float(e.context.get('retry_after', 1.0)),
+                        _RATE_LIMIT_RETRY_CAP,
+                    )
+                    await asyncio.sleep(retry_after)
+                    continue
+                # Second rate-limit in a row — give up for this page.
+                await self._mark_history_sync_failed(
+                    guild_id, channel_id,
+                    f"rate limited twice in a row: retry_after={e.context.get('retry_after')}"
+                )
+                return None  # caller checks for None → 'failed'
+            except ExternalAPIError as e:
+                if e.context.get('status_code') == 403:
+                    await self._mark_history_sync_failed(
+                        guild_id, channel_id, "missing permissions")
+                    return None  # caller checks for None → 'forbidden'
+                await self._mark_history_sync_failed(
+                    guild_id, channel_id, str(e))
+                return None
+
+    # Same wrapper for the cheaper single-message peek call.
+    async def _peek_channel_history(self, guild_id: int, channel_id: int) -> list | None:
+        """One-message peek with the same retry/forbidden logic."""
+        return await self._fetch_channel_history(
+            guild_id, channel_id, before=None, limit=1)
+
+
+    # ======================================================================
+    # MAIN ENTRY POINT (REST version)
+    # ======================================================================
+
+    async def sync_channel_history(
+        self,
+        guild_id: int,
+        channel_id: int,
+        category_id: Optional[int] = None,
+        page_size: int = 100,
+        max_pages=None,
+        stop_before=None,
+        sync_messages: bool = True,
+        sync_mentions: bool = True,
+        sync_emoji: bool = True,
+    ) -> dict:
+        """
+        REST-based rewrite of the original sync_channel_history. Same
+        behavior and same return shapes as before - the only change is
+        WHERE the data comes from (discord_api REST calls instead of a
+        live discord.py Channel object), since this runs in api.py's
+        process, which has no gateway connection.
+
+        Takes guild_id/channel_id/category_id directly instead of a
+        discord.py channel object - category_id is optional (pass it if
+        you already have it from a channel listing; if omitted, it's
+        looked up via discord_api on first use within a walk).
+
+        Everything else - including the docstring's behavioral guarantees
+        about per-stat ceilings, genesis walks, gap-fills, and 'processed'
+        only containing keys for enabled stat types - is identical to the
+        discord.py version. See that version's docstring for the full
+        behavioral contract; not repeated here for brevity.
+        """
+        if not self.pool:
+            return {'status': 'error', 'reason': 'no_pool'}
+
+        enabled = {
+            'messages': sync_messages,
+            'mentions': sync_mentions,
+            'emoji': sync_emoji,
+        }
+        stats_run = [s for s in self.STAT_FLAGS if enabled[s]]
+        if not stats_run:
+            return {'status': 'error', 'reason': 'no_stat_types_enabled'}
+
+        # Make sure a row exists so downstream UPDATEs always have something
+        # to act on, even on the very first call for this channel.
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute('''
+                    INSERT INTO history_sync_progress (guild_id, channel_id, status)
+                    VALUES ($1, $2, 'pending')
+                    ON CONFLICT (guild_id, channel_id) DO NOTHING
+                ''', guild_id, channel_id)
+                progress = await conn.fetchrow('''
+                    SELECT * FROM history_sync_progress WHERE guild_id = $1 AND channel_id = $2
+                ''', guild_id, channel_id)
+
+        except asyncpg.exceptions.PostgresConnectionError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while loading history sync progress",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            ) from e
+        except asyncpg.PostgresError as e:
+            if "timeout" in str(e).lower():
+                raise DatabaseTimeoutError(
+                    "Database operation timed out while loading history sync progress",
+                    context={'guild_id': guild_id, 'channel_id': channel_id},
+                    original=e
+                ) from e
+            else:
+                raise DatabaseQueryError(
+                    "Failed to load history sync progress",
+                    context={'guild_id': guild_id, 'channel_id': channel_id},
+                    original=e
+                ) from e
+        except DatabaseError:
+            raise
+        except Exception as e:
+            raise DatabaseQueryError(
+                "Unexpected error loading history sync progress",
+                context={'guild_id': guild_id, 'channel_id': channel_id},
+                original=e
+            ) from e
+
+        # targets: dict of stat -> ceiling-id-or-None, ONLY for stats enabled this call.
+        if progress['status'] == 'in_progress':
+            cursor = progress['cursor_message_id']
+            targets = {s: progress[self.CEILING_COLUMN[s]] for s in stats_run}
+            walk_snapshot = progress['pending_ceiling_message_id']
+        else:
+            ceilings = {s: progress[self.CEILING_COLUMN[s]] for s in stats_run}
+            if all(c is not None for c in ceilings.values()):
+                oldest_ceiling = min(ceilings.values())
+                await self._wait_for_history_rate_limit()
+
+                peek = await self._peek_channel_history(guild_id, channel_id)
+                if peek is None:
+                    # _peek_channel_history already called _mark_history_sync_failed
+                    return {'status': 'failed', 'reason': 'discord_api_error'}
+
+                if not peek or int(peek[0]['id']) <= oldest_ceiling:
+                    return {'status': 'already_up_to_date', 'synced_through': ceilings}
+
+                cursor = None
+                targets = ceilings
+                walk_snapshot = None
+            else:
+                if all(c is None for c in ceilings.values()):
+                    cutoff = stop_before
+                    if cutoff is None:
+                        # get_bot_joined_at uses ExternalAPIRateLimitError /
+                        # ExternalAPIError internally; bubble them up - the
+                        # background task wrapper in api.py will log them.
+                        cutoff = await discord_api.get_bot_joined_at(guild_id)
+                    cursor = _time_snowflake(cutoff, high=False) if cutoff else None
+                else:
+                    cursor = None
+                targets = ceilings
+                walk_snapshot = None
+
+        totals_by_stat = {s: 0 for s in stats_run}
+        pages_done = 0
+        reached_end = False
+
+        while True:
+            await self._wait_for_history_rate_limit()
+
+            raw_page = await self._fetch_channel_history(
+                guild_id, channel_id, before=cursor, limit=page_size)
+            if raw_page is None:
+                # _fetch_channel_history already called _mark_history_sync_failed
+                return {'status': 'failed', 'reason': 'discord_api_error'}
+
+            page = [_RestMessage(m) for m in raw_page]
+
+            if not page:
+                reached_end = True
+                break
+
+            if walk_snapshot is None:
+                walk_snapshot = page[0].id
+
+            trimmed_by_stat = {
+                s: [m for m in page if targets[s] is None or m.id > targets[s]]
+                for s in stats_run
+            }
+            page_counts = {s: len(trimmed_by_stat[s]) for s in stats_run}
+
+            if any(trimmed_by_stat.values()):
+                message_buckets, mention_buckets, emoji_buckets = self._aggregate_history_page(
+                    trimmed_by_stat)
+
+                try:
+                    async with self.pool.acquire() as conn:
+                        async with conn.transaction():
+                            if 'messages' in stats_run:
+                                await self._bulk_upsert_message_buckets(conn, guild_id, channel_id, category_id, message_buckets)
+                            if 'mentions' in stats_run:
+                                await self._bulk_upsert_mention_buckets(conn, guild_id, channel_id, category_id, mention_buckets)
+                            if 'emoji' in stats_run:
+                                await self._bulk_upsert_emoji_buckets(conn, guild_id, channel_id, category_id, emoji_buckets)
+
+                except asyncpg.exceptions.PostgresConnectionError as e:
+                    raise DatabaseConnectionError(
+                        "Database connection failed while writing history sync page",
+                        context={'guild_id': guild_id, 'channel_id': channel_id},
+                        original=e
+                    ) from e
+                except asyncpg.PostgresError as e:
+                    if "timeout" in str(e).lower():
+                        raise DatabaseTimeoutError(
+                            "Database operation timed out while writing history sync page",
+                            context={'guild_id': guild_id, 'channel_id': channel_id},
+                            original=e
+                        ) from e
+                    else:
+                        raise DatabaseQueryError(
+                            "Failed to write history sync page",
+                            context={'guild_id': guild_id, 'channel_id': channel_id},
+                            original=e
+                        ) from e
+                except DatabaseError:
+                    raise
+                except Exception as e:
+                    raise DatabaseQueryError(
+                        "Unexpected error writing history sync page",
+                        context={'guild_id': guild_id, 'channel_id': channel_id},
+                        original=e
+                    ) from e
+
+            crossed_all_targets = all(
+                targets[s] is not None and page[-1].id <= targets[s]
+                for s in stats_run
+            )
+            hit_genesis = len(page) < page_size
+            cursor = page[-1].id
+
+            await self._update_history_sync_progress(guild_id, channel_id, cursor, walk_snapshot, page_counts)
+            for s in stats_run:
+                totals_by_stat[s] += page_counts[s]
+
+            if crossed_all_targets or hit_genesis:
+                reached_end = True
+                break
+
+            pages_done += 1
+            if max_pages is not None and pages_done >= max_pages:
+                break
+
+        if reached_end:
+            await self._mark_channel_caught_up(guild_id, channel_id, walk_snapshot, stats_run)
+            return {
+                'status': 'caught_up',
+                'processed': totals_by_stat,
+                'synced_through': walk_snapshot,
+            }
+
+        return {
+            'status': 'paused',
+            'processed': totals_by_stat,
+            'cursor': cursor,
+        }
+
+    # ======================================================================
+    # init_guild_history_sync - SMALL SIGNATURE CHANGE
+    # Was: async def init_guild_history_sync(self, guild, channel_ids=None)
+    # Now: takes guild_id, fetches the channel list via discord_api instead
+    # of reading guild.text_channels off a live discord.py object.
+    # Body otherwise unchanged from the version with DB error handling
+    # added earlier.
+    # ======================================================================
+
+    async def init_guild_history_sync(self, guild_id: int, channel_ids=None) -> int:
+        """Seed 'pending' rows for a guild's text channels (or a specific
+        subset via channel_ids). Purely a convenience for showing a status
+        list before any sync has run - sync_channel_history() will create
+        its own row on first call regardless. Returns channels queued."""
+        if not self.pool:
+            return 0
+
+        try:
+            all_channels = await discord_api.get_text_channels(guild_id)
+        except ExternalAPIRateLimitError as e:
+            # Treat rate-limit on init the same as any other Discord failure:
+            # nothing was written, so return 0 and let the caller retry.
+            return 0
+        except ExternalAPIError:
+            return 0
+
+        text_channels = [
+            c for c in all_channels
+            if (not channel_ids or int(c['id']) in channel_ids)
+        ]
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    for channel in text_channels:
+                        await conn.execute('''
+                            INSERT INTO history_sync_progress (guild_id, channel_id, status)
+                            VALUES ($1, $2, 'pending')
+                            ON CONFLICT (guild_id, channel_id) DO NOTHING
+                        ''', guild_id, int(channel['id']))
+
+            return len(text_channels)
+
+        except asyncpg.exceptions.PostgresConnectionError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while seeding history sync rows",
+                context={'guild_id': guild_id},
+                original=e
+            ) from e
+        except asyncpg.PostgresError as e:
+            if "timeout" in str(e).lower():
+                raise DatabaseTimeoutError(
+                    "Database operation timed out while seeding history sync rows",
+                    context={'guild_id': guild_id},
+                    original=e
+                ) from e
+            else:
+                raise DatabaseQueryError(
+                    "Failed to seed history sync rows",
+                    context={'guild_id': guild_id},
+                    original=e
+                ) from e
+        except DatabaseError:
+            raise
+        except Exception as e:
+            raise DatabaseQueryError(
+                "Unexpected error seeding history sync rows",
+                context={'guild_id': guild_id},
+                original=e
+            ) from e
 
 class GrowthForecaster:
     """
@@ -2752,6 +3236,108 @@ class DiscordAPI:
                 deleted_count += 1
 
         return filtered_items
+    
+    async def get_text_channels(self, guild_id) -> list:
+        """REST equivalent of guild.text_channels. Returns a list of dicts
+        with at least 'id', 'name', 'parent_id' (category_id) for every
+        type==0 (GUILD_TEXT) channel in the guild."""
+        url = f"{DISCORD_API_BASE}/guilds/{guild_id}/channels"
+        async with self.session.get(url, headers=self._headers) as resp:
+            if resp.status == 429:
+                retry_after = float(resp.headers.get('Retry-After', 1.0))
+                raise ExternalAPIRateLimitError(
+                    f"Rate limited listing channels for guild {guild_id}",
+                    context={'api': 'discord', 'endpoint': 'guilds/{guild_id}/channels',
+                             'guild_id': guild_id, 'retry_after': retry_after}
+                )
+            if resp.status != 200:
+                body = await resp.text()
+                raise ExternalAPIError(
+                    f"Failed to list channels for guild {guild_id}",
+                    context={'api': 'discord', 'endpoint': 'guilds/{guild_id}/channels',
+                             'guild_id': guild_id, 'status_code': resp.status, 'body': body}
+                )
+            channels = await resp.json()
+ 
+        return [c for c in channels if c.get('type') == 0]
+ 
+    async def get_channel_history(self, channel_id, before=None, limit: int = 100) -> list:
+        """REST equivalent of channel.history(limit=, before=). before is a
+        snowflake (int or str), not a discord.Object. Returns Discord's raw
+        message JSON list, newest-first (same ordering history() yields)."""
+        url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
+        params = {"limit": limit}
+        if before is not None:
+            params["before"] = str(before)
+ 
+        async with self.session.get(url, headers=self._headers, params=params) as resp:
+            if resp.status == 429:
+                retry_after = float(resp.headers.get('Retry-After', 1.0))
+                raise ExternalAPIRateLimitError(
+                    f"Rate limited reading history for channel {channel_id}",
+                    context={'api': 'discord', 'endpoint': 'channels/{channel_id}/messages',
+                             'channel_id': channel_id, 'retry_after': retry_after}
+                )
+            if resp.status != 200:
+                body = await resp.text()
+                raise ExternalAPIError(
+                    f"Failed to fetch history for channel {channel_id}",
+                    context={'api': 'discord', 'endpoint': 'channels/{channel_id}/messages',
+                             'channel_id': channel_id, 'status_code': resp.status, 'body': body}
+                )
+            return await resp.json()
+ 
+    async def get_bot_user_id(self) -> int:
+        """Fetches and caches the bot's own user id via GET /users/@me,
+        needed for the joined_at lookup below (Discord doesn't expose
+        'when did the bot join' any other way)."""
+        if getattr(self, '_bot_user_id', None) is not None:
+            return self._bot_user_id
+ 
+        url = f"{DISCORD_API_BASE}/users/@me"
+        async with self.session.get(url, headers=self._headers) as resp:
+            if resp.status == 429:
+                retry_after = float(resp.headers.get('Retry-After', 1.0))
+                raise ExternalAPIRateLimitError(
+                    "Rate limited fetching bot user",
+                    context={'api': 'discord', 'endpoint': 'users/@me',
+                             'retry_after': retry_after}
+                )
+            if resp.status != 200:
+                body = await resp.text()
+                raise ExternalAPIError(
+                    "Failed to fetch bot user",
+                    context={'api': 'discord', 'endpoint': 'users/@me',
+                             'status_code': resp.status, 'body': body}
+                )
+            data = await resp.json()
+ 
+        self._bot_user_id = int(data['id'])
+        return self._bot_user_id
+ 
+    async def get_bot_joined_at(self, guild_id):
+        """REST equivalent of channel.guild.me.joined_at. Returns a
+        timezone-aware datetime, or None if it can't be determined."""
+        bot_user_id = await self.get_bot_user_id()
+        url = f"{DISCORD_API_BASE}/guilds/{guild_id}/members/{bot_user_id}"
+        async with self.session.get(url, headers=self._headers) as resp:
+            if resp.status == 429:
+                retry_after = float(resp.headers.get('Retry-After', 1.0))
+                raise ExternalAPIRateLimitError(
+                    f"Rate limited fetching bot member for guild {guild_id}",
+                    context={'api': 'discord', 'endpoint': 'guilds/{guild_id}/members/{user_id}',
+                             'guild_id': guild_id, 'retry_after': retry_after}
+                )
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+ 
+        joined_at_str = data.get('joined_at')
+        if not joined_at_str:
+            return None
+        return datetime.fromisoformat(joined_at_str)
+
+
 
 # ============================================
 # CONSTANTS
@@ -20026,6 +20612,13 @@ class DatabaseStatsAPI:
                 )
 
                 return dict(updated) if updated else None
+            
+   
+
+
+
+
+    
 
 
 # ======================================================================
@@ -45050,6 +45643,492 @@ async def get_staff_grants_for_guild(
     except Exception as e:
         logger.error(f"Error in get_staff_grants_for_guild: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+_running_history_syncs: Dict[tuple, asyncio.Task] = {}
+ 
+ADMIN_PERMISSION = 0x8
+ 
+ 
+async def _check_guild_admin(user: Dict, guild_id_int: int) -> None:
+    """
+    Verifies the user has the Administrator permission (0x8) on the given
+    guild, using the same permissions field stored by get_user_servers.
+ 
+    Raises HTTPException 403 if not an admin.
+    Raises HTTPException 404 if the guild isn't in their server list at all.
+    """
+    discord_id = user['discord_id']
+    servers = await auth_db.get_user_servers(discord_id)
+ 
+    for s in servers:
+        if str(s['guild_id']) == str(guild_id_int):
+            try:
+                permissions_int = int(str(s.get('permissions', '0')))
+            except (ValueError, TypeError):
+                permissions_int = 0
+ 
+            if (permissions_int & ADMIN_PERMISSION) != 0:
+                return  # all good
+ 
+            raise HTTPException(
+                status_code=403,
+                detail="You must be a server administrator to perform this action"
+            )
+ 
+    raise HTTPException(
+        status_code=404,
+        detail="Guild not found in your server list"
+    )
+ 
+ 
+class HistorySyncInitRequest(BaseModel):
+    guild_id: str
+    channel_ids: Optional[List[str]] = None
+ 
+ 
+class HistorySyncStartRequest(BaseModel):
+    guild_id: str
+    channel_id: str
+    page_size: int = 100
+    max_pages: Optional[int] = None
+    sync_messages: bool = True
+    sync_mentions: bool = True
+    sync_emoji: bool = True
+ 
+ 
+class HistorySyncStartAllRequest(BaseModel):
+    guild_id: str
+    page_size: int = 100
+    max_pages: Optional[int] = None
+    sync_messages: bool = True
+    sync_mentions: bool = True
+    sync_emoji: bool = True
+ 
+ 
+class HistorySyncCancelRequest(BaseModel):
+    guild_id: str
+    channel_id: str
+ 
+ 
+class HistorySyncResetRequest(BaseModel):
+    guild_id: str
+    channel_id: str
+    stats: Optional[List[str]] = None
+ 
+ 
+async def _run_channel_history_sync(guild_id_int: int, channel_id_int: int, category_id: Optional[int],
+                                     page_size: int, max_pages: Optional[int],
+                                     sync_messages: bool, sync_mentions: bool, sync_emoji: bool):
+    """Background task wrapper - lets /sync return immediately and gives
+    /pause and /cancel something to cancel()."""
+    key = (guild_id_int, channel_id_int)
+    try:
+        await db_stats.sync_channel_history(
+            guild_id_int, channel_id_int, category_id=category_id,
+            page_size=page_size,
+            max_pages=max_pages,
+            sync_messages=sync_messages,
+            sync_mentions=sync_mentions,
+            sync_emoji=sync_emoji,
+        )
+    except asyncio.CancelledError:
+        logger.info(
+            f"History sync paused/cancelled for guild={guild_id_int} channel={channel_id_int}")
+    except Exception as e:
+        logger.error(
+            f"Background history sync failed for guild={guild_id_int} channel={channel_id_int}: {e}")
+        logger.error(traceback.format_exc())
+    finally:
+        _running_history_syncs.pop(key, None)
+ 
+ 
+@app.post("/api/history-sync/init")
+async def history_sync_init(
+    request: HistorySyncInitRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Seed 'pending' rows for a guild's text channels (or a specific subset)."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+ 
+    try:
+        try:
+            guild_id_int = int(request.guild_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid guild_id format: {request.guild_id}")
+ 
+    
+ 
+        channel_ids_int = None
+        if request.channel_ids:
+            try:
+                channel_ids_int = {int(c) for c in request.channel_ids}
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid channel_id format: {e}")
+ 
+        queued = await db_stats.init_guild_history_sync(guild_id_int, channel_ids_int)
+ 
+        return {"guild_id": request.guild_id, "channels_queued": queued}
+ 
+    except HTTPException:
+        raise
+    except DatabaseError as e:
+        logger.error(f"Database error in history_sync_init: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in history_sync_init: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+ 
+ 
+@app.get("/api/history-sync/status")
+async def history_sync_status(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get the guild-wide history sync summary."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+ 
+    try:
+        try:
+            guild_id_int = int(guild_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid guild_id format: {guild_id}")
+ 
+        
+        result = await db_stats.get_guild_history_sync_status(guild_id_int)
+        return result
+ 
+    except HTTPException:
+        raise
+    except DatabaseError as e:
+        logger.error(f"Database error in history_sync_status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in history_sync_status: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+ 
+ 
+@app.post("/api/history-sync/sync")
+async def history_sync_start(
+    request: HistorySyncStartRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Kick off (or resume) a history sync for ONE channel, in the background."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+ 
+    try:
+        try:
+            guild_id_int = int(request.guild_id)
+            channel_id_int = int(request.channel_id)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid ID format: {e}")
+ 
+
+ 
+        if not (request.sync_messages or request.sync_mentions or request.sync_emoji):
+            raise HTTPException(
+                status_code=400, detail="At least one of sync_messages/sync_mentions/sync_emoji must be true")
+ 
+        key = (guild_id_int, channel_id_int)
+        if key in _running_history_syncs and not _running_history_syncs[key].done():
+            return {
+                "guild_id": request.guild_id,
+                "channel_id": request.channel_id,
+                "status": "already_running",
+            }
+ 
+        try:
+            channels = await discord_api.get_text_channels(guild_id_int)
+        except ExternalAPIRateLimitError as e:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Discord rate limited; retry after {e.context.get('retry_after', 1)} seconds"
+            )
+        except ExternalAPIError as e:
+            if e.context.get('status_code') == 403:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Missing permissions to view channels in this guild"
+                )
+            raise HTTPException(status_code=502, detail=str(e))
+ 
+        channel_meta = next(
+            (c for c in channels if int(c['id']) == channel_id_int), None)
+        if not channel_meta:
+            raise HTTPException(status_code=404, detail="Channel not found")
+ 
+        category_id = int(channel_meta['parent_id']) if channel_meta.get(
+            'parent_id') else None
+ 
+        task = asyncio.create_task(_run_channel_history_sync(
+            guild_id_int, channel_id_int, category_id,
+            request.page_size, request.max_pages,
+            request.sync_messages, request.sync_mentions, request.sync_emoji,
+        ))
+        _running_history_syncs[key] = task
+ 
+        return {
+            "guild_id": request.guild_id,
+            "channel_id": request.channel_id,
+            "status": "started",
+            "stat_types": [s for s, enabled in (
+                ('messages', request.sync_messages),
+                ('mentions', request.sync_mentions),
+                ('emoji', request.sync_emoji),
+            ) if enabled],
+        }
+ 
+    except HTTPException:
+        raise
+    except DatabaseError as e:
+        logger.error(f"Database error in history_sync_start: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in history_sync_start: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+ 
+ 
+@app.post("/api/history-sync/sync-all")
+async def history_sync_start_all(
+    request: HistorySyncStartAllRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Kick off a history sync for EVERY text channel in the guild."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+ 
+    try:
+        try:
+            guild_id_int = int(request.guild_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid guild_id format: {request.guild_id}")
+ 
+        
+ 
+        if not (request.sync_messages or request.sync_mentions or request.sync_emoji):
+            raise HTTPException(
+                status_code=400, detail="At least one of sync_messages/sync_mentions/sync_emoji must be true")
+ 
+        try:
+            channels = await discord_api.get_text_channels(guild_id_int)
+        except ExternalAPIRateLimitError as e:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Discord rate limited; retry after {e.context.get('retry_after', 1)} seconds"
+            )
+        except ExternalAPIError as e:
+            if e.context.get('status_code') == 403:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Missing permissions to view channels in this guild"
+                )
+            raise HTTPException(status_code=502, detail=str(e))
+ 
+        if not channels:
+            raise HTTPException(status_code=404, detail="Guild not found or has no text channels")
+ 
+        started = []
+        skipped = []
+        for channel_meta in channels:
+            channel_id_int = int(channel_meta['id'])
+            key = (guild_id_int, channel_id_int)
+            if key in _running_history_syncs and not _running_history_syncs[key].done():
+                skipped.append(str(channel_id_int))
+                continue
+ 
+            category_id = int(channel_meta['parent_id']) if channel_meta.get(
+                'parent_id') else None
+ 
+            task = asyncio.create_task(_run_channel_history_sync(
+                guild_id_int, channel_id_int, category_id,
+                request.page_size, request.max_pages,
+                request.sync_messages, request.sync_mentions, request.sync_emoji,
+            ))
+            _running_history_syncs[key] = task
+            started.append(str(channel_id_int))
+ 
+        return {
+            "guild_id": request.guild_id,
+            "started_channels": started,
+            "skipped_channels": skipped,
+        }
+ 
+    except HTTPException:
+        raise
+    except DatabaseError as e:
+        logger.error(f"Database error in history_sync_start_all: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in history_sync_start_all: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+ 
+ 
+@app.post("/api/history-sync/pause")
+async def history_sync_pause(
+    request: HistorySyncCancelRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Pause a running sync for one channel. Resumes from its persisted
+    cursor on the next /sync call for that channel."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+ 
+    try:
+        try:
+            guild_id_int = int(request.guild_id)
+            channel_id_int = int(request.channel_id)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid ID format: {e}")
+ 
+       
+ 
+        key = (guild_id_int, channel_id_int)
+        task = _running_history_syncs.get(key)
+        if not task or task.done():
+            return {
+                "guild_id": request.guild_id,
+                "channel_id": request.channel_id,
+                "status": "not_running",
+            }
+ 
+        task.cancel()
+        _running_history_syncs.pop(key, None)
+ 
+        return {
+            "guild_id": request.guild_id,
+            "channel_id": request.channel_id,
+            "status": "paused",
+        }
+ 
+    except HTTPException:
+        raise
+    except DatabaseError as e:
+        logger.error(f"Database error in history_sync_pause: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in history_sync_pause: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+ 
+ 
+@app.post("/api/history-sync/cancel")
+async def history_sync_cancel(
+    request: HistorySyncCancelRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Cancel a running sync for one channel (mechanically identical to
+    /pause - kept as a separate endpoint to keep caller intent distinct)."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+ 
+    try:
+        try:
+            guild_id_int = int(request.guild_id)
+            channel_id_int = int(request.channel_id)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid ID format: {e}")
+ 
+ 
+ 
+        key = (guild_id_int, channel_id_int)
+        task = _running_history_syncs.get(key)
+        if not task or task.done():
+            return {
+                "guild_id": request.guild_id,
+                "channel_id": request.channel_id,
+                "status": "not_running",
+            }
+ 
+        task.cancel()
+        _running_history_syncs.pop(key, None)
+ 
+        return {
+            "guild_id": request.guild_id,
+            "channel_id": request.channel_id,
+            "status": "cancelled",
+        }
+ 
+    except HTTPException:
+        raise
+    except DatabaseError as e:
+        logger.error(f"Database error in history_sync_cancel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in history_sync_cancel: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+ 
+ 
+@app.post("/api/history-sync/reset")
+async def history_sync_reset(
+    request: HistorySyncResetRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Wipe a channel's progress for the selected stat type(s) so the next
+    /sync call does a full genesis walk again for just those types. Cancels
+    any in-flight sync for the channel first."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+ 
+    try:
+        try:
+            guild_id_int = int(request.guild_id)
+            channel_id_int = int(request.channel_id)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid ID format: {e}")
+ 
+        
+ 
+        if request.stats is not None:
+            invalid = set(request.stats) - {'messages', 'mentions', 'emoji'}
+            if invalid:
+                raise HTTPException(
+                    status_code=400, detail=f"Unknown stat type(s): {invalid}")
+ 
+        key = (guild_id_int, channel_id_int)
+        task = _running_history_syncs.get(key)
+        if task and not task.done():
+            task.cancel()
+            _running_history_syncs.pop(key, None)
+ 
+        await db_stats.reset_channel_history_sync(
+            guild_id_int, channel_id_int, stats=request.stats
+        )
+ 
+        return {
+            "guild_id": request.guild_id,
+            "channel_id": request.channel_id,
+            "status": "reset",
+            "stats_reset": request.stats or ['messages', 'mentions', 'emoji'],
+        }
+ 
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseError as e:
+        logger.error(f"Database error in history_sync_reset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in history_sync_reset: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============================================
 # PUBLIC ENDPOINTS (No Authentication Required)
 # ============================================
