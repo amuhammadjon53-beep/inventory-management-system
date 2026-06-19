@@ -263,17 +263,11 @@ const NavBar = () => {
         <a href="/Dashboard/Activity/" className={`mobile-nav-link ${isDashboardPageActive('Activity') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">🎮</span>Status Activity
         </a>
-        <a href="/Dashboard/Distribution/" className={`mobile-nav-link ${isDashboardPageActive('Distribution') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">📊</span>Distribution
-        </a>
         <a href="/Dashboard/Emoji Tracking/" className={`mobile-nav-link ${isDashboardPageActive('Emoji Tracking') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">😊</span>Emojis
         </a>
         <a href="/Dashboard/Invite Tracking/" className={`mobile-nav-link ${isDashboardPageActive('Invite Tracking') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">📨</span>Invites
-        </a>
-        <a href="/Dashboard/Mentions/" className={`mobile-nav-link ${isDashboardPageActive('Mentions') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">🔔</span>Mentions
         </a>
         <a href="/Dashboard/Growth/" className={`mobile-nav-link ${isDashboardPageActive('Growth') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">📈</span>Growth
@@ -289,9 +283,6 @@ const NavBar = () => {
         </a>
         <a href="/Dashboard/Reset/" className={`mobile-nav-link ${isDashboardPageActive('Reset') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
           <span className="mobile-nav-icon">🗑️</span>Reset Stats
-        </a>
-        <a href="/Dashboard/Subscriptions/" className={`mobile-nav-link ${isDashboardPageActive('Subscriptions') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">💎</span>Subscriptions
         </a>
       </div>
     </div>
