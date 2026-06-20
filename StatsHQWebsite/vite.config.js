@@ -34,6 +34,7 @@ export default defineConfig({
         invites: path.resolve(__dirname, 'Dashboard/Invite Tracking/index.html'),
         growth: path.resolve(__dirname, 'Dashboard/Growth/index.html'),
         settings: path.resolve(__dirname, 'Dashboard/Settings/index.html'),
+        history: path.resolve(__dirname, 'Dashboard/History Data Sync/index.html'),
         resetStats: path.resolve(__dirname, 'Dashboard/Reset/index.html'),
         blacklist: path.resolve(__dirname, 'Dashboard/Blacklist/index.html'),
         debug: path.resolve(__dirname, 'Dashboard/Debug/index.html'),

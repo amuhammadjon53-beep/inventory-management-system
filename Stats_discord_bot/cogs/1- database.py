@@ -3149,6 +3149,17 @@ class DatabaseStats(commands.Cog):
                 ''')
                 print("  ✅ Created/verified table: refunds")
 
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS history_sync_guild_cooldown (
+                        guild_id BIGINT PRIMARY KEY,
+                        last_sync_started_at TIMESTAMPTZ NOT NULL,
+                        last_sync_completed_at TIMESTAMPTZ NOT NULL,
+                        last_sync_stat_types TEXT[],
+                        eligible_at TIMESTAMPTZ NOT NULL
+                    )
+                ''')
+                print("  ✅ Created/verified table: history sync guild cooldown")
+
                 # ----- indexes for paddle tables -----
                 paddle_index_queries = [
                     'CREATE INDEX IF NOT EXISTS idx_subscriptions_discord ON subscriptions(discord_id)',
@@ -3332,6 +3343,7 @@ class DatabaseStats(commands.Cog):
                     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS revoked_by_discord_id TEXT",
                     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ",
                     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS guild_name TEXT",
+                    "ALTER TABLE history_sync_progress ADD COLUMN IF NOT EXISTS sync_depth_cutoff TIMESTAMPTZ",
                 ]
 
                 for query in alter_queries:
