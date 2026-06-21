@@ -1245,9 +1245,9 @@ const SettingsDashboard = () => {
   };
 
   const settingDisplayNames = {
-    prefix: 'Prefix', timezone: 'Timezone', voice_states: 'Voice states',
-    bot_filter: 'Bot filter', permission_level: 'Command permission access level',
-    dashboard_access_level: 'Dashboard access level',
+    prefix: 'Prefix', timezone: 'Timezone', voice_states: 'Voice States',
+    bot_filter: 'Bot Filter', permission_level: 'Command Permission Access Level',
+    dashboard_access_level: 'Dashboard Access Level',
   };
 
   const updateSetting = async (setting, value) => {
@@ -1336,7 +1336,7 @@ const SettingsDashboard = () => {
                     </SettingsCard>
 
                     {/* 2 — Bot Filter */}
-                    <SettingsCard title="Bot filter" icon={<Bot size={22} color={ACCENT} />}
+                    <SettingsCard title="Bot Filter" icon={<Bot size={22} color={ACCENT} />}
                       description="Filter bots from statistics">
                       <BotFilterSetting enabled={settings.bot_filter}
                         onSave={(v) => updateSetting('bot_filter', v)} saving={saving.botFilter} />
@@ -1350,7 +1350,7 @@ const SettingsDashboard = () => {
                     </SettingsCard>
 
                     {/* 4 — Default Time Period */}
-                    <SettingsCard title="Default time period" icon={<Clock size={22} color={ACCENT} />}
+                    <SettingsCard title="Default Time Period" icon={<Clock size={22} color={ACCENT} />}
                       description="Set the default time period used across bot commands and the dashboard"
                       infoDescriptions={[
                         { level: 'All time',       description: 'No time filter — all historical data is used' },
@@ -1363,19 +1363,30 @@ const SettingsDashboard = () => {
                     </SettingsCard>
 
                     {/* 5 — Voice States */}
-                    <SettingsCard title="Voice states" icon={<Volume2 size={22} color={ACCENT} />}
-                      description="Choose which voice states to track">
+                    <SettingsCard title="Voice States" icon={<Volume2 size={22} color={ACCENT} />}
+                      description="Choose which voice states to track"
+                      infoDescriptions={[
+                        { level: 'Your choice',     description: 'Whichever states you select below are the ones the bot will track and log stats for. Anything left unchecked is ignored entirely.' },
+                        { level: 'AFK',             description: 'User is sitting in the AFK channel' },
+                        { level: 'Self mute',       description: 'User muted their own mic' },
+                        { level: 'Self deafen',     description: 'User deafened themselves' },
+                        { level: 'Server mute',     description: 'A moderator muted the user' },
+                        { level: 'Server deafen',   description: 'A moderator deafened the user' },
+                        { level: 'Streaming',       description: 'User is screen sharing / streaming' },
+                        { level: 'Video',           description: 'User has their camera on' },
+                        { level: 'Suppressed',      description: 'User is a stage audience member without speaker permission' },
+                      ]}>
                       <VoiceStatesSetting currentStates={settings.voice_states}
                         onSave={(v) => updateSetting('voice_states', v)} saving={saving.voiceStates} />
                     </SettingsCard>
 
                     {/* 6 — Command Permission Access Level */}
                     <SettingsCard
-                      title="Command permission" icon={<UserRoundKey size={22} color={ACCENT} />}
+                      title="Command Permission Access Level" icon={<UserRoundKey size={22} color={ACCENT} />}
                       description="Control who can use bot commands"
                       infoDescriptions={[
                         { level: 'All',              description: 'All members regardless of their permissions are allowed to use any command on the bot including sensitive commands like reset and blacklist.' },
-                        { level: 'Default',          description: 'The default access level that restricts or enables specific commands for users with specific permissions. All commands are usable by normal members except blacklist and settings (Manage Server) and reset commands (Administrator).' },
+                        { level: 'Default',          description: 'All commands are usable by normal members except blacklist and settings (Manage Server) and reset commands (Administrator).' },
                         { level: 'User restriction', description: 'Mostly the same as Default except users can only use commands that have the user scope on their own account only.' },
                         { level: 'Moderator',        description: 'Only users with the Manage Server permission can use any commands on the bot.' },
                         { level: 'Admin',            description: 'Only users with the Administrator permission can use any commands on the bot.' },
@@ -1386,7 +1397,7 @@ const SettingsDashboard = () => {
 
                     {/* 7 — Dashboard Access Level */}
                     <SettingsCard
-                      title="Dashboard access" icon={<LayoutDashboard size={22} color={ACCENT} />}
+                      title="Dashboard Access Level" icon={<LayoutDashboard size={22} color={ACCENT} />}
                       description="Control who can view the web dashboard"
                       infoDescriptions={[
                         { level: 'Public',    description: 'Any member of the server can view the entire dashboard including the optimization section.' },
@@ -1400,8 +1411,8 @@ const SettingsDashboard = () => {
 
                     {/* 8 — History Data Sync */}
                     <SettingsCard
-                      title="History data sync" icon={<History size={22} color={ACCENT} />}
-                      description="Backfill historical message, mention, and emoji data">
+                      title="History Data Sync" icon={<History size={22} color={ACCENT} />}
+                      description="Backfill historical messages, mentions, and emoji data from before the bot's join.">
                       <HistorySyncLinkBox />
                     </SettingsCard>
 
