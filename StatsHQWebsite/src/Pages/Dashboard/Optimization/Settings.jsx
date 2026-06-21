@@ -1,11 +1,38 @@
 import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
+import ReactDOM from "react-dom";
 import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
+import {
+  ALargeSmall,
+  Earth,
+  Volume2,
+  Bot,
+  UserRoundKey,
+  LayoutDashboard,
+  Clock,
+  History,
+  Globe,
+  Cog,
+  UserCog,
+  ShieldUser,
+  Crown,
+  User,
+  MicOff,
+  HeadphoneOff,
+  MouseOff,
+  TvMinimalPlay,
+  Video,
+  CircleOff,
+  VolumeX,
+  EarOff,
+  Info,
+} from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 const NAVBAR_HEIGHT = "80px";
+const ACCENT = "#aa00ff";
 
 // PRIVILEGED USERS - bypass all access levels
 const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
@@ -30,24 +57,9 @@ const styles = `
     letter-spacing: 0.5px;
   }
 
-  html {
-    min-height: 100%;
-    background-color: #0a0a0a;
-  }
-
-  body {
-    min-height: 100vh;
-    margin: 0;
-    padding: 0;
-    background-color: #0a0a0a;
-    color: #ffffff;
-    overflow-y: auto;
-  }
-
-  #app {
-    min-height: 100vh;
-    background-color: #0a0a0a;
-  }
+  html { min-height: 100%; background-color: #0a0a0a; }
+  body { min-height: 100vh; margin: 0; padding: 0; background-color: #0a0a0a; color: #ffffff; overflow-y: auto; }
+  #app { min-height: 100vh; background-color: #0a0a0a; }
 
   .dashboard-page {
     max-width: 100%;
@@ -114,7 +126,9 @@ const styles = `
   }
 
   .settings-card-icon {
-    font-size: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .settings-card-title {
@@ -127,9 +141,7 @@ const styles = `
   .info-icon {
     color: #888;
     cursor: help;
-    font-size: 16px;
     transition: all 0.2s ease;
-    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -137,28 +149,20 @@ const styles = `
     height: 20px;
     border-radius: 50%;
     background-color: #2a2a2a;
-    font-style: normal;
-    font-weight: bold;
+    flex-shrink: 0;
   }
 
-  .info-icon:hover {
-    color: #aa00ff;
-    background-color: #3a3a3a;
-  }
+  .info-icon:hover { color: #aa00ff; background-color: #3a3a3a; }
 
-  .info-tooltip {
-    position: absolute;
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%);
+  .info-tooltip-portal {
+    position: fixed;
     background-color: #1a1a1a;
     border: 1px solid #aa00ff;
     border-radius: 8px;
     padding: 12px;
-    margin-bottom: 8px;
-    width: 320px;
-    z-index: 1000;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    width: 300px;
+    z-index: 99999;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
     pointer-events: none;
     white-space: normal;
     font-size: 12px;
@@ -166,7 +170,7 @@ const styles = `
     color: #b0b0b0;
   }
 
-  .info-tooltip::after {
+  .info-tooltip-portal::after {
     content: '';
     position: absolute;
     top: 100%;
@@ -213,9 +217,7 @@ const styles = `
     font-weight: 500;
   }
 
-  .setting-change-btn:hover {
-    background-color: #3a3a3a;
-  }
+  .setting-change-btn:hover { background-color: #3a3a3a; }
 
   .setting-note {
     color: #666;
@@ -223,9 +225,7 @@ const styles = `
     margin: 0;
   }
 
-  .setting-note code {
-    color: #aa00ff;
-  }
+  .setting-note code { color: #aa00ff; }
 
   .setting-input {
     width: 100%;
@@ -243,10 +243,7 @@ const styles = `
     box-shadow: 0 0 0 3px rgba(170, 0, 255, 0.15);
   }
 
-  .button-group {
-    display: flex;
-    gap: 10px;
-  }
+  .button-group { display: flex; gap: 10px; }
 
   .button-save {
     background-color: #aa00ff;
@@ -259,16 +256,8 @@ const styles = `
     font-weight: 500;
   }
 
-  .button-save:hover {
-    background-color: #8800cc;
-    transform: translateY(-2px);
-  }
-
-  .button-save:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-    transform: none;
-  }
+  .button-save:hover { background-color: #8800cc; transform: translateY(-2px); }
+  .button-save:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
 
   .button-cancel {
     background-color: #2a2a2a;
@@ -280,9 +269,7 @@ const styles = `
     font-size: 14px;
   }
 
-  .button-cancel:hover {
-    background-color: #3a3a3a;
-  }
+  .button-cancel:hover { background-color: #3a3a3a; }
 
   .voice-states-grid {
     margin-bottom: 16px;
@@ -315,8 +302,19 @@ const styles = `
     flex: 1;
   }
 
-  .voice-state-emoji {
-    font-size: 20px;
+  .voice-state-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background-color: #2a2a2a;
+    flex-shrink: 0;
+  }
+
+  .voice-state-option.selected .voice-state-icon {
+    background-color: rgba(170, 0, 255, 0.15);
   }
 
   .voice-state-label {
@@ -340,6 +338,7 @@ const styles = `
     justify-content: center;
     background-color: #2a2a2a;
     border: 1px solid #3a3a3a;
+    flex-shrink: 0;
   }
 
   .voice-state-checkbox.selected {
@@ -365,10 +364,7 @@ const styles = `
     font-size: 15px;
   }
 
-  .bot-filter-desc {
-    color: #888;
-    font-size: 13px;
-  }
+  .bot-filter-desc { color: #888; font-size: 13px; }
 
   .bot-filter-button {
     border: 2px solid #000000;
@@ -380,108 +376,85 @@ const styles = `
     font-weight: 600;
   }
 
-  .bot-filter-button.filtering {
-    background-color: #8b0000;
-  }
+  .bot-filter-button.filtering { background-color: #8b0000; }
+  .bot-filter-button.including { background-color: #006400; }
+  .bot-filter-button:hover { transform: scale(1.02); }
+  .bot-filter-button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
 
-  .bot-filter-button.including {
-    background-color: #006400;
-  }
-
-  .bot-filter-button:hover {
-    transform: scale(1.02);
-  }
-
-  .bot-filter-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-    transform: none;
-  }
-
-  .permission-boxes {
+  /* ── Option boxes (permission / access / time period mode) ── */
+  .option-boxes {
     display: flex;
     flex-wrap: wrap;
-    gap: 12px;
+    gap: 10px;
     margin-bottom: 20px;
   }
 
-  .permission-box {
+  .option-box {
     flex: 1;
-    min-width: 90px;
+    min-width: 80px;
     background-color: #1a1a1a;
     border: 2px solid #2a2a2a;
     border-radius: 12px;
-    padding: 14px 8px;
+    padding: 14px 8px 10px 8px;
     cursor: pointer;
     transition: all 0.2s ease;
     text-align: center;
-  }
-
-  .permission-box:hover {
-    border-color: #aa00ff;
-    transform: translateY(-2px);
-    background-color: #222;
-  }
-
-  .permission-box.selected {
-    background-color: #2a2a2a;
-    border-color: #aa00ff;
-    box-shadow: 0 0 15px rgba(170, 0, 255, 0.3);
-  }
-
-  .permission-box-icon {
-    font-size: 28px;
-    margin-bottom: 8px;
-    display: block;
-  }
-
-  .permission-box-name {
-    color: #fff;
-    font-weight: 600;
-    font-size: 13px;
-  }
-
-  .access-boxes {
     display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin-bottom: 20px;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
   }
 
-  .access-box {
-    flex: 1;
-    min-width: 90px;
-    background-color: #1a1a1a;
-    border: 2px solid #2a2a2a;
-    border-radius: 12px;
-    padding: 14px 8px;
-    cursor: pointer;
-    transition: all 0.2s ease;
+  .option-box:hover {
+    border-color: #aa00ff;
+    transform: translateY(-2px);
+    background-color: #181818;
+  }
+
+  .option-box.selected {
+    background-color: #160026;
+    border-color: #aa00ff;
+    box-shadow: 0 0 15px rgba(170, 0, 255, 0.25);
+  }
+
+  .option-box-name {
+    color: #fff;
+    font-weight: 600;
+    font-size: 12px;
+    line-height: 1.2;
+  }
+
+  /* ── History sync card ── */
+  .history-sync-link-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 20px 10px;
     text-align: center;
   }
 
-  .access-box:hover {
-    border-color: #aa00ff;
-    transform: translateY(-2px);
-    background-color: #222;
-  }
-
-  .access-box.selected {
-    background-color: #2a2a2a;
-    border-color: #aa00ff;
-    box-shadow: 0 0 15px rgba(170, 0, 255, 0.3);
-  }
-
-  .access-box-icon {
-    font-size: 28px;
-    margin-bottom: 8px;
-    display: block;
-  }
-
-  .access-box-name {
+  .history-sync-go-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background-color: #aa00ff;
+    border: none;
     color: #fff;
+    padding: 16px 36px;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 16px;
     font-weight: 600;
-    font-size: 13px;
+    text-decoration: none;
+    transition: all 0.2s ease;
+  }
+
+  .history-sync-go-btn:hover {
+    background-color: #8800cc;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(170, 0, 255, 0.35);
   }
 
   .loading-container {
@@ -501,24 +474,9 @@ const styles = `
     margin-top: 40px;
   }
 
-  .error-icon {
-    font-size: 64px;
-    margin-bottom: 20px;
-  }
-
-  .error-title {
-    color: #ff4444;
-    font-size: 28px;
-    font-weight: 600;
-    margin-bottom: 16px;
-  }
-
-  .error-message {
-    color: #b0b0b0;
-    font-size: 16px;
-    line-height: 1.6;
-    margin-bottom: 8px;
-  }
+  .error-icon { font-size: 64px; margin-bottom: 20px; }
+  .error-title { color: #ff4444; font-size: 28px; font-weight: 600; margin-bottom: 16px; }
+  .error-message { color: #b0b0b0; font-size: 16px; line-height: 1.6; margin-bottom: 8px; }
 
   .no-server {
     text-align: center;
@@ -529,12 +487,7 @@ const styles = `
     color: #b0b0b0;
   }
 
-  .no-server h2 {
-    color: #ffffff;
-    margin-bottom: 16px;
-    font-size: 28px;
-    font-weight: 600;
-  }
+  .no-server h2 { color: #ffffff; margin-bottom: 16px; font-size: 28px; font-weight: 600; }
 
   .invite-button, .login-button {
     display: inline-block;
@@ -555,21 +508,8 @@ const styles = `
     box-shadow: 0 4px 12px rgba(170, 0, 255, 0.3);
   }
 
-  @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-  }
-
-  @keyframes slideIn {
-    from {
-      transform: translateX(100%);
-      opacity: 0;
-    }
-    to {
-      transform: translateX(0);
-      opacity: 1;
-    }
-  }
+  @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
   .toast-message {
     position: fixed;
@@ -586,111 +526,65 @@ const styles = `
     font-weight: 500;
   }
 
-  /* ── History Sync link card ── */
-  .history-sync-link-box {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 14px;
-    padding: 20px 10px;
-    text-align: center;
-  }
-
-  .history-sync-go-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background-color: #aa00ff;
-    border: none;
-    color: #fff;
-    padding: 12px 28px;
-    border-radius: 10px;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: 600;
-    text-decoration: none;
-    transition: all 0.2s ease;
-  }
-
-  .history-sync-go-btn:hover {
-    background-color: #8800cc;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(170, 0, 255, 0.3);
-  }
-
   @media (max-width: 1024px) {
-    .dashboard-main {
-      margin-left: 250px;
-    }
-    .dashboard-content {
-      padding: 30px;
-    }
-    .settings-grid {
-      grid-template-columns: 1fr;
-    }
-    .permission-boxes, .access-boxes {
-      flex-direction: column;
-    }
-    .permission-box, .access-box {
-      min-width: auto;
-    }
+    .dashboard-main { margin-left: 250px; }
+    .dashboard-content { padding: 30px; }
+    .settings-grid { grid-template-columns: 1fr; }
+    .option-boxes { flex-direction: column; }
+    .option-box { min-width: auto; }
   }
 
   @media (max-width: 768px) {
-    .dashboard-main {
-      margin-left: 0;
-    }
-    .dashboard-content {
-      padding: 20px;
-    }
+    .dashboard-main { margin-left: 0; }
+    .dashboard-content { padding: 20px; }
   }
 `;
 
 // ─────────────────────────────────────────────────────────────
-// Shared / utility components
+// Portal-based InfoIcon (same pattern as HistorySync)
 // ─────────────────────────────────────────────────────────────
 
-const LoadingSpinner = ({ size = "medium", text = "Loading settings..." }) => {
-  const spinnerSize = size === "small" ? "24px" : size === "medium" ? "40px" : "60px";
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center',
-      justifyContent: 'center', padding: '60px', gap: '16px',
-      width: '100%', minHeight: '400px'
-    }}>
-      <div style={{
-        width: spinnerSize, height: spinnerSize,
-        border: '3px solid rgba(170, 0, 255, 0.2)',
-        borderTop: `3px solid #aa00ff`,
-        borderRadius: '50%', animation: 'spin 1s linear infinite'
-      }} />
-      {text && <span style={{ color: '#aa00ff', fontSize: '14px' }}>{text}</span>}
-    </div>
-  );
-};
-
 const InfoIcon = ({ descriptions }) => {
-  const [showTooltip, setShowTooltip] = useState(false);
-  let timeout;
-  const handleMouseEnter = () => { timeout = setTimeout(() => setShowTooltip(true), 300); };
-  const handleMouseLeave = () => { clearTimeout(timeout); setShowTooltip(false); };
-  return (
-    <span className="info-icon" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}
-      style={{ position: 'relative', cursor: 'help' }}>
-      ⓘ
-      {showTooltip && (
-        <div className="info-tooltip">
+  const [tooltipPos, setTooltipPos] = useState(null);
+  const iconRef = React.useRef(null);
+  const timeoutRef = React.useRef(null);
+
+  const show = () => {
+    if (!iconRef.current) return;
+    const rect = iconRef.current.getBoundingClientRect();
+    setTooltipPos({ left: rect.left + rect.width / 2, bottom: window.innerHeight - rect.top + 10 });
+  };
+
+  const handleMouseEnter = () => { timeoutRef.current = setTimeout(show, 300); };
+  const handleMouseLeave = () => { clearTimeout(timeoutRef.current); setTooltipPos(null); };
+  useEffect(() => () => clearTimeout(timeoutRef.current), []);
+
+  const tooltip = tooltipPos
+    ? ReactDOM.createPortal(
+        <div className="info-tooltip-portal" style={{ bottom: tooltipPos.bottom, left: tooltipPos.left, transform: 'translateX(-50%)' }}>
           {descriptions.map((desc, idx) => (
             <div key={idx} style={{ marginBottom: idx < descriptions.length - 1 ? '8px' : '0' }}>
               <strong style={{ color: '#aa00ff' }}>{desc.level}:</strong> {desc.description}
             </div>
           ))}
-        </div>
-      )}
-    </span>
+        </div>,
+        document.body
+      )
+    : null;
+
+  return (
+    <>
+      <span ref={iconRef} className="info-icon" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+        <Info size={13} color="#888" />
+      </span>
+      {tooltip}
+    </>
   );
 };
+
+// ─────────────────────────────────────────────────────────────
+// SettingsCard
+// ─────────────────────────────────────────────────────────────
 
 const SettingsCard = ({ title, icon, children, description, infoDescriptions = [], fullWidth = false }) => (
   <div className={`settings-card${fullWidth ? ' settings-card-full' : ''}`}>
@@ -707,22 +601,37 @@ const SettingsCard = ({ title, icon, children, description, infoDescriptions = [
 );
 
 // ─────────────────────────────────────────────────────────────
-// History Data Sync — single link out to its dedicated page
+// LoadingSpinner
+// ─────────────────────────────────────────────────────────────
+
+const LoadingSpinner = ({ size = "medium", text = "Loading settings..." }) => {
+  const spinnerSize = size === "small" ? "24px" : size === "medium" ? "40px" : "60px";
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px', gap: '16px', width: '100%', minHeight: '400px' }}>
+      <div style={{ width: spinnerSize, height: spinnerSize, border: '3px solid rgba(170, 0, 255, 0.2)', borderTop: `3px solid #aa00ff`, borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+      {text && <span style={{ color: '#aa00ff', fontSize: '14px' }}>{text}</span>}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// History Data Sync link box
 // ─────────────────────────────────────────────────────────────
 
 const HistorySyncLinkBox = () => (
   <div className="history-sync-link-box">
-    <p style={{ color: '#888', fontSize: '13px', lineHeight: 1.5, margin: 0 }}>
-      Backfill historical message, mention, and emoji data into the stats database.
+    <p style={{ color: '#888', fontSize: '13px', lineHeight: 1.6, margin: 0, maxWidth: '340px' }}>
+      Unlock stats from before the bot arrived. Pull in months or years of messages, mentions, and emoji — all the history that was already there waiting.
     </p>
     <a href="/Dashboard/History Data Sync/" className="history-sync-go-btn">
-      🗄️ Open History Data Sync
+      <History size={20} color="#fff" />
+      Go to History Data Sync
     </a>
   </div>
 );
 
 // ─────────────────────────────────────────────────────────────
-// Existing settings sub-components (unchanged)
+// PrefixSetting
 // ─────────────────────────────────────────────────────────────
 
 const PrefixSetting = ({ currentPrefix, onSave, saving }) => {
@@ -730,23 +639,18 @@ const PrefixSetting = ({ currentPrefix, onSave, saving }) => {
   const [editing, setEditing] = useState(false);
 
   const handleSave = async () => {
-    if (prefix.trim() && prefix !== currentPrefix) {
-      await onSave(prefix.trim());
-      setEditing(false);
-    }
+    if (prefix.trim() && prefix !== currentPrefix) { await onSave(prefix.trim()); setEditing(false); }
   };
 
-  if (!editing) {
-    return (
-      <div>
-        <div className="setting-preview">
-          <span className="setting-value">{currentPrefix}</span>
-          <button className="setting-change-btn" onClick={() => setEditing(true)}>Change</button>
-        </div>
-        <p className="setting-note">Current prefix: <code style={{ color: '#aa00ff' }}>{currentPrefix}</code></p>
+  if (!editing) return (
+    <div>
+      <div className="setting-preview">
+        <span className="setting-value">{currentPrefix}</span>
+        <button className="setting-change-btn" onClick={() => setEditing(true)}>Change</button>
       </div>
-    );
-  }
+      <p className="setting-note">Current prefix: <code style={{ color: '#aa00ff' }}>{currentPrefix}</code></p>
+    </div>
+  );
 
   return (
     <div>
@@ -755,28 +659,28 @@ const PrefixSetting = ({ currentPrefix, onSave, saving }) => {
           maxLength={10} placeholder="Enter new prefix (max 10 chars)" className="setting-input" />
       </div>
       <div className="button-group">
-        <button className="button-save" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-        <button className="button-cancel" onClick={() => { setPrefix(currentPrefix); setEditing(false); }}>
-          Cancel
-        </button>
+        <button className="button-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
+        <button className="button-cancel" onClick={() => { setPrefix(currentPrefix); setEditing(false); }}>Cancel</button>
       </div>
     </div>
   );
 };
+
+// ─────────────────────────────────────────────────────────────
+// TimezoneSetting
+// ─────────────────────────────────────────────────────────────
 
 const TimezoneSetting = ({ currentTimezone, onSave, saving }) => {
   const [selectedTimezone, setSelectedTimezone] = useState(currentTimezone);
   const [editing, setEditing] = useState(false);
 
   const timezones = [
-    { value: 'UTC', label: '🌍 UTC (GMT+0)' }, { value: 'EST', label: '🗽 EST (GMT-5)' },
-    { value: 'PST', label: '🌴 PST (GMT-8)' }, { value: 'CST', label: '🌾 CST (GMT-6)' },
-    { value: 'MST', label: '⛰️ MST (GMT-7)' }, { value: 'GMT', label: '🇬🇧 GMT (GMT+0)' },
-    { value: 'CET', label: '🇪🇺 CET (GMT+1)' }, { value: 'EET', label: '🌅 EET (GMT+2)' },
-    { value: 'IST', label: '🇮🇳 IST (GMT+5:30)' }, { value: 'JST', label: '🇯🇵 JST (GMT+9)' },
-    { value: 'AEST', label: '🇦🇺 AEST (GMT+10)' }, { value: 'NZST', label: '🇳🇿 NZST (GMT+12)' },
+    { value: 'UTC',  label: '🌍 UTC (GMT+0)'    }, { value: 'EST',  label: '🗽 EST (GMT-5)'    },
+    { value: 'PST',  label: '🌴 PST (GMT-8)'    }, { value: 'CST',  label: '🌾 CST (GMT-6)'    },
+    { value: 'MST',  label: '⛰️ MST (GMT-7)'    }, { value: 'GMT',  label: '🇬🇧 GMT (GMT+0)'   },
+    { value: 'CET',  label: '🇪🇺 CET (GMT+1)'   }, { value: 'EET',  label: '🌅 EET (GMT+2)'    },
+    { value: 'IST',  label: '🇮🇳 IST (GMT+5:30)' }, { value: 'JST',  label: '🇯🇵 JST (GMT+9)'   },
+    { value: 'AEST', label: '🇦🇺 AEST (GMT+10)'  }, { value: 'NZST', label: '🇳🇿 NZST (GMT+12)' },
   ];
 
   const handleSave = async () => {
@@ -802,43 +706,38 @@ const TimezoneSetting = ({ currentTimezone, onSave, saving }) => {
   return (
     <div>
       <select value={selectedTimezone} onChange={(e) => setSelectedTimezone(e.target.value)}
-        style={{ width: '100%', backgroundColor: '#1a1a1a', border: '1px solid #aa00ff',
-          borderRadius: '10px', padding: '12px', color: '#fff', fontSize: '14px',
-          marginBottom: '12px', cursor: 'pointer', outline: 'none' }}>
+        style={{ width: '100%', backgroundColor: '#1a1a1a', border: '1px solid #aa00ff', borderRadius: '10px', padding: '12px', color: '#fff', fontSize: '14px', marginBottom: '12px', cursor: 'pointer', outline: 'none' }}>
         {timezones.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
       </select>
       <div className="button-group">
-        <button className="button-save" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-        <button className="button-cancel" onClick={() => { setSelectedTimezone(currentTimezone); setEditing(false); }}>
-          Cancel
-        </button>
+        <button className="button-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
+        <button className="button-cancel" onClick={() => { setSelectedTimezone(currentTimezone); setEditing(false); }}>Cancel</button>
       </div>
     </div>
   );
 };
+
+// ─────────────────────────────────────────────────────────────
+// VoiceStatesSetting
+// ─────────────────────────────────────────────────────────────
 
 const VoiceStatesSetting = ({ currentStates, onSave, saving }) => {
   const [selectedStates, setSelectedStates] = useState(currentStates || []);
   const [editing, setEditing] = useState(false);
 
   const voiceStateOptions = [
-    { value: 'afk',           label: '💤 Afk',           description: 'User is in AFK channel' },
-    { value: 'self_mute',     label: '🔇 Self Mute',     description: 'User muted themselves' },
-    { value: 'self_deafen',   label: '🎧 Self Deafen',   description: 'User deafened themselves' },
-    { value: 'server_mute',   label: '⛔ Server Mute',   description: 'User was muted by moderation' },
-    { value: 'server_deafen', label: '🔊 Server Deafen', description: 'User was deafened by moderation' },
-    { value: 'streaming',     label: '📺 Streaming',     description: 'User is streaming' },
-    { value: 'video',         label: '🎥 Video',         description: 'User has video open' },
-    { value: 'suppressed',    label: '🤫 Suppressed',    description: 'Stage audience member' },
+    { value: 'afk',           Icon: MouseOff,      label: 'AFK',           description: 'User is in AFK channel' },
+    { value: 'self_mute',     Icon: MicOff,        label: 'Self mute',     description: 'User muted themselves' },
+    { value: 'self_deafen',   Icon: HeadphoneOff,  label: 'Self deafen',   description: 'User deafened themselves' },
+    { value: 'server_mute',   Icon: VolumeX,       label: 'Server mute',   description: 'User was muted by moderation' },
+    { value: 'server_deafen', Icon: EarOff,        label: 'Server deafen', description: 'User was deafened by moderation' },
+    { value: 'streaming',     Icon: TvMinimalPlay, label: 'Streaming',     description: 'User is streaming' },
+    { value: 'video',         Icon: Video,         label: 'Video',         description: 'User has video open' },
+    { value: 'suppressed',    Icon: CircleOff,     label: 'Suppressed',    description: 'Stage audience member' },
   ];
 
-  const handleToggleState = (stateValue) => {
-    setSelectedStates(prev =>
-      prev.includes(stateValue) ? prev.filter(s => s !== stateValue) : [...prev, stateValue]
-    );
-  };
+  const handleToggle = (val) =>
+    setSelectedStates(prev => prev.includes(val) ? prev.filter(s => s !== val) : [...prev, val]);
 
   const handleSave = async () => {
     if (JSON.stringify(selectedStates.sort()) !== JSON.stringify((currentStates || []).sort())) {
@@ -854,11 +753,15 @@ const VoiceStatesSetting = ({ currentStates, onSave, saving }) => {
           <div>
             <span className="setting-value">{selectedCount} state{selectedCount !== 1 ? 's' : ''} tracked</span>
             {selectedCount > 0 && (
-              <div style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>
+              <div style={{ fontSize: '12px', color: '#888', marginTop: '4px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                 {currentStates.map(state => {
-                  const option = voiceStateOptions.find(opt => opt.value === state);
-                  return option ? option.label.split(' ')[0] : state;
-                }).join(' ')}
+                  const opt = voiceStateOptions.find(o => o.value === state);
+                  return opt ? (
+                    <span key={state} style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                      <opt.Icon size={12} color="#666" /> {opt.label}
+                    </span>
+                  ) : state;
+                })}
               </div>
             )}
           </div>
@@ -872,108 +775,121 @@ const VoiceStatesSetting = ({ currentStates, onSave, saving }) => {
   return (
     <div>
       <div className="voice-states-grid">
-        {voiceStateOptions.map(option => (
-          <div key={option.value}
-            className={`voice-state-option ${selectedStates.includes(option.value) ? 'selected' : ''}`}
-            onClick={() => handleToggleState(option.value)}>
-            <div className="voice-state-info">
-              <span className="voice-state-emoji">{option.label.split(' ')[0]}</span>
-              <div>
-                <div className="voice-state-label">{option.label.split(' ').slice(1).join(' ')}</div>
-                <div className="voice-state-desc">{option.description}</div>
+        {voiceStateOptions.map(({ value, Icon, label, description }) => {
+          const isSelected = selectedStates.includes(value);
+          return (
+            <div key={value} className={`voice-state-option ${isSelected ? 'selected' : ''}`} onClick={() => handleToggle(value)}>
+              <div className="voice-state-info">
+                <div className="voice-state-icon">
+                  <Icon size={16} color={isSelected ? ACCENT : '#666'} />
+                </div>
+                <div>
+                  <div className="voice-state-label">{label}</div>
+                  <div className="voice-state-desc">{description}</div>
+                </div>
+              </div>
+              <div className={`voice-state-checkbox ${isSelected ? 'selected' : ''}`}>
+                {isSelected && <span style={{ color: '#fff', fontSize: '12px', fontWeight: 'bold' }}>✓</span>}
               </div>
             </div>
-            <div className={`voice-state-checkbox ${selectedStates.includes(option.value) ? 'selected' : ''}`}>
-              {selectedStates.includes(option.value) && <span style={{ color: '#fff', fontSize: '12px', fontWeight: 'bold' }}>✓</span>}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       <div className="button-group">
-        <button className="button-save" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving...' : 'Save Changes'}
-        </button>
-        <button className="button-cancel" onClick={() => { setSelectedStates(currentStates || []); setEditing(false); }}>
-          Cancel
-        </button>
+        <button className="button-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</button>
+        <button className="button-cancel" onClick={() => { setSelectedStates(currentStates || []); setEditing(false); }}>Cancel</button>
       </div>
     </div>
   );
 };
 
+// ─────────────────────────────────────────────────────────────
+// BotFilterSetting
+// ─────────────────────────────────────────────────────────────
+
 const BotFilterSetting = ({ enabled, onSave, saving }) => (
   <div>
     <div className="bot-filter-container">
       <div>
-        <div className="bot-filter-text">{enabled ? '🤖 Filtering Bots' : '🤖 Including Bots'}</div>
+        <div className="bot-filter-text">{enabled ? 'Filtering bots' : 'Including bots'}</div>
         <div className="bot-filter-desc">
           {enabled ? 'Bots are currently filtered out from statistics' : 'Bots are currently included in statistics'}
         </div>
       </div>
       <button className={`bot-filter-button ${enabled ? 'filtering' : 'including'}`}
         onClick={() => onSave(!enabled)} disabled={saving}>
-        {saving ? 'Updating...' : enabled ? 'Include Bots' : 'Filter Bots'}
+        {saving ? 'Updating...' : enabled ? 'Include bots' : 'Filter bots'}
       </button>
     </div>
   </div>
 );
 
+// ─────────────────────────────────────────────────────────────
+// PermissionLevelSetting
+// ─────────────────────────────────────────────────────────────
+
 const PermissionLevelSetting = ({ currentLevel, onSave, saving }) => {
   const [selectedLevel, setSelectedLevel] = useState(currentLevel);
+
   const permissionLevels = [
-    { value: 'All',              icon: '🌍', shortDesc: 'Anyone can use all commands' },
-    { value: 'Default',          icon: '⚙️', shortDesc: 'Most commands for everyone, admin for reset' },
-    { value: 'User Restriction', icon: '👤', shortDesc: 'Commands limited to own account' },
-    { value: 'Moderator',        icon: '🛡️', shortDesc: 'Manage Server permission required' },
-    { value: 'Admin',            icon: '👑', shortDesc: 'Admin permission required' },
+    { value: 'All',              Icon: Globe,    label: 'All' },
+    { value: 'Default',          Icon: Cog,      label: 'Default' },
+    { value: 'User Restriction', Icon: UserCog,  label: 'User restriction' },
+    { value: 'Moderator',        Icon: ShieldUser, label: 'Moderator' },
+    { value: 'Admin',            Icon: Crown,    label: 'Admin' },
   ];
+
   return (
     <div>
-      <div className="permission-boxes">
-        {permissionLevels.map(level => (
-          <div key={level.value}
-            className={`permission-box ${selectedLevel === level.value ? 'selected' : ''}`}
-            onClick={() => setSelectedLevel(level.value)}>
-            <span className="permission-box-icon">{level.icon}</span>
-            <div className="permission-box-name">{level.value}</div>
+      <div className="option-boxes">
+        {permissionLevels.map(({ value, Icon, label }) => (
+          <div key={value} className={`option-box ${selectedLevel === value ? 'selected' : ''}`}
+            onClick={() => setSelectedLevel(value)}>
+            <Icon size={24} color={selectedLevel === value ? ACCENT : '#666'} />
+            <div className="option-box-name">{label}</div>
           </div>
         ))}
       </div>
       {selectedLevel !== currentLevel && (
         <div className="button-group" style={{ marginTop: '16px' }}>
           <button className="button-save" onClick={() => onSave(selectedLevel)} disabled={saving}>
-            {saving ? 'Saving...' : 'Apply Changes'}
+            {saving ? 'Saving...' : 'Apply changes'}
           </button>
         </div>
       )}
     </div>
   );
 };
+
+// ─────────────────────────────────────────────────────────────
+// DashboardAccessSetting
+// ─────────────────────────────────────────────────────────────
 
 const DashboardAccessSetting = ({ currentLevel, onSave, saving }) => {
   const [selectedLevel, setSelectedLevel] = useState(currentLevel);
+
   const accessLevels = [
-    { value: 'Public',    icon: '🌍', shortDesc: 'Any authenticated user can view' },
-    { value: 'Member',    icon: '👥', shortDesc: 'Manage Server or Administrator required' },
-    { value: 'Moderator', icon: '🛡️', shortDesc: 'Manage Server or Administrator required' },
-    { value: 'Admin',     icon: '👑', shortDesc: 'Administrator permission required' },
+    { value: 'Public',    Icon: Globe,      label: 'Public' },
+    { value: 'Member',    Icon: User,       label: 'Member' },
+    { value: 'Moderator', Icon: ShieldUser, label: 'Moderator' },
+    { value: 'Admin',     Icon: Crown,      label: 'Admin' },
   ];
+
   return (
     <div>
-      <div className="access-boxes">
-        {accessLevels.map(level => (
-          <div key={level.value}
-            className={`access-box ${selectedLevel === level.value ? 'selected' : ''}`}
-            onClick={() => setSelectedLevel(level.value)}>
-            <span className="access-box-icon">{level.icon}</span>
-            <div className="access-box-name">{level.value}</div>
+      <div className="option-boxes">
+        {accessLevels.map(({ value, Icon, label }) => (
+          <div key={value} className={`option-box ${selectedLevel === value ? 'selected' : ''}`}
+            onClick={() => setSelectedLevel(value)}>
+            <Icon size={24} color={selectedLevel === value ? ACCENT : '#666'} />
+            <div className="option-box-name">{label}</div>
           </div>
         ))}
       </div>
       {selectedLevel !== currentLevel && (
         <div className="button-group" style={{ marginTop: '16px' }}>
           <button className="button-save" onClick={() => onSave(selectedLevel)} disabled={saving}>
-            {saving ? 'Saving...' : 'Apply Changes'}
+            {saving ? 'Saving...' : 'Apply changes'}
           </button>
         </div>
       )}
@@ -981,45 +897,42 @@ const DashboardAccessSetting = ({ currentLevel, onSave, saving }) => {
   );
 };
 
+// ─────────────────────────────────────────────────────────────
+// SimpleCalendar
+// ─────────────────────────────────────────────────────────────
+
 const SimpleCalendar = ({ onSelectDate, currentDate, onClose }) => {
   const [currentMonth, setCurrentMonth] = useState(currentDate ? new Date(currentDate) : new Date());
-  const getDaysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-  const getFirstDayOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
-  const handleDateSelect = (day) => { onSelectDate(new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day)); onClose(); };
+  const getDaysInMonth = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  const getFirstDay = (d) => new Date(d.getFullYear(), d.getMonth(), 1).getDay();
   const changeMonth = (delta) => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + delta, 1));
   const daysInMonth = getDaysInMonth(currentMonth);
-  const firstDay = getFirstDayOfMonth(currentMonth);
+  const firstDay = getFirstDay(currentMonth);
   const days = [];
   let startOffset = firstDay === 0 ? 6 : firstDay - 1;
-  for (let i = 0; i < startOffset; i++) days.push(<div key={`empty-${i}`} style={{ padding: '8px' }}></div>);
+  for (let i = 0; i < startOffset; i++) days.push(<div key={`e-${i}`} style={{ padding: '8px' }} />);
   for (let i = 1; i <= daysInMonth; i++) {
-    const isSelected = currentDate && currentDate.getDate() === i &&
-      currentDate.getMonth() === currentMonth.getMonth() &&
-      currentDate.getFullYear() === currentMonth.getFullYear();
+    const isSel = currentDate && currentDate.getDate() === i && currentDate.getMonth() === currentMonth.getMonth() && currentDate.getFullYear() === currentMonth.getFullYear();
     days.push(
-      <div key={i} onClick={() => handleDateSelect(i)}
-        style={{ padding: '8px', textAlign: 'center', cursor: 'pointer', borderRadius: '6px',
-          backgroundColor: isSelected ? '#aa00ff' : 'transparent',
-          color: isSelected ? '#fff' : '#e0e0e0', transition: 'all 0.2s ease' }}
-        onMouseEnter={(e) => { if (!isSelected) e.target.style.backgroundColor = '#2a2a2a'; }}
-        onMouseLeave={(e) => { if (!isSelected) e.target.style.backgroundColor = 'transparent'; }}>
+      <div key={i} onClick={() => { onSelectDate(new Date(currentMonth.getFullYear(), currentMonth.getMonth(), i)); onClose(); }}
+        style={{ padding: '8px', textAlign: 'center', cursor: 'pointer', borderRadius: '6px', backgroundColor: isSel ? '#aa00ff' : 'transparent', color: isSel ? '#fff' : '#e0e0e0', transition: 'all 0.2s' }}
+        onMouseEnter={(e) => { if (!isSel) e.target.style.backgroundColor = '#2a2a2a'; }}
+        onMouseLeave={(e) => { if (!isSel) e.target.style.backgroundColor = 'transparent'; }}>
         {i}
       </div>
     );
   }
   const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   return (
-    <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: '8px', backgroundColor: '#1a1a1a',
-      border: '1px solid #aa00ff', borderRadius: '12px', padding: '16px', zIndex: 1000,
-      boxShadow: '0 4px 20px rgba(0,0,0,0.3)', minWidth: '280px' }}>
+    <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: '8px', backgroundColor: '#1a1a1a', border: '1px solid #aa00ff', borderRadius: '12px', padding: '16px', zIndex: 1000, boxShadow: '0 4px 20px rgba(0,0,0,0.3)', minWidth: '280px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
         <button onClick={() => changeMonth(-1)} style={{ background: 'none', border: 'none', color: '#aa00ff', cursor: 'pointer', fontSize: '18px', padding: '4px 8px' }}>◀</button>
         <span style={{ color: '#fff', fontWeight: 'bold' }}>{monthNames[currentMonth.getMonth()]} {currentMonth.getFullYear()}</span>
         <button onClick={() => changeMonth(1)} style={{ background: 'none', border: 'none', color: '#aa00ff', cursor: 'pointer', fontSize: '18px', padding: '4px 8px' }}>▶</button>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px', marginBottom: '8px' }}>
-        {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(day => (
-          <div key={day} style={{ textAlign: 'center', color: '#888', fontSize: '12px', padding: '4px' }}>{day}</div>
+        {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => (
+          <div key={d} style={{ textAlign: 'center', color: '#888', fontSize: '12px', padding: '4px' }}>{d}</div>
         ))}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px' }}>{days}</div>
@@ -1027,52 +940,48 @@ const SimpleCalendar = ({ onSelectDate, currentDate, onClose }) => {
   );
 };
 
+// ─────────────────────────────────────────────────────────────
+// TimePeriodSetting
+// ─────────────────────────────────────────────────────────────
+
 const TimePeriodSetting = ({ settings, onSave, saving }) => {
   const [editing, setEditing] = useState(false);
   const [timeMode, setTimeMode] = useState(settings.default_time_mode || 'all_time');
   const [daysBack, setDaysBack] = useState(settings.default_days_back || 7);
   const [fromDate, setFromDate] = useState(settings.default_from_date ? new Date(settings.default_from_date) : null);
-  const [toDate, setToDate] = useState(settings.default_to_date ? new Date(settings.default_to_date) : null);
-  const [rollingType, setRollingType] = useState(settings.default_rolling_type || 'weekday');
+  const [toDate, setToDate]     = useState(settings.default_to_date   ? new Date(settings.default_to_date)   : null);
+  const [rollingType, setRollingType]   = useState(settings.default_rolling_type  || 'weekday');
   const [rollingValue, setRollingValue] = useState(settings.default_rolling_value || 0);
-  const [showFromCalendar, setShowFromCalendar] = useState(false);
-  const [showToCalendar, setShowToCalendar] = useState(false);
+  const [showFromCal, setShowFromCal] = useState(false);
+  const [showToCal, setShowToCal]     = useState(false);
   const [validationError, setValidationError] = useState(null);
 
-  const formatDateForDisplay = (date) => {
-    if (!date) return '';
-    return `${String(date.getDate()).padStart(2,'0')}-${String(date.getMonth()+1).padStart(2,'0')}-${date.getFullYear()}`;
-  };
-  const parseDateFromString = (dateStr) => {
-    if (!dateStr) return null;
-    const parts = dateStr.split('-');
-    if (parts.length === 3) return new Date(parts[2], parts[1] - 1, parts[0]);
-    return null;
-  };
+  const fmtDate = (d) => d ? `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}` : '';
+  const parseDate = (s) => { if (!s) return null; const p = s.split('-'); return p.length === 3 ? new Date(p[2], p[1]-1, p[0]) : null; };
+
   const getPreviewText = () => {
-    const mode = settings.default_time_mode || 'all_time';
-    if (mode === 'all_time') return 'All Time';
-    if (mode === 'days_back') return `Last ${settings.default_days_back || 7} days`;
-    if (mode === 'date_range') {
-      const from = settings.default_from_date ? formatDateForDisplay(new Date(settings.default_from_date)) : 'Start';
-      const to   = settings.default_to_date   ? formatDateForDisplay(new Date(settings.default_to_date))   : 'End';
+    const m = settings.default_time_mode || 'all_time';
+    if (m === 'all_time') return 'All time';
+    if (m === 'days_back') return `Last ${settings.default_days_back || 7} days`;
+    if (m === 'date_range') {
+      const from = settings.default_from_date ? fmtDate(new Date(settings.default_from_date)) : 'Start';
+      const to   = settings.default_to_date   ? fmtDate(new Date(settings.default_to_date))   : 'End';
       return `${from} to ${to}`;
     }
-    if (mode === 'rolling_window') {
+    if (m === 'rolling_window') {
       if (settings.default_rolling_type === 'weekday') {
-        const weekdays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-        return `Rolling — every ${weekdays[settings.default_rolling_value || 0]}`;
+        const days = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+        return `Rolling — every ${days[settings.default_rolling_value || 0]}`;
       }
       const n = settings.default_rolling_value || 1;
       const ord = n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`;
       return `Rolling — ${ord} of each month`;
     }
-    return 'All Time';
+    return 'All time';
   };
-  const validateSettings = () => {
-    if (timeMode === 'days_back' && (!daysBack || daysBack < 1 || daysBack > 3650)) {
-      setValidationError('Days back must be between 1 and 3650'); return false;
-    }
+
+  const validate = () => {
+    if (timeMode === 'days_back' && (!daysBack || daysBack < 1 || daysBack > 3650)) { setValidationError('Days back must be between 1 and 3650'); return false; }
     if (timeMode === 'date_range') {
       if (!fromDate && !toDate) { setValidationError('At least one date must be provided'); return false; }
       if (fromDate && toDate && fromDate >= toDate) { setValidationError('From date must be before to date'); return false; }
@@ -1083,8 +992,9 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
     }
     setValidationError(null); return true;
   };
+
   const handleSave = async () => {
-    if (!validateSettings()) return;
+    if (!validate()) return;
     await onSave({
       default_time_mode: timeMode,
       default_days_back: timeMode === 'days_back' ? daysBack : null,
@@ -1095,49 +1005,54 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
     });
     setEditing(false);
   };
+
   const handleCancel = () => {
     setTimeMode(settings.default_time_mode || 'all_time');
     setDaysBack(settings.default_days_back || 7);
     setFromDate(settings.default_from_date ? new Date(settings.default_from_date) : null);
-    setToDate(settings.default_to_date ? new Date(settings.default_to_date) : null);
-    setRollingType(settings.default_rolling_type || 'weekday');
+    setToDate(settings.default_to_date     ? new Date(settings.default_to_date)   : null);
+    setRollingType(settings.default_rolling_type   || 'weekday');
     setRollingValue(settings.default_rolling_value || 0);
     setValidationError(null); setEditing(false);
   };
 
-  if (!editing) {
-    return (
-      <div>
-        <div className="setting-preview">
-          <span className="setting-value">{getPreviewText()}</span>
-          <button className="setting-change-btn" onClick={() => setEditing(true)}>Change</button>
-        </div>
-        <p className="setting-note">Default time period used across bot commands and dashboard</p>
+  const timeModes = [
+    { value: 'all_time',       Icon: Clock,    label: 'All time'       },
+    { value: 'days_back',      Icon: Clock,    label: 'Days back'      },
+    { value: 'date_range',     Icon: Clock,    label: 'Date range'     },
+    { value: 'rolling_window', Icon: Clock,    label: 'Rolling window' },
+  ];
+
+  if (!editing) return (
+    <div>
+      <div className="setting-preview">
+        <span className="setting-value">{getPreviewText()}</span>
+        <button className="setting-change-btn" onClick={() => setEditing(true)}>Change</button>
       </div>
-    );
-  }
+      <p className="setting-note">Default time period used across bot commands and dashboard</p>
+    </div>
+  );
 
   return (
     <div>
-      <div className="permission-boxes" style={{ marginBottom: '20px' }}>
+      <div className="option-boxes" style={{ marginBottom: '20px' }}>
         {[
-          { value: 'all_time',       label: 'All Time',       icon: '🕒' },
-          { value: 'days_back',      label: 'Days Back',      icon: '📅' },
-          { value: 'date_range',     label: 'Date Range',     icon: '📆' },
-          { value: 'rolling_window', label: 'Rolling Window', icon: '🔄' },
+          { value: 'all_time',       label: 'All time'       },
+          { value: 'days_back',      label: 'Days back'      },
+          { value: 'date_range',     label: 'Date range'     },
+          { value: 'rolling_window', label: 'Rolling window' },
         ].map(mode => (
-          <div key={mode.value}
-            className={`permission-box ${timeMode === mode.value ? 'selected' : ''}`}
+          <div key={mode.value} className={`option-box ${timeMode === mode.value ? 'selected' : ''}`}
             onClick={() => setTimeMode(mode.value)}>
-            <span className="permission-box-icon">{mode.icon}</span>
-            <div className="permission-box-name">{mode.label}</div>
+            <Clock size={22} color={timeMode === mode.value ? ACCENT : '#666'} />
+            <div className="option-box-name">{mode.label}</div>
           </div>
         ))}
       </div>
 
       {timeMode === 'all_time' && (
         <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: '#1a1a1a', borderRadius: '8px' }}>
-          <span style={{ color: '#888', fontSize: '13px' }}>📊 No time filter — all historical data will be used.</span>
+          <span style={{ color: '#888', fontSize: '13px' }}>No time filter — all historical data will be used.</span>
         </div>
       )}
 
@@ -1153,23 +1068,17 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
         <div style={{ marginBottom: '16px' }}>
           <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
             {[
-              { label: 'From Date (optional)', date: fromDate, setDate: setFromDate, show: showFromCalendar, setShow: setShowFromCalendar },
-              { label: 'To Date (optional)',   date: toDate,   setDate: setToDate,   show: showToCalendar,   setShow: setShowToCalendar   },
+              { label: 'From date (optional)', date: fromDate, setDate: setFromDate, show: showFromCal, setShow: setShowFromCal },
+              { label: 'To date (optional)',   date: toDate,   setDate: setToDate,   show: showToCal,   setShow: setShowToCal   },
             ].map(({ label, date, setDate, show, setShow }) => (
               <div key={label} style={{ flex: 1, position: 'relative' }}>
                 <div style={{ marginBottom: '4px', color: '#888', fontSize: '12px' }}>{label}</div>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  <input type="text" value={date ? formatDateForDisplay(date) : ''}
-                    onChange={(e) => setDate(parseDateFromString(e.target.value))}
+                  <input type="text" value={date ? fmtDate(date) : ''} onChange={(e) => setDate(parseDate(e.target.value))}
                     placeholder="DD-MM-YYYY" className="setting-input" style={{ flex: 1 }} />
-                  <button onClick={() => setShow(!show)}
-                    style={{ backgroundColor: '#2a2a2a', border: '1px solid #3a3a3a', borderRadius: '10px',
-                      padding: '0 12px', cursor: 'pointer', fontSize: '20px' }}>
-                    📅
-                  </button>
+                  <button onClick={() => setShow(!show)} style={{ backgroundColor: '#2a2a2a', border: '1px solid #3a3a3a', borderRadius: '10px', padding: '0 12px', cursor: 'pointer', fontSize: '20px' }}>📅</button>
                 </div>
-                {show && <SimpleCalendar onSelectDate={(d) => { setDate(d); setShow(false); }}
-                  currentDate={date} onClose={() => setShow(false)} />}
+                {show && <SimpleCalendar onSelectDate={(d) => { setDate(d); setShow(false); }} currentDate={date} onClose={() => setShow(false)} />}
                 <div style={{ color: '#666', fontSize: '11px', marginTop: '4px' }}>Leave empty for open end</div>
               </div>
             ))}
@@ -1183,22 +1092,16 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
           <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
             {['weekday', 'monthly'].map(type => (
               <div key={type} onClick={() => setRollingType(type)}
-                style={{ flex: 1, padding: '10px', textAlign: 'center', cursor: 'pointer',
-                  backgroundColor: rollingType === type ? '#2a2a2a' : '#1a1a1a',
-                  border: `2px solid ${rollingType === type ? '#aa00ff' : '#2a2a2a'}`,
-                  borderRadius: '8px', fontWeight: rollingType === type ? 'bold' : 'normal' }}>
-                {type === 'weekday' ? 'Day of Week' : 'Day of Month'}
+                style={{ flex: 1, padding: '10px', textAlign: 'center', cursor: 'pointer', backgroundColor: rollingType === type ? '#2a2a2a' : '#1a1a1a', border: `2px solid ${rollingType === type ? '#aa00ff' : '#2a2a2a'}`, borderRadius: '8px', fontWeight: rollingType === type ? 'bold' : 'normal', color: '#fff' }}>
+                {type === 'weekday' ? 'Day of week' : 'Day of month'}
               </div>
             ))}
           </div>
           {rollingType === 'weekday' ? (
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-              {['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map((day, index) => (
-                <div key={day} onClick={() => setRollingValue(index)}
-                  style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', borderRadius: '8px',
-                    backgroundColor: rollingValue === index ? '#aa00ff' : '#1a1a1a',
-                    border: `1px solid ${rollingValue === index ? '#aa00ff' : '#2a2a2a'}`,
-                    color: rollingValue === index ? '#fff' : '#e0e0e0', transition: 'all 0.2s ease' }}>
+              {['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map((day, idx) => (
+                <div key={day} onClick={() => setRollingValue(idx)}
+                  style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', borderRadius: '8px', backgroundColor: rollingValue === idx ? '#aa00ff' : '#1a1a1a', border: `1px solid ${rollingValue === idx ? '#aa00ff' : '#2a2a2a'}`, color: rollingValue === idx ? '#fff' : '#e0e0e0', transition: 'all 0.2s' }}>
                   {day}
                 </div>
               ))}
@@ -1214,9 +1117,7 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
       )}
 
       <div className="button-group">
-        <button className="button-save" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving...' : 'Save Changes'}
-        </button>
+        <button className="button-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</button>
         <button className="button-cancel" onClick={handleCancel}>Cancel</button>
       </div>
     </div>
@@ -1228,14 +1129,14 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
 // ─────────────────────────────────────────────────────────────
 
 const AccessDenied = ({ accessLevel }) => {
-  let requiredPermission = "Administrator";
-  if (accessLevel === 'Member' || accessLevel === 'Moderator') requiredPermission = "Manage Server or Administrator";
+  let required = "Administrator";
+  if (accessLevel === 'Member' || accessLevel === 'Moderator') required = "Manage Server or Administrator";
   return (
     <div className="dashboard-content">
       <div className="error-message-container">
         <div className="error-icon">🔒</div>
-        <h2 className="error-title">Access Denied</h2>
-        <p className="error-message">This server requires <strong>{requiredPermission}</strong> permission to view settings.</p>
+        <h2 className="error-title">Access denied</h2>
+        <p className="error-message">This server requires <strong>{required}</strong> permission to view settings.</p>
       </div>
     </div>
   );
@@ -1270,18 +1171,13 @@ const SettingsDashboard = () => {
 
   const ToastMessage = () => {
     if (!toast) return null;
-    const colors = {
-      success: { bg: '#00b894', icon: '✅' },
-      error:   { bg: '#ff7675', icon: '❌' },
-      info:    { bg: '#0984e3', icon: 'ℹ️'  },
-    };
+    const colors = { success: { bg: '#00b894', icon: '✅' }, error: { bg: '#ff7675', icon: '❌' }, info: { bg: '#0984e3', icon: 'ℹ️' } };
     const color = colors[toast.type] || colors.info;
     return (
       <div className="toast-message" style={{ backgroundColor: color.bg }}>
         <span>{color.icon}</span>
         <span>{toast.message}</span>
-        <button onClick={() => setToast(null)}
-          style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', marginLeft: '10px', fontSize: '16px' }}>✕</button>
+        <button onClick={() => setToast(null)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', marginLeft: '10px', fontSize: '16px' }}>✕</button>
       </div>
     );
   };
@@ -1291,41 +1187,33 @@ const SettingsDashboard = () => {
   const loadInitialData = async () => {
     setLoadingServers(true); setApiError(null); setHasAccess(null);
     try {
-      const authResponse = await fetch(`${API_BASE_URL}/api/auth/status`, {
-        credentials: 'include', headers: { 'Accept': 'application/json' },
-      });
-      if (!authResponse.ok) throw new Error('Auth failed');
-      const authData = await authResponse.json();
+      const authRes = await fetch(`${API_BASE_URL}/api/auth/status`, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+      if (!authRes.ok) throw new Error('Auth failed');
+      const authData = await authRes.json();
 
       if (authData.authenticated && authData.user) {
         setIsAuthenticated(true);
         setCurrentUserId(authData.user.id);
-        if (isPrivilegedUser(authData.user.id)) {
-          setHasAccess(true); setAccessLevel('Admin'); window.accessLevel = 'Admin';
-        }
+        if (isPrivilegedUser(authData.user.id)) { setHasAccess(true); setAccessLevel('Admin'); window.accessLevel = 'Admin'; }
 
-        const serversResponse = await fetch(`${API_BASE_URL}/api/user/servers`, {
-          credentials: 'include', headers: { 'Accept': 'application/json' },
-        });
-        if (serversResponse.ok) {
-          const servers = await serversResponse.json();
+        const srvRes = await fetch(`${API_BASE_URL}/api/user/servers`, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+        if (srvRes.ok) {
+          const servers = await srvRes.json();
           if (Array.isArray(servers) && servers.length > 0) {
-            let selectedServer = authData.user.selected_server
-              ? servers.find(s => s.id === authData.user.selected_server)
-              : null;
-            if (!selectedServer) selectedServer = servers[0];
-            if (selectedServer) {
-              setCurrentServer(selectedServer);
+            let sel = authData.user.selected_server ? servers.find(s => s.id === authData.user.selected_server) : null;
+            if (!sel) sel = servers[0];
+            if (sel) {
+              setCurrentServer(sel);
               if (!isPrivilegedUser(authData.user.id)) {
-                await checkAndLoadSettings(selectedServer.id, selectedServer.permissions, selectedServer.has_admin, selectedServer.has_manage_server);
+                await checkAndLoadSettings(sel.id, sel.permissions, sel.has_admin, sel.has_manage_server);
               } else {
-                await loadSettingsOnly(selectedServer.id);
+                await loadSettingsOnly(sel.id);
               }
             } else { setLoading(false); }
           } else { setLoading(false); }
         } else { setLoading(false); }
       } else { setLoading(false); }
-    } catch (error) {
+    } catch {
       setApiError('Failed to load servers. Please check your connection.');
       setLoading(false);
     } finally { setLoadingServers(false); }
@@ -1333,30 +1221,19 @@ const SettingsDashboard = () => {
 
   const loadSettingsOnly = async (guildId) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/settings/get`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        credentials: 'include', body: JSON.stringify({ guild_id: guildId }),
-      });
-      if (res.ok) {
-        const d = await res.json();
-        setSettings(d);
-        setAccessLevel(d.dashboard_access_level || 'Member');
-      } else { showToast('Failed to load settings', 'error'); }
+      const res = await fetch(`${API_BASE_URL}/api/settings/get`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ guild_id: guildId }) });
+      if (res.ok) { const d = await res.json(); setSettings(d); setAccessLevel(d.dashboard_access_level || 'Member'); }
+      else showToast('Failed to load settings', 'error');
     } catch { showToast('Error loading settings', 'error'); }
     finally { setLoading(false); }
   };
 
   const checkAndLoadSettings = async (guildId, permissions, hasAdmin, hasManageServer) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/settings/get`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        credentials: 'include', body: JSON.stringify({ guild_id: guildId }),
-      });
+      const res = await fetch(`${API_BASE_URL}/api/settings/get`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ guild_id: guildId }) });
       if (res.ok) {
-        const d = await res.json();
-        setSettings(d);
-        const lvl = d.dashboard_access_level || 'Member';
-        setAccessLevel(lvl);
+        const d = await res.json(); setSettings(d);
+        const lvl = d.dashboard_access_level || 'Member'; setAccessLevel(lvl);
         let access = false;
         if (lvl === 'Public') access = true;
         else if (lvl === 'Member' || lvl === 'Moderator') access = hasAdmin || hasManageServer;
@@ -1368,46 +1245,32 @@ const SettingsDashboard = () => {
   };
 
   const settingDisplayNames = {
-    prefix: 'Prefix', timezone: 'Timezone', voice_states: 'Voice States',
-    bot_filter: 'Bot Filter', permission_level: 'Command Permission Access Level',
-    dashboard_access_level: 'Dashboard Access Level',
+    prefix: 'Prefix', timezone: 'Timezone', voice_states: 'Voice states',
+    bot_filter: 'Bot filter', permission_level: 'Command permission access level',
+    dashboard_access_level: 'Dashboard access level',
   };
 
   const updateSetting = async (setting, value) => {
     if (!currentServer) return false;
     setSaving(prev => ({ ...prev, [setting]: true }));
     try {
-      const res = await fetch(`${API_BASE_URL}/api/settings/update`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ guild_id: currentServer.id, setting, value }),
-      });
+      const res = await fetch(`${API_BASE_URL}/api/settings/update`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ guild_id: currentServer.id, setting, value }) });
       const result = await res.json();
-      if (result.success) {
-        setSettings(prev => ({ ...prev, [setting]: value }));
-        showToast(`Successfully updated ${settingDisplayNames[setting] || setting}`, 'success');
-        return true;
-      } else { showToast(result.message || 'Failed to update setting', 'error'); return false; }
+      if (result.success) { setSettings(prev => ({ ...prev, [setting]: value })); showToast(`Updated ${settingDisplayNames[setting] || setting}`, 'success'); return true; }
+      else { showToast(result.message || 'Failed to update setting', 'error'); return false; }
     } catch { showToast(`Error updating ${settingDisplayNames[setting] || setting}`, 'error'); return false; }
     finally { setSaving(prev => ({ ...prev, [setting]: false })); }
   };
 
-  const updateTimePeriod = async (timePeriodData) => {
+  const updateTimePeriod = async (data) => {
     if (!currentServer) return false;
     setSaving(prev => ({ ...prev, timePeriod: true }));
     try {
-      const res = await fetch(`${API_BASE_URL}/api/settings/time-period/update`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ guild_id: currentServer.id, ...timePeriodData }),
-      });
+      const res = await fetch(`${API_BASE_URL}/api/settings/time-period/update`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ guild_id: currentServer.id, ...data }) });
       const result = await res.json();
-      if (result.success) {
-        setSettings(prev => ({ ...prev, ...timePeriodData }));
-        showToast('Successfully updated time period settings', 'success');
-        return true;
-      } else { showToast(result.message || 'Failed to update time period settings', 'error'); return false; }
-    } catch { showToast('Error updating time period settings', 'error'); return false; }
+      if (result.success) { setSettings(prev => ({ ...prev, ...data })); showToast('Updated default time period', 'success'); return true; }
+      else { showToast(result.message || 'Failed to update time period', 'error'); return false; }
+    } catch { showToast('Error updating time period', 'error'); return false; }
     finally { setSaving(prev => ({ ...prev, timePeriod: false })); }
   };
 
@@ -1429,7 +1292,7 @@ const SettingsDashboard = () => {
   if (!isAuthenticated) {
     return (<><NavBar /><div className="dashboard-page"><DashboardSidebar topOffset={NAVBAR_HEIGHT} />
       <main className="dashboard-main"><div className="dashboard-content">
-        <div className="no-server"><h2>Please Log In</h2><p>You need to be logged in to configure settings.</p>
+        <div className="no-server"><h2>Please log in</h2><p>You need to be logged in to configure settings.</p>
           <a href={`${API_BASE_URL}/api/auth/discord`} className="login-button">Login with Discord</a>
         </div></div><Footer /></main></div><style>{styles}</style></>);
   }
@@ -1437,9 +1300,9 @@ const SettingsDashboard = () => {
   if (!currentServer) {
     return (<><NavBar /><div className="dashboard-page"><DashboardSidebar topOffset={NAVBAR_HEIGHT} />
       <main className="dashboard-main"><div className="dashboard-content">
-        <div className="no-server"><h2>No Server Available</h2><p>Add the bot to a Discord server to configure settings.</p>
+        <div className="no-server"><h2>No server available</h2><p>Add the bot to a Discord server to configure settings.</p>
           <a href="https://discord.com/oauth2/authorize?client_id=1424327933417492480&permissions=352807976696992&integration_type=0&scope=bot+applications.commands"
-            className="invite-button" target="_blank" rel="noopener noreferrer">Invite Bot to Server</a>
+            className="invite-button" target="_blank" rel="noopener noreferrer">Invite bot to server</a>
         </div></div><Footer /></main></div><style>{styles}</style></>);
   }
 
@@ -1447,13 +1310,12 @@ const SettingsDashboard = () => {
     return (<><NavBar /><div className="dashboard-page"><DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} />
       <main className="dashboard-main"><div className="dashboard-content">
         <div className="error-message-container"><div className="error-icon">⚠️</div>
-          <h2 className="error-title">Error Loading Data</h2>
+          <h2 className="error-title">Error loading data</h2>
           <p className="error-message">{apiError}</p>
           <button onClick={() => window.location.reload()} className="invite-button">Retry</button>
         </div></div><Footer /></main></div><style>{styles}</style></>);
   }
 
-  // ── main render ───────────────────────────────────────────
   return (
     <>
       <NavBar />
@@ -1465,71 +1327,84 @@ const SettingsDashboard = () => {
               <>
                 {settings ? (
                   <div className="settings-grid">
-                    <SettingsCard title="Prefix" icon="⚙️" description="Change the bot's command prefix">
+
+                    {/* 1 — Prefix */}
+                    <SettingsCard title="Prefix" icon={<ALargeSmall size={22} color={ACCENT} />}
+                      description="Change the bot's command prefix">
                       <PrefixSetting currentPrefix={settings.prefix}
                         onSave={(v) => updateSetting('prefix', v)} saving={saving.prefix} />
                     </SettingsCard>
 
-                    <SettingsCard title="Timezone" icon="🌍" description="Set the timezone for time-based statistics">
-                      <TimezoneSetting currentTimezone={settings.timezone}
-                        onSave={(v) => updateSetting('timezone', v)} saving={saving.timezone} />
-                    </SettingsCard>
-
-                    <SettingsCard title="Voice States" icon="🔊" description="Choose which voice states to track">
-                      <VoiceStatesSetting currentStates={settings.voice_states}
-                        onSave={(v) => updateSetting('voice_states', v)} saving={saving.voiceStates} />
-                    </SettingsCard>
-
-                    <SettingsCard title="Bot Filter" icon="🤖" description="Filter bots from statistics">
+                    {/* 2 — Bot Filter */}
+                    <SettingsCard title="Bot filter" icon={<Bot size={22} color={ACCENT} />}
+                      description="Filter bots from statistics">
                       <BotFilterSetting enabled={settings.bot_filter}
                         onSave={(v) => updateSetting('bot_filter', v)} saving={saving.botFilter} />
                     </SettingsCard>
 
-                    <SettingsCard
-                      title="Command Permission Access Level" icon="🔐"
-                      description="Control who can use bot commands"
-                      infoDescriptions={[
-                        { level: 'All',              description: 'All members regardless of their permissions are allowed to use any command on the bot including sensitive commands like reset and blacklist' },
-                        { level: 'Default',          description: 'The default access level that restricts or enables specific commands for users with specific permissions. All commands on the bot are usable by normal members except for blacklist and settings being accessible via manage server, and reset commands being accessible via administrator permissions' },
-                        { level: 'User Restriction', description: 'Mostly the same as Default except users can only use commands that have the user scope on their own account only' },
-                        { level: 'Moderator',        description: 'Only users with the Manage Server permission can use any commands on the bot' },
-                        { level: 'Admin',            description: 'Only users with the administrator permission can use any commands on the bot' },
-                      ]}>
-                      <PermissionLevelSetting currentLevel={settings.permission_level}
-                        onSave={(v) => updateSetting('permission_level', v)} saving={saving.permissionLevel} />
+                    {/* 3 — Timezone */}
+                    <SettingsCard title="Timezone" icon={<Earth size={22} color={ACCENT} />}
+                      description="Set the timezone for time-based statistics">
+                      <TimezoneSetting currentTimezone={settings.timezone}
+                        onSave={(v) => updateSetting('timezone', v)} saving={saving.timezone} />
                     </SettingsCard>
 
-                    <SettingsCard
-                      title="Dashboard Access Level" icon="📊"
-                      description="Control who can view the web dashboard"
-                      infoDescriptions={[
-                        { level: 'Public',    description: 'Any member of the server can view the entire dashboard including the optimization section.' },
-                        { level: 'Member',    description: 'Members of the server can view the analytics section of the dashboard but they need the Manage Server or Administrator permissions to view the optimization section.' },
-                        { level: 'Moderator', description: 'Manage Server or Administrator permission required to view either the analytics or optimization sections of the dashboard.' },
-                        { level: 'Admin',     description: 'Administrator permission required to view either the analytics or optimization sections of the dashboard.' },
-                      ]}>
-                      <DashboardAccessSetting currentLevel={settings.dashboard_access_level || 'Member'}
-                        onSave={(v) => updateSetting('dashboard_access_level', v)} saving={saving.dashboardAccess} />
-                    </SettingsCard>
-
-                    <SettingsCard
-                      title="Time Period" icon="🕐"
+                    {/* 4 — Default Time Period */}
+                    <SettingsCard title="Default time period" icon={<Clock size={22} color={ACCENT} />}
                       description="Set the default time period used across bot commands and the dashboard"
                       infoDescriptions={[
-                        { level: 'All Time',       description: 'No time filter — all historical data is used' },
-                        { level: 'Days Back',       description: 'Show data from the last X days (1-3650 days)' },
-                        { level: 'Date Range',      description: 'Show data between specific dates (open-ended allowed)' },
-                        { level: 'Rolling Window',  description: 'Show data for a specific recurring day (weekly or monthly)' },
+                        { level: 'All time',       description: 'No time filter — all historical data is used' },
+                        { level: 'Days back',       description: 'Show data from the last X days (1–3650 days)' },
+                        { level: 'Date range',      description: 'Show data between specific dates (open-ended allowed)' },
+                        { level: 'Rolling window',  description: 'Show data for a specific recurring day (weekly or monthly)' },
                       ]}>
                       <TimePeriodSetting settings={settings}
                         onSave={(data) => updateTimePeriod(data)} saving={saving.timePeriod} />
                     </SettingsCard>
 
+                    {/* 5 — Voice States */}
+                    <SettingsCard title="Voice states" icon={<Volume2 size={22} color={ACCENT} />}
+                      description="Choose which voice states to track">
+                      <VoiceStatesSetting currentStates={settings.voice_states}
+                        onSave={(v) => updateSetting('voice_states', v)} saving={saving.voiceStates} />
+                    </SettingsCard>
+
+                    {/* 6 — Command Permission Access Level */}
                     <SettingsCard
-                      title="History Data Sync" icon="🗄️"
+                      title="Command permission" icon={<UserRoundKey size={22} color={ACCENT} />}
+                      description="Control who can use bot commands"
+                      infoDescriptions={[
+                        { level: 'All',              description: 'All members regardless of their permissions are allowed to use any command on the bot including sensitive commands like reset and blacklist.' },
+                        { level: 'Default',          description: 'The default access level that restricts or enables specific commands for users with specific permissions. All commands are usable by normal members except blacklist and settings (Manage Server) and reset commands (Administrator).' },
+                        { level: 'User restriction', description: 'Mostly the same as Default except users can only use commands that have the user scope on their own account only.' },
+                        { level: 'Moderator',        description: 'Only users with the Manage Server permission can use any commands on the bot.' },
+                        { level: 'Admin',            description: 'Only users with the Administrator permission can use any commands on the bot.' },
+                      ]}>
+                      <PermissionLevelSetting currentLevel={settings.permission_level}
+                        onSave={(v) => updateSetting('permission_level', v)} saving={saving.permissionLevel} />
+                    </SettingsCard>
+
+                    {/* 7 — Dashboard Access Level */}
+                    <SettingsCard
+                      title="Dashboard access" icon={<LayoutDashboard size={22} color={ACCENT} />}
+                      description="Control who can view the web dashboard"
+                      infoDescriptions={[
+                        { level: 'Public',    description: 'Any member of the server can view the entire dashboard including the optimization section.' },
+                        { level: 'Member',    description: 'Members can view analytics but need Manage Server or Administrator to access the optimization section.' },
+                        { level: 'Moderator', description: 'Manage Server or Administrator required to view any section of the dashboard.' },
+                        { level: 'Admin',     description: 'Administrator permission required to view any section of the dashboard.' },
+                      ]}>
+                      <DashboardAccessSetting currentLevel={settings.dashboard_access_level || 'Member'}
+                        onSave={(v) => updateSetting('dashboard_access_level', v)} saving={saving.dashboardAccess} />
+                    </SettingsCard>
+
+                    {/* 8 — History Data Sync */}
+                    <SettingsCard
+                      title="History data sync" icon={<History size={22} color={ACCENT} />}
                       description="Backfill historical message, mention, and emoji data">
                       <HistorySyncLinkBox />
                     </SettingsCard>
+
                   </div>
                 ) : (
                   <div className="loading-container">
@@ -1551,10 +1426,6 @@ const SettingsDashboard = () => {
 };
 
 const root = createRoot(document.getElementById("app"));
-root.render(
-  <React.StrictMode>
-    <SettingsDashboard />
-  </React.StrictMode>
-);
+root.render(<React.StrictMode><SettingsDashboard /></React.StrictMode>);
 
 export default SettingsDashboard;

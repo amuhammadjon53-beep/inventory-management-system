@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { createRoot } from "react-dom/client";
+import ReactDOM from "react-dom";
 import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
@@ -433,23 +434,20 @@ const styles = `
     background-color: #2a2a2a;
     font-style: normal;
     font-weight: bold;
+    flex-shrink: 0;
   }
 
   .info-icon:hover { color: #aa00ff; background-color: #3a3a3a; }
 
-  .info-tooltip {
-    position: absolute;
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%);
+  .info-tooltip-portal {
+    position: fixed;
     background-color: #1a1a1a;
     border: 1px solid #aa00ff;
     border-radius: 8px;
     padding: 12px;
-    margin-bottom: 8px;
-    width: 320px;
-    z-index: 1000;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    width: 300px;
+    z-index: 99999;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
     pointer-events: none;
     white-space: normal;
     font-size: 12px;
@@ -457,7 +455,7 @@ const styles = `
     color: #b0b0b0;
   }
 
-  .info-tooltip::after {
+  .info-tooltip-portal::after {
     content: '';
     position: absolute;
     top: 100%;
@@ -865,25 +863,66 @@ const LoadingSpinner = ({ size = "medium", text = "Loading..." }) => {
   );
 };
 
+// Renders the tooltip into document.body via a portal so it's never clipped
+// by overflow:hidden on any ancestor container.
 const InfoIcon = ({ descriptions }) => {
-  const [showTooltip, setShowTooltip] = useState(false);
-  let timeout;
-  const handleMouseEnter = () => { timeout = setTimeout(() => setShowTooltip(true), 300); };
-  const handleMouseLeave = () => { clearTimeout(timeout); setShowTooltip(false); };
-  return (
-    <span className="info-icon" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}
-      style={{ position: 'relative', cursor: 'help' }}>
-      <Info size={13} color="#888" />
-      {showTooltip && (
-        <div className="info-tooltip">
+  const [tooltipPos, setTooltipPos] = useState(null);
+  const iconRef = useRef(null);
+  const timeoutRef = useRef(null);
+
+  const showTooltip = () => {
+    if (!iconRef.current) return;
+    const rect = iconRef.current.getBoundingClientRect();
+    setTooltipPos({
+      // Centre horizontally over the icon; sit above it with 10px gap
+      left: rect.left + rect.width / 2,
+      bottom: window.innerHeight - rect.top + 10,
+    });
+  };
+
+  const handleMouseEnter = () => {
+    timeoutRef.current = setTimeout(showTooltip, 300);
+  };
+
+  const handleMouseLeave = () => {
+    clearTimeout(timeoutRef.current);
+    setTooltipPos(null);
+  };
+
+  useEffect(() => () => clearTimeout(timeoutRef.current), []);
+
+  const tooltip = tooltipPos
+    ? ReactDOM.createPortal(
+        <div
+          className="info-tooltip-portal"
+          style={{
+            bottom: tooltipPos.bottom,
+            left: tooltipPos.left,
+            transform: 'translateX(-50%)',
+          }}
+        >
           {descriptions.map((desc, idx) => (
             <div key={idx} style={{ marginBottom: idx < descriptions.length - 1 ? '8px' : '0' }}>
               <strong style={{ color: '#aa00ff' }}>{desc.level}:</strong> {desc.description}
             </div>
           ))}
-        </div>
-      )}
-    </span>
+        </div>,
+        document.body
+      )
+    : null;
+
+  return (
+    <>
+      <span
+        ref={iconRef}
+        className="info-icon"
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        <Info size={13} color="#888" />
+      </span>
+      {tooltip}
+    </>
   );
 };
 
@@ -938,17 +977,11 @@ const formatElapsed = (startedAt) => {
   return `${Math.floor(diff / 1000)}s`;
 };
 
-// Resolve a channel's display name from the fetched channel-name map first,
-// falling back to whatever the status payload itself provided (if anything),
-// and finally to the raw ID so we never render a blank label.
 const resolveChannelName = (channelId, statusChannelName, channelNames) => {
   const stringId = String(channelId);
   return channelNames[stringId] || statusChannelName || stringId;
 };
 
-// Formats the time remaining until a cooldown's eligible_at timestamp as a
-// human string, e.g. "2 months, 3 days" or "14 days". Returns null once the
-// date has passed (shouldn't normally render then, but guards just in case).
 const formatCooldownRemaining = (eligibleAtIso) => {
   if (!eligibleAtIso) return null;
   const eligibleAt = new Date(eligibleAtIso).getTime();
@@ -1126,8 +1159,7 @@ const SyncPrecautionNote = () => (
 );
 
 // ─────────────────────────────────────────────────────────────
-// Reset confirmation modal (used for single-channel reset, cancel+reset,
-// and reset-all — channelId '__ALL__' is the reset-all case)
+// Reset confirmation modal
 // ─────────────────────────────────────────────────────────────
 
 const ResetModal = ({ target, onConfirm, onClose, isCancelReset }) => {
@@ -1287,9 +1319,9 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
   const [showCustomDepthModal, setShowCustomDepthModal] = useState(false);
   const [actionLoading, setActionLoading] = useState({});
   const [globalLoading, setGlobalLoading] = useState(false);
-  const [resetTarget, setResetTarget] = useState(null);       // single-channel reset
-  const [cancelResetTarget, setCancelResetTarget] = useState(null); // cancel = stop + reset
-  const [resetAllTarget, setResetAllTarget] = useState(false); // reset-all confirmation
+  const [resetTarget, setResetTarget] = useState(null);
+  const [cancelResetTarget, setCancelResetTarget] = useState(null);
+  const [resetAllTarget, setResetAllTarget] = useState(false);
 
   const onCooldown = !!cooldown?.on_cooldown;
 
@@ -1428,7 +1460,6 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
     }
   };
 
-  // Cancel = stop the running task AND wipe progress (full reset), distinct from Pause.
   const handleChannelCancelAndReset = async (channelId, stats) => {
     setChannelLoading(channelId, true);
     setCancelResetTarget(null);
@@ -1493,9 +1524,6 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
     }
   };
 
-  // Reset-all: loops the same /reset call across every channel currently
-  // listed. There's no dedicated bulk endpoint, so this just fires one
-  // request per channel and reports how many failed, if any.
   const handleResetAll = async (_ignoredChannelId, stats) => {
     setResetAllTarget(false);
     setGlobalLoading(true);
@@ -1555,11 +1583,11 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
         <div className="sync-controls-panel">
           <div>
             <div className="sync-section-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              Stat Types to Sync
+              Stat types to sync
               <InfoIcon descriptions={[
-                { level: 'Messages', description: 'How many messages each person sent, plus things like attachments and embeds.' },
+                { level: 'Messages', description: 'How many messages each person sent.' },
                 { level: 'Mentions', description: 'Who mentioned who, and how often.' },
-                { level: 'Emoji',    description: 'Which emoji people used and how many times.' },
+                { level: 'Emoji',    description: 'Which emojis were used and how many times.' },
               ]} />
             </div>
             <div className="sync-stat-toggles">
@@ -1614,22 +1642,22 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
 
           <div className="sync-action-buttons">
             <div className="sync-section-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              Global Actions
+              Global actions
               <InfoIcon descriptions={[
                 { level: 'Initialise', description: 'Adds every channel in your server to the list below. Run this first if the list is empty.' },
-                { level: 'Sync All',   description: 'Backfills history for every channel at once, using the stat types and time period you picked. Only counts toward the 3-month limit if every channel finishes successfully.' },
-                { level: 'Reset All',  description: 'Clears synced progress for every channel at once, for the stat types you choose.' },
+                { level: 'Sync all',   description: 'Backfills history for every channel at once, using the stat types and time period you picked. Only counts toward the 3-month limit if every channel finishes successfully.' },
+                { level: 'Reset all',  description: 'Clears synced progress for every channel at once, for the stat types you choose.' },
               ]} />
             </div>
 
             <button className="sync-btn sync-btn-secondary" onClick={fetchStatus} disabled={loadingStatus || globalLoading}>
               <RotateCcw size={16} color={ACCENT} className={loadingStatus ? 'icon-spin' : ''} />
-              {loadingStatus ? 'Refreshing...' : 'Refresh Status'}
+              {loadingStatus ? 'Refreshing...' : 'Refresh status'}
             </button>
 
             <button className="sync-btn sync-btn-secondary" onClick={handleInit} disabled={globalLoading || loadingStatus}>
               <Power size={16} color={ACCENT} />
-              Initialise All Channels
+              Initialise all channels
             </button>
 
             <button
@@ -1637,15 +1665,14 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
               onClick={() => setResetAllTarget(true)}
               disabled={globalLoading || loadingStatus || channels.length === 0}>
               <Trash2 size={16} color="#ff8a8a" />
-              Reset All Channels
+              Reset all channels
             </button>
 
-            {/* ── Time period selector — sits directly above Sync All Channels ── */}
             <div>
               <div className="sync-section-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                Time Period
+                Time period
                 <InfoIcon descriptions={[
-                  { level: 'Time Period', description: 'How far back to pull history from. Shorter periods finish faster. "All time" goes as far back as Discord allows, and "Custom" lets you pick an exact number of days.' },
+                  { level: 'Time period', description: 'How far back to pull history from. Shorter periods finish faster. "All time" goes as far back as Discord allows, and "Custom" lets you pick an exact number of days.' },
                 ]} />
               </div>
               <div className="sync-depth-row">
@@ -1672,7 +1699,7 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
               disabled={globalLoading || loadingStatus || !atLeastOneStat || onCooldown}
               title={onCooldown ? 'History sync is on cooldown for this server' : undefined}>
               <Play size={16} color="#fff" />
-              {globalLoading ? 'Starting...' : onCooldown ? 'On Cooldown' : 'Sync All Channels'}
+              {globalLoading ? 'Starting...' : onCooldown ? 'On cooldown' : 'Sync all channels'}
             </button>
           </div>
 
@@ -1698,7 +1725,7 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
               <div className="sync-empty-channels">
                 {loadingStatus
                   ? 'Loading channels…'
-                  : 'No channels found. Click "Initialise All Channels" to populate the list.'}
+                  : 'No channels found. Click "Initialise all channels" to populate the list.'}
               </div>
             ) : (
               channels.map(ch => {
@@ -1820,9 +1847,6 @@ const HistorySyncPage = () => {
   const [syncStatus, setSyncStatus] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
 
-  // channel_id -> channel_name, fetched once per server so the dashboard
-  // can show real channel names instead of raw IDs (history_sync_progress
-  // rows don't carry a name column, so we resolve it client-side).
   const [channelNames, setChannelNames] = useState({});
 
   const pollTimer = useRef(null);
@@ -1878,9 +1902,6 @@ const HistorySyncPage = () => {
     }
   }, []);
 
-  // ── Channel names: fetch once per server so the live monitor and
-  // channel list can resolve "#channel-name" instead of a raw snowflake.
-  // Same endpoint the Messages dashboard uses for its channel picker.
   const fetchChannelNames = useCallback(async (guildId) => {
     if (!guildId) return;
     try {
@@ -1907,7 +1928,6 @@ const HistorySyncPage = () => {
     }
   }, [currentServer, fetchChannelNames]);
 
-  // ── polling: faster while something is actively running ──
   useEffect(() => {
     if (!currentServer || hasAccess !== true) return;
 
@@ -1977,10 +1997,6 @@ const HistorySyncPage = () => {
               : servers[0];
             if (selected) {
               setCurrentServer(selected);
-              // History sync is hard-gated to Administrator on the backend
-              // for every endpoint, regardless of the dashboard access level
-              // setting, so we mirror that here rather than reusing
-              // dashboard_access_level.
               setHasAccess(!!selected.has_admin);
             }
           }
@@ -1993,7 +2009,6 @@ const HistorySyncPage = () => {
     }
   };
 
-  // ── render guards ─────────────────────────────────────────
   if (loadingServers) {
     return (<><NavBar /><div className="dashboard-page"><DashboardSidebar topOffset={NAVBAR_HEIGHT} />
       <main className="dashboard-main"><div className="dashboard-content">
@@ -2014,7 +2029,7 @@ const HistorySyncPage = () => {
       <main className="dashboard-main"><div className="dashboard-content">
         <div className="no-server"><h2>No Server Available</h2><p>Add the bot to a Discord server to manage history sync.</p>
           <a href="https://discord.com/oauth2/authorize?client_id=1424327933417492480&permissions=352807976696992&integration_type=0&scope=bot+applications.commands"
-            className="invite-button" target="_blank" rel="noopener noreferrer">Invite Bot to Server</a>
+            className="invite-button" target="_blank" rel="noopener noreferrer">Invite bot to server</a>
         </div></div><Footer /></main></div><style>{styles}</style></>);
   }
 
@@ -2022,7 +2037,7 @@ const HistorySyncPage = () => {
     return (<><NavBar /><div className="dashboard-page"><DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} />
       <main className="dashboard-main"><div className="dashboard-content">
         <div className="error-message-container"><div className="error-icon"><TriangleAlert size={48} color="#ff4444" /></div>
-          <h2 className="error-title">Error Loading Data</h2>
+          <h2 className="error-title">Error loading data</h2>
           <p className="error-message">{apiError}</p>
           <button onClick={() => window.location.reload()} className="invite-button">Retry</button>
         </div></div><Footer /></main></div><style>{styles}</style></>);
