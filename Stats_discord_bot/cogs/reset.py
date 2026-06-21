@@ -2949,6 +2949,40 @@ class ResetStats(commands.Cog):
 
         return False
 
+    async def check_and_execute_scheduled_resets(self):
+        """Find any due reset schedules and run them, called periodically by DatabaseStats' cron."""
+        if not self.db_manager:
+            logger.warning(
+                "check_and_execute_scheduled_resets called but db_manager not ready")
+            return
+
+        try:
+            due_schedules = await self.db_manager.get_due_reset_schedules()
+        except Exception as e:
+            logger.error(f"Failed to fetch due reset schedules: {e}")
+            logger.error(traceback.format_exc())
+            return
+
+        if not due_schedules:
+            return
+
+        logger.info(
+            f"Found {len(due_schedules)} due reset schedule(s) to execute")
+
+        for schedule in due_schedules:
+            schedule_id = schedule['id']
+            try:
+                results = await self.db_manager.execute_scheduled_reset(schedule)
+                await self.db_manager.mark_schedule_completed(schedule_id)
+                logger.info(
+                    f"Executed schedule {schedule_id} (guild {schedule['guild_id']}): {results}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to execute scheduled reset {schedule_id}: {e}")
+                logger.error(traceback.format_exc())
+                # Don't mark completed on failure — leave next_execution_at as-is so
+                # it gets retried on the next poll instead of silently skipping a run
+
     # =========================================================
     # PREFIX COMMANDS
     # =========================================================

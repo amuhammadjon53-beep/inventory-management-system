@@ -263,9 +263,9 @@ class DatabaseStats(commands.Cog):
         self.server_count_cron = aiocron.crontab(
             '0 */3 * * *', func=self.send_server_count_message, tz=ZoneInfo('UTC'))
         self.reset_schedule_cron = aiocron.crontab(
-            '0 */12 * * *', func=self.check_and_execute_scheduled_resets, tz=ZoneInfo('UTC'))
+            '*/30 * * * *', func=self.check_and_execute_scheduled_resets, tz=ZoneInfo('UTC'))
 
-        print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, Server count message every 3 hours, Reset schedule checker every 12 hours")
+        print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, Server count message every 3 hours, Reset schedule checker every 30 minutes.")
 
     async def check_and_execute_scheduled_resets(self):
         """Check for due reset schedules and execute them - runs every 12 hours."""
