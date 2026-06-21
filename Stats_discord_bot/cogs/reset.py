@@ -172,6 +172,19 @@ class DatabaseManager:
                                                   second=target_second, microsecond=0)
                     candidates.append(next_time)
 
+            elif pattern == 'weekday' and weekdays:
+                valid_weekdays = [d for d in weekdays if d < 5]
+                if valid_weekdays:
+                    current_weekday = now.weekday()
+                    for weekday in valid_weekdays:
+                        days_ahead = weekday - current_weekday
+                        if days_ahead <= 0:
+                            days_ahead += 7
+                        next_time = now + timedelta(days=days_ahead)
+                        next_time = next_time.replace(hour=target_hour, minute=target_minute,
+                                                      second=target_second, microsecond=0)
+                        candidates.append(next_time)
+
             elif pattern == 'monthly' and days_of_month:
                 year = now.year
                 month = now.month
