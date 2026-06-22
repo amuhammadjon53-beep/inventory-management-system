@@ -78,6 +78,51 @@ def parse_date_string(s: str) -> Optional[datetime]:
         return None
 
 
+# Stat toggle metadata: key -> (display_label, description, default)
+STAT_TOGGLE_META = {
+    'track_messages': (
+        'Messages',
+        'Track how many messages each user sends, including character counts, attachments, and embeds.',
+        True,
+    ),
+    'track_voice': (
+        'Voice',
+        'Track time users spend in voice channels, including session counts and state flags (mute, deafen, stream, video).',
+        True,
+    ),
+    'track_invites': (
+        'Invites',
+        'Track which invite links are used when members join, and detect suspicious invites based on account age.',
+        True,
+    ),
+    'track_mentions': (
+        'Mentions',
+        'Track when users mention each other in messages, including who was mentioned and by whom.',
+        False,
+    ),
+    'track_emojis': (
+        'Emojis',
+        'Track emoji usage in messages and reactions, including both custom and standard Unicode emojis.',
+        False,
+    ),
+    'track_status_activity': (
+        'Status Activity',
+        'Track game and application activity sessions when users show a Rich Presence status.',
+        False,
+    ),
+    'track_member_growth': (
+        'Member Growth',
+        'Track when members join and leave the server to build a timeline of server growth.',
+        False,
+    ),
+    'track_role_growth': (
+        'Role Growth',
+        'Track when roles are assigned to or removed from members over time.',
+        False,
+    ),
+}
+
+
 # ============================================================
 # SETTINGS COG
 # ============================================================
@@ -116,7 +161,7 @@ class Settings(commands.Cog):
 
         try:
             async with self.pool.acquire() as conn:
-                # Create settings table
+                # Create settings table (matches initialize_database schema)
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS settings (
                         guild_id BIGINT PRIMARY KEY,
@@ -134,11 +179,19 @@ class Settings(commands.Cog):
                         default_to_date TIMESTAMPTZ DEFAULT NULL,
                         default_rolling_type TEXT DEFAULT NULL,
                         default_rolling_value INT DEFAULT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        track_messages BOOLEAN DEFAULT TRUE,
+                        track_voice BOOLEAN DEFAULT TRUE,
+                        track_emojis BOOLEAN DEFAULT FALSE,
+                        track_invites BOOLEAN DEFAULT TRUE,
+                        track_status_activity BOOLEAN DEFAULT FALSE,
+                        track_mentions BOOLEAN DEFAULT FALSE,
+                        track_member_growth BOOLEAN DEFAULT FALSE,
+                        track_role_growth BOOLEAN DEFAULT FALSE
                     )
                 """)
 
-                # ALTER TABLE — add new time period columns to existing guilds
+                # ALTER TABLE — add all columns that may be missing on existing installations
                 settings_alter_queries = [
                     "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_time_mode TEXT DEFAULT 'days_back'",
                     "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_days_back INT DEFAULT 14",
@@ -146,6 +199,14 @@ class Settings(commands.Cog):
                     "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_to_date TIMESTAMPTZ DEFAULT NULL",
                     "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_rolling_type TEXT DEFAULT NULL",
                     "ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_rolling_value INT DEFAULT NULL",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_messages BOOLEAN DEFAULT TRUE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_voice BOOLEAN DEFAULT TRUE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_emojis BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_invites BOOLEAN DEFAULT TRUE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_status_activity BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_mentions BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_member_growth BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_role_growth BOOLEAN DEFAULT FALSE",
                 ]
                 for query in settings_alter_queries:
                     try:
@@ -270,6 +331,14 @@ class Settings(commands.Cog):
             'default_to_date': None,
             'default_rolling_type': None,
             'default_rolling_value': None,
+            'track_messages': True,
+            'track_voice': True,
+            'track_emojis': False,
+            'track_invites': True,
+            'track_status_activity': False,
+            'track_mentions': False,
+            'track_member_growth': False,
+            'track_role_growth': False,
         }
 
     async def create_default_settings(self, guild_id: int):
@@ -307,9 +376,43 @@ class Settings(commands.Cog):
                     f"UPDATE settings SET {setting} = $1 WHERE guild_id = $2",
                     value, guild_id
                 )
+                # Invalidate the stat toggle cache in DatabaseStats cog if relevant
+                if setting.startswith('track_'):
+                    db_cog = self.bot.get_cog('DatabaseStats')
+                    if db_cog and hasattr(db_cog, '_invalidate_stat_toggle_cache'):
+                        db_cog._invalidate_stat_toggle_cache(guild_id)
                 return True
         except Exception as e:
             print(f"❌ Settings: Error updating {setting}: {e}")
+            return False
+
+    async def update_stat_toggles(self, guild_id: int, toggles: dict) -> bool:
+        """Update multiple stat toggle columns at once."""
+        if not self.pool or not self.initialized:
+            return False
+
+        # Only allow known toggle keys
+        allowed = set(STAT_TOGGLE_META.keys())
+        safe = {k: v for k, v in toggles.items() if k in allowed}
+        if not safe:
+            return False
+
+        set_clauses = ', '.join(f"{k} = ${i+2}" for i, k in enumerate(safe))
+        values = list(safe.values())
+
+        try:
+            async with self.pool.acquire() as conn:
+                await self.create_default_settings(guild_id)
+                await conn.execute(
+                    f"UPDATE settings SET {set_clauses} WHERE guild_id = $1",
+                    guild_id, *values
+                )
+                db_cog = self.bot.get_cog('DatabaseStats')
+                if db_cog and hasattr(db_cog, '_invalidate_stat_toggle_cache'):
+                    db_cog._invalidate_stat_toggle_cache(guild_id)
+                return True
+        except Exception as e:
+            print(f"❌ Settings: Error updating stat toggles: {e}")
             return False
 
     async def update_time_period_setting(
@@ -602,6 +705,8 @@ class Settings(commands.Cog):
              "Choose from the 5 levels of permission access."),
             ("`Suspicious Invite Tracking`",
              "Set minimum account age to detect suspicious invites."),
+            ("`Stat Toggles`",
+             "Enable or disable specific stat types being tracked on this server."),
             ("`Time Period`", "Change the default time period that commands on the bot use."),
         ]
 
@@ -825,8 +930,10 @@ class MainSettingsView(discord.ui.View):
                                  description="Configure command permissions"),
             discord.SelectOption(label="Suspicious Invite Tracking", value="suspicious_invites",
                                  description="Configure suspicious invite detection"),
+            discord.SelectOption(label="Stat Toggles", value="stat_toggles",
+                                 description="Enable or disable specific stat types"),
             discord.SelectOption(label="Time Period", value="time_period",
-                                 description="Change the default time period that commands on the bot use."),
+                                 description="Change the default time period that commands use"),
         ]
     )
     async def settings_select(self, interaction: discord.Interaction, select: discord.ui.Select):
@@ -849,6 +956,8 @@ class MainSettingsView(discord.ui.View):
             await self.show_permissions_menu(interaction)
         elif setting_type == "suspicious_invites":
             await self.show_suspicious_invites_menu(interaction)
+        elif setting_type == "stat_toggles":
+            await self.show_stat_toggles_menu(interaction)
         elif setting_type == "time_period":
             await self.show_time_period_menu(interaction)
 
@@ -871,6 +980,8 @@ class MainSettingsView(discord.ui.View):
              "Choose from the 5 levels of permission access."),
             ("`Suspicious Invite Tracking`",
              "Set minimum account age to detect suspicious invites."),
+            ("`Stat Toggles`",
+             "Enable or disable specific stat types being tracked on this server."),
             ("`Time Period`", "Change the default time period that commands on the bot use."),
         ]
         for setting_name, description in settings_list:
@@ -1019,6 +1130,14 @@ class MainSettingsView(discord.ui.View):
         )
         view = SuspiciousInvitesView(self.cog, self.guild_id, current_days)
         await interaction.edit_original_response(embed=embed, view=view)
+
+    async def show_stat_toggles_menu(self, interaction: discord.Interaction):
+        if not await self.check_permission(interaction):
+            await self.send_permission_error(interaction)
+            return
+        settings = await self.cog.get_guild_settings(self.guild_id)
+        view = StatTogglesView(self.cog, self.guild_id, settings)
+        await interaction.edit_original_response(embed=view.build_embed(), view=view)
 
     async def show_time_period_menu(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
@@ -2045,6 +2164,171 @@ class SuspiciousInvitesModal(discord.ui.Modal, title="Change Minimum Account Age
         else:
             await interaction.followup.send(
                 "❌ Failed to update suspicious invite settings. Please try again.", ephemeral=True)
+
+
+# ============================================================
+# STAT TOGGLES VIEW
+# ============================================================
+
+class StatTogglesView(discord.ui.View):
+    def __init__(self, cog, guild_id, settings):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.settings = settings
+        self.message = None
+
+        # Build selected_toggles from current settings
+        self.selected_toggles = [
+            key for key, (label, desc, default) in STAT_TOGGLE_META.items()
+            if settings.get(key, default)
+        ]
+
+        self._rebuild()
+
+    def _rebuild(self):
+        self.clear_items()
+
+        options = []
+        for key, (label, desc, default) in STAT_TOGGLE_META.items():
+            # Truncate description to 100 chars (Discord limit)
+            short_desc = desc[:97] + '...' if len(desc) > 100 else desc
+            options.append(discord.SelectOption(
+                label=label,
+                value=key,
+                description=short_desc,
+                default=key in self.selected_toggles,
+            ))
+
+        select_menu = discord.ui.Select(
+            placeholder="Select stat types to track...",
+            options=options,
+            min_values=0,
+            max_values=len(options),
+        )
+        select_menu.callback = self._select_callback
+        self.add_item(select_menu)
+
+        apply_btn = discord.ui.Button(
+            label="Apply Changes",
+            style=discord.ButtonStyle.success,
+            row=1,
+        )
+        apply_btn.callback = self._apply_callback
+        self.add_item(apply_btn)
+
+        back_btn = discord.ui.Button(
+            label="↩ Back",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        back_btn.callback = self._back_callback
+        self.add_item(back_btn)
+
+        # Update placeholder to reflect count
+        count = len(self.selected_toggles)
+        self.children[0].placeholder = (
+            f"Selected {count} stat type{'s' if count != 1 else ''}"
+            if count else "Select stat types to track..."
+        )
+
+    def build_embed(self) -> discord.Embed:
+        enabled = self.selected_toggles
+
+        lines = []
+        for key, (label, desc, default) in STAT_TOGGLE_META.items():
+            status = "Enabled" if key in enabled else "Disabled"
+            lines.append(f"**{label}** — {status}\n{desc}")
+
+        currently = ', '.join(
+            STAT_TOGGLE_META[k][0] for k in enabled
+        ) if enabled else 'None'
+
+        embed = discord.Embed(
+            title="📈 Stat Toggles",
+            description=(
+                "Choose which stat types the bot actively tracks on this server. "
+                "Disabling a stat type stops new data being collected for it — "
+                "existing data is not deleted.\n\n"
+                + '\n\n'.join(lines)
+                + f"\n\n**Currently enabled:** {currently}\n\n"
+                "Select from the dropdown below, then press **Apply Changes**."
+            ),
+            color=discord.Color.purple(),
+        )
+        return embed
+
+    async def check_permission(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        settings = await self.cog.get_guild_settings(self.guild_id)
+        permission_level = settings.get('permission_level', 'Default')
+        if permission_level == 'All':
+            return True
+        elif permission_level == 'Admin':
+            return interaction.user.guild_permissions.administrator
+        elif permission_level == 'Moderator':
+            return interaction.user.guild_permissions.manage_guild
+        elif permission_level in ('Default', 'User Restriction'):
+            return (interaction.user.guild_permissions.administrator
+                    or interaction.user.guild_permissions.manage_guild)
+        return False
+
+    async def send_permission_error(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="❌ Permission Denied",
+            description="You do not have permission to change this setting.",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _select_callback(self, interaction: discord.Interaction):
+        if not await self.check_permission(interaction):
+            await self.send_permission_error(interaction)
+            return
+        await interaction.response.defer()
+        self.selected_toggles = list(self.children[0].values)
+        self._rebuild()
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+
+    async def _apply_callback(self, interaction: discord.Interaction):
+        if not await self.check_permission(interaction):
+            await self.send_permission_error(interaction)
+            return
+        await interaction.response.defer()
+
+        # Build the full dict of all toggle keys -> bool
+        toggles = {key: (key in self.selected_toggles)
+                   for key in STAT_TOGGLE_META}
+        success = await self.cog.update_stat_toggles(self.guild_id, toggles)
+
+        if success:
+            enabled_names = [STAT_TOGGLE_META[k][0]
+                             for k in self.selected_toggles]
+            enabled_str = ', '.join(
+                f'`{n}`' for n in enabled_names) if enabled_names else '`None`'
+            await interaction.followup.send(
+                f"✅ Stat tracking updated. Now enabled: {enabled_str}", ephemeral=True)
+            await asyncio.sleep(2)
+            updated_settings = await self.cog.get_guild_settings(self.guild_id)
+            view = StatTogglesView(self.cog, self.guild_id, updated_settings)
+            await interaction.edit_original_response(embed=view.build_embed(), view=view)
+        else:
+            await interaction.followup.send(
+                "❌ Failed to update stat toggles. Please try again.", ephemeral=True)
+
+    async def _back_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        view = MainSettingsView(self.cog, self.guild_id)
+        await view.show_main_menu(interaction)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except Exception:
+            pass
 
 
 # ============================================================

@@ -3067,12 +3067,22 @@ class ActivityTracker(commands.Cog):
             except Exception as e:
                 print(f"[ERROR] Error saving stale session: {e}")
 
+    async def _get_stat_toggles(self, guild_id: int) -> Dict[str, bool]:
+        db_cog = self.bot.get_cog('DatabaseStats')
+        if db_cog:
+            return await db_cog._get_stat_toggles(guild_id)
+        return {'track_status_activity': False}
+
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
         if before.bot:
             return
 
         if await self._is_privacy_mode_enabled(before.id, before.guild.id):
+            return
+
+        toggles = await self._get_stat_toggles(before.guild.id)
+        if not toggles.get('track_status_activity'):
             return
 
         current_time = datetime.utcnow()
@@ -3104,6 +3114,9 @@ class ActivityTracker(commands.Cog):
                 await self.start_activity_session(after, activity, current_time)
 
     async def start_activity_session(self, member: discord.Member, activity, start_time: datetime):
+        toggles = await self._get_stat_toggles(member.guild.id)
+        if not toggles.get('track_status_activity'):
+            return
         user_id = member.id
         guild_id = member.guild.id
 
@@ -3138,6 +3151,9 @@ class ActivityTracker(commands.Cog):
         }
 
     async def end_activity_session(self, member: discord.Member, activity, end_time: datetime):
+        toggles = await self._get_stat_toggles(member.guild.id)
+        if not toggles.get('track_status_activity'):
+            return
         user_id = member.id
         guild_id = member.guild.id
 

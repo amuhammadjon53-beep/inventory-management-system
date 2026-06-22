@@ -28,6 +28,15 @@ import {
   VolumeX,
   EarOff,
   Info,
+  ToggleRight,
+  MessageCircle,
+  UserPlus,
+  Smile,
+  Gamepad2,
+  ChartColumnIncreasing,
+  ChartNoAxesCombined,
+  AtSign,
+  RotateCcw,
 } from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
@@ -271,6 +280,22 @@ const styles = `
 
   .button-cancel:hover { background-color: #3a3a3a; }
 
+  .button-reset {
+    background-color: transparent;
+    border: 1px solid #3a3a3a;
+    color: #b0b0b0;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .button-reset:hover { background-color: #2a2a2a; color: #fff; border-color: #4a4a4a; }
+  .button-reset:disabled { opacity: 0.5; cursor: not-allowed; }
+
   .voice-states-grid {
     margin-bottom: 16px;
     max-height: 350px;
@@ -344,6 +369,34 @@ const styles = `
   .voice-state-checkbox.selected {
     background-color: #aa00ff;
     border: none;
+  }
+
+  /* ── Tracked-items pill summary (used by Voice States & Stat Type Toggle previews) ── */
+  .tracked-pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .tracked-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background-color: #232323;
+    border: 1px solid #2f2f2f;
+    border-radius: 999px;
+    padding: 4px 10px 4px 8px;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: #d8d8d8;
+    letter-spacing: 0.1px;
+  }
+
+  .tracked-pill-empty {
+    color: #666;
+    font-size: 12px;
+    font-style: italic;
   }
 
   .bot-filter-container {
@@ -749,20 +802,22 @@ const VoiceStatesSetting = ({ currentStates, onSave, saving }) => {
     const selectedCount = (currentStates || []).length;
     return (
       <div>
-        <div className="setting-preview">
-          <div>
+        <div className="setting-preview" style={{ alignItems: 'flex-start' }}>
+          <div style={{ flex: 1 }}>
             <span className="setting-value">{selectedCount} state{selectedCount !== 1 ? 's' : ''} tracked</span>
-            {selectedCount > 0 && (
-              <div style={{ fontSize: '12px', color: '#888', marginTop: '4px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {selectedCount > 0 ? (
+              <div className="tracked-pill-row">
                 {currentStates.map(state => {
                   const opt = voiceStateOptions.find(o => o.value === state);
                   return opt ? (
-                    <span key={state} style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
-                      <opt.Icon size={12} color="#666" /> {opt.label}
+                    <span key={state} className="tracked-pill">
+                      <opt.Icon size={12} color="#aa00ff" /> {opt.label}
                     </span>
-                  ) : state;
+                  ) : null;
                 })}
               </div>
+            ) : (
+              <div className="tracked-pill-row"><span className="tracked-pill-empty">No voice states tracked</span></div>
             )}
           </div>
           <button className="setting-change-btn" onClick={() => setEditing(true)}>Configure</button>
@@ -798,6 +853,170 @@ const VoiceStatesSetting = ({ currentStates, onSave, saving }) => {
       <div className="button-group">
         <button className="button-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</button>
         <button className="button-cancel" onClick={() => { setSelectedStates(currentStates || []); setEditing(false); }}>Cancel</button>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// StatTypesSetting — enable/disable which stat types are tracked
+// ─────────────────────────────────────────────────────────────
+
+const STAT_TYPE_OPTIONS = [
+  { key: 'track_messages',        Icon: MessageCircle,         label: 'Messages' },
+  { key: 'track_voice',           Icon: Volume2,                label: 'Voice activity' },
+  { key: 'track_invites',         Icon: UserPlus,               label: 'Invites' },
+  { key: 'track_emojis',          Icon: Smile,                  label: 'Emojis' },
+  { key: 'track_status_activity', Icon: Gamepad2,                label: 'Status activity' },
+  { key: 'track_mentions',        Icon: AtSign,                  label: 'Mentions' },
+  { key: 'track_member_growth',   Icon: ChartColumnIncreasing,   label: 'Member growth' },
+  { key: 'track_role_growth',     Icon: ChartNoAxesCombined,     label: 'Role growth' },
+];
+
+const StatTypesSetting = ({ guildId, showToast }) => {
+  const [toggles, setToggles] = useState(null);
+  const [selectedKeys, setSelectedKeys] = useState([]);
+  const [editing, setEditing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const loadToggles = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/settings/stat-toggles?guild_id=${guildId}`, {
+        credentials: 'include', headers: { 'Accept': 'application/json' }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setToggles(data);
+        setSelectedKeys(STAT_TYPE_OPTIONS.filter(o => data[o.key]).map(o => o.key));
+      }
+    } catch {
+      showToast && showToast('Error loading stat type toggles', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { if (guildId) loadToggles(); }, [guildId]);
+
+  const handleToggle = (key) =>
+    setSelectedKeys(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const payload = {};
+      STAT_TYPE_OPTIONS.forEach(o => { payload[o.key] = selectedKeys.includes(o.key); });
+
+      const res = await fetch(`${API_BASE_URL}/api/settings/stat-toggles/set-bulk`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ guild_id: guildId, toggles: payload })
+      });
+      const result = await res.json();
+      if (res.ok && result.success) {
+        setToggles(result.toggles);
+        showToast && showToast('Updated stat type toggles', 'success');
+        setEditing(false);
+      } else {
+        showToast && showToast(result.detail || 'Failed to update stat toggles', 'error');
+      }
+    } catch {
+      showToast && showToast('Error updating stat toggles', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = async () => {
+    setResetting(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/settings/stat-toggles/reset`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ guild_id: guildId })
+      });
+      const result = await res.json();
+      if (res.ok && result.success) {
+        setToggles(result.toggles);
+        setSelectedKeys(STAT_TYPE_OPTIONS.filter(o => result.toggles[o.key]).map(o => o.key));
+        showToast && showToast('Reverted stat types to default', 'success');
+        setEditing(false);
+      } else {
+        showToast && showToast(result.detail || 'Failed to reset stat toggles', 'error');
+      }
+    } catch {
+      showToast && showToast('Error resetting stat toggles', 'error');
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const handleCancel = () => {
+    if (toggles) setSelectedKeys(STAT_TYPE_OPTIONS.filter(o => toggles[o.key]).map(o => o.key));
+    setEditing(false);
+  };
+
+  if (loading || !toggles) {
+    return <LoadingSpinner size="small" text="Loading stat types..." />;
+  }
+
+  if (!editing) {
+    const enabledOptions = STAT_TYPE_OPTIONS.filter(o => toggles[o.key]);
+    return (
+      <div>
+        <div className="setting-preview" style={{ alignItems: 'flex-start' }}>
+          <div style={{ flex: 1 }}>
+            <span className="setting-value">{enabledOptions.length} of {STAT_TYPE_OPTIONS.length} tracked</span>
+            {enabledOptions.length > 0 ? (
+              <div className="tracked-pill-row">
+                {enabledOptions.map(({ key, Icon, label }) => (
+                  <span key={key} className="tracked-pill">
+                    <Icon size={12} color="#aa00ff" /> {label}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="tracked-pill-row"><span className="tracked-pill-empty">No stat types tracked</span></div>
+            )}
+          </div>
+          <button className="setting-change-btn" onClick={() => setEditing(true)}>Configure</button>
+        </div>
+        <div className="button-group">
+          <button className="button-reset" onClick={handleReset} disabled={resetting}>
+            <RotateCcw size={13} /> {resetting ? 'Reverting...' : 'Revert to default'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="voice-states-grid">
+        {STAT_TYPE_OPTIONS.map(({ key, Icon, label }) => {
+          const isSelected = selectedKeys.includes(key);
+          return (
+            <div key={key} className={`voice-state-option ${isSelected ? 'selected' : ''}`} onClick={() => handleToggle(key)}>
+              <div className="voice-state-info">
+                <div className="voice-state-icon">
+                  <Icon size={16} color={isSelected ? ACCENT : '#666'} />
+                </div>
+                <div className="voice-state-label" style={{ marginBottom: 0 }}>{label}</div>
+              </div>
+              <div className={`voice-state-checkbox ${isSelected ? 'selected' : ''}`}>
+                {isSelected && <span style={{ color: '#fff', fontSize: '12px', fontWeight: 'bold' }}>✓</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="button-group">
+        <button className="button-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</button>
+        <button className="button-cancel" onClick={handleCancel}>Cancel</button>
+        <button className="button-reset" onClick={handleReset} disabled={resetting}>
+          <RotateCcw size={13} /> {resetting ? 'Reverting...' : 'Revert to default'}
+        </button>
       </div>
     </div>
   );
@@ -1362,7 +1581,16 @@ const SettingsDashboard = () => {
                         onSave={(data) => updateTimePeriod(data)} saving={saving.timePeriod} />
                     </SettingsCard>
 
-                    {/* 5 — Voice States */}
+                    {/* 5 — Stat Type Toggle */}
+                    <SettingsCard title="Stat Type Toggle" icon={<ToggleRight size={22} color={ACCENT} />}
+                      description="Choose which stat types the bot actively tracks on this server"
+                      infoDescriptions={[
+                        { level: 'How it works', description: 'These are the stat types tracked by the bot. Enable or disable any of them — disabling a type stops new data being collected for it, but existing data is kept.' },
+                      ]}>
+                      <StatTypesSetting guildId={currentServer.id} showToast={showToast} />
+                    </SettingsCard>
+
+                    {/* 6 — Voice States */}
                     <SettingsCard title="Voice States" icon={<Volume2 size={22} color={ACCENT} />}
                       description="Choose which voice states to track"
                       infoDescriptions={[
@@ -1380,7 +1608,7 @@ const SettingsDashboard = () => {
                         onSave={(v) => updateSetting('voice_states', v)} saving={saving.voiceStates} />
                     </SettingsCard>
 
-                    {/* 6 — Command Permission Access Level */}
+                    {/* 7 — Command Permission Access Level */}
                     <SettingsCard
                       title="Command Permission Access Level" icon={<UserRoundKey size={22} color={ACCENT} />}
                       description="Control who can use bot commands"
@@ -1395,7 +1623,7 @@ const SettingsDashboard = () => {
                         onSave={(v) => updateSetting('permission_level', v)} saving={saving.permissionLevel} />
                     </SettingsCard>
 
-                    {/* 7 — Dashboard Access Level */}
+                    {/* 8 — Dashboard Access Level */}
                     <SettingsCard
                       title="Dashboard Access Level" icon={<LayoutDashboard size={22} color={ACCENT} />}
                       description="Control who can view the web dashboard"
@@ -1409,7 +1637,7 @@ const SettingsDashboard = () => {
                         onSave={(v) => updateSetting('dashboard_access_level', v)} saving={saving.dashboardAccess} />
                     </SettingsCard>
 
-                    {/* 8 — History Data Sync */}
+                    {/* 9 — History Data Sync */}
                     <SettingsCard
                       title="History Data Sync" icon={<History size={22} color={ACCENT} />}
                       description="Backfill historical messages, mentions, and emoji data from before the bot's join.">

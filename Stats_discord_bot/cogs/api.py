@@ -3,7 +3,6 @@ import uuid
 import logging
 import aiohttp
 import asyncpg
-from datetime import datetime, timedelta, date
 from typing import Optional, List, Dict, Any, Tuple, Union, Literal
 from contextlib import asynccontextmanager
 import asyncio
@@ -27,7 +26,7 @@ import unicodedata
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Literal
-from datetime import datetime, timedelta, timezone, time as dt_time
+from datetime import datetime, timedelta, date, timezone, time as dt_time
 import time
 try:
     from . import paddle_client
@@ -62,7 +61,6 @@ from exceptions import (
 )
 import redis.asyncio as redis
 import re
-from datetime import datetime, time
 from pydantic import BaseModel, Field, field_validator, model_validator
 import secrets
 from dotenv import load_dotenv
@@ -211,6 +209,64 @@ class AuthStatusResponse(BaseModel):
     authenticated: bool
     user: Optional[Dict[str, Any]] = None
 
+
+# Stat type request models
+
+class StatToggleRequest(BaseModel):
+    guild_id: str
+    toggle_key: str
+    value: bool
+
+
+class StatTogglesBulkRequest(BaseModel):
+    guild_id: str
+    toggles: Dict[str, bool]
+    
+class ResetStatTogglesRequest(BaseModel):
+    guild_id: str
+    
+STAT_TOGGLE_META = {
+        'track_messages': (
+            'Messages',
+            'Track how many messages each user sends, including character counts, attachments, and embeds.',
+            True,
+        ),
+        'track_voice': (
+            'Voice',
+            'Track time users spend in voice channels, including session counts and state flags (mute, deafen, stream, video).',
+            True,
+        ),
+        'track_invites': (
+            'Invites',
+            'Track which invite links are used when members join, and detect suspicious invites based on account age.',
+            True,
+        ),
+        'track_mentions': (
+            'Mentions',
+            'Track when users mention each other in messages, including who was mentioned and by whom.',
+            False,
+        ),
+        'track_emojis': (
+            'Emojis',
+            'Track emoji usage in messages and reactions, including both custom and standard Unicode emojis.',
+            False,
+        ),
+        'track_status_activity': (
+            'Status Activity',
+            'Track game and application activity sessions when users show a Rich Presence status.',
+            False,
+        ),
+        'track_member_growth': (
+            'Member Growth',
+            'Track when members join and leave the server to build a timeline of server growth.',
+            False,
+        ),
+        'track_role_growth': (
+            'Role Growth',
+            'Track when roles are assigned to or removed from members over time.',
+            False,
+        ),
+    }
 
 # ============================================
 # FIXED PUBLIC STATSHQ RESPONSE MODELS
@@ -2976,6 +3032,8 @@ class DatabaseStatsAPI:
         self.role_cache_ttl = 300  # 5 minutes
         self.entity_cache = {}  # {cache_key: (timestamp, exists_dict)}
         self.entity_cache_ttl = 3600  # 1 hour cache for entity existence
+        self._stat_toggle_cache: Dict[int, Dict[str, bool]] = {}
+        self._stat_toggle_cache_time: Dict[int, float] = {}
         self.rate_limiter = get_rate_limiter()
         self.fernet = fernet
         print(
@@ -3353,6 +3411,145 @@ class DatabaseStatsAPI:
                 await self.release_connection(conn)
         except asyncpg.PostgresError as e:
             logger.error(f"Failed to initialize role tracking tables: {e}")
+
+
+    async def get_stat_toggles(self, guild_id: str) -> Dict[str, bool]:
+        """Get stat toggle settings for a guild, with 60s in-memory cache."""
+        now = time.time()
+        if guild_id in self._stat_toggle_cache and \
+                (now - self._stat_toggle_cache_time.get(guild_id, 0)) < 60:
+            return self._stat_toggle_cache[guild_id]
+
+        defaults = {key: meta[2] for key, meta in STAT_TOGGLE_META.items()}
+
+        if not self.pool:
+            return defaults
+
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT track_messages, track_voice, track_emojis, track_invites,
+                        track_status_activity, track_mentions,
+                        track_member_growth, track_role_growth
+                    FROM settings WHERE guild_id = $1
+                """, int(guild_id))
+
+                if row:
+                    toggles = dict(row)
+                    for k, v in defaults.items():
+                        if toggles.get(k) is None:
+                            toggles[k] = v
+                else:
+                    toggles = defaults
+
+            self._stat_toggle_cache[guild_id] = toggles
+            self._stat_toggle_cache_time[guild_id] = now
+            return toggles
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                'Failed to fetch stat toggles',
+                context={'guild_id': guild_id}, original=e
+            )
+
+
+    def _invalidate_stat_toggle_cache(self, guild_id: str):
+        """Clear the cached toggle state for a guild. Called after any toggle update."""
+        guild_id = str(guild_id)
+        self._stat_toggle_cache.pop(guild_id, None)
+        self._stat_toggle_cache_time.pop(guild_id, None)
+
+
+    async def set_stat_toggle(self, guild_id: str, toggle_key: str, value: bool) -> bool:
+        """Enable or disable a single stat toggle for a guild."""
+        if toggle_key not in STAT_TOGGLE_META:
+            return False
+
+        if not self.pool:
+            return False
+
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO settings (guild_id, voice_states, min_account_age_days)
+                    VALUES ($1, ARRAY['self_mute', 'self_deafen', 'streaming', 'video'], 3)
+                    ON CONFLICT (guild_id) DO NOTHING
+                """, int(guild_id))
+
+                await conn.execute(
+                    f"UPDATE settings SET {toggle_key} = $1 WHERE guild_id = $2",
+                    value, int(guild_id)
+                )
+
+            self._invalidate_stat_toggle_cache(guild_id)   
+            return True
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                'Failed to update stat toggle',
+                context={'guild_id': guild_id, 'toggle_key': toggle_key}, original=e
+            )
+
+
+    async def set_stat_toggles_bulk(self, guild_id: str, toggles: Dict[str, bool]) -> bool:
+        """Update multiple stat toggle columns at once for a guild."""
+        allowed = set(STAT_TOGGLE_META.keys())
+        safe = {k: v for k, v in toggles.items() if k in allowed}
+        if not safe:
+            return False
+
+        if not self.pool:
+            return False
+
+        set_clauses = ', '.join(f"{k} = ${i + 2}" for i, k in enumerate(safe))
+        values = list(safe.values())
+
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO settings (guild_id, voice_states, min_account_age_days)
+                    VALUES ($1, ARRAY['self_mute', 'self_deafen', 'streaming', 'video'], 3)
+                    ON CONFLICT (guild_id) DO NOTHING
+                """, int(guild_id))
+
+                await conn.execute(
+                    f"UPDATE settings SET {set_clauses} WHERE guild_id = $1",
+                    int(guild_id), *values
+                )
+
+            self._invalidate_stat_toggle_cache(guild_id)   
+            return True
+
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                'Failed to bulk-update stat toggles',
+                context={'guild_id': guild_id}, original=e
+            )
+
+
+    async def get_enabled_stat_types(self, guild_id: str) -> List[str]:
+        """Return the list of toggle keys currently enabled for a guild."""
+        toggles = await self.get_stat_toggles(guild_id)
+        return [key for key in STAT_TOGGLE_META if toggles.get(key, STAT_TOGGLE_META[key][2])]
+
+
+    async def get_disabled_stat_types(self, guild_id: str) -> List[str]:
+        """Return the list of toggle keys currently disabled for a guild."""
+        toggles = await self.get_stat_toggles(guild_id)
+        return [key for key in STAT_TOGGLE_META if not toggles.get(key, STAT_TOGGLE_META[key][2])]
+
+
+    async def reset_stat_toggles_to_default(self, guild_id: str) -> bool:
+        """Reset all stat toggles for a guild back to their default values."""
+        defaults = {key: meta[2] for key, meta in STAT_TOGGLE_META.items()}
+        return await self.set_stat_toggles_bulk(guild_id, defaults)
+
+
+    def get_stat_toggle_metadata(self) -> Dict[str, tuple]:
+        """Return the static metadata (label, description, default) for all toggle keys.
+        Pure lookup, no DB access — useful for building UI/embeds from this file directly.
+        """
+        return STAT_TOGGLE_META
 
     # ============================================
     # ROLE FILTERING HELPER METHODS
@@ -44716,7 +44913,258 @@ async def debug_bot_role_hierarchy(
             "success": False,
             "error": str(e)
         }
+        
+        
+# ============================================
+# STAT TYPE TOGGLE ENDPOINTS
+# ============================================
 
+@app.get("/api/settings/stat-toggles")
+async def get_stat_toggles(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get all stat toggle settings for a guild"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        try:
+            int(guild_id)
+        except ValueError as e:
+            raise ValidationError(
+                "Invalid guild_id format",
+                context={'guild_id': guild_id, 'error': str(e)},
+                original=e
+            )
+
+        toggles = await db_stats.get_stat_toggles(guild_id)
+        return toggles
+
+    except ValidationError as e:
+        logger.warning(f"Validation error in get_stat_toggles: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseQueryError as e:
+        logger.error(f"Database query error in get_stat_toggles: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch stat toggles")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_stat_toggles: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/settings/stat-toggles/enabled")
+async def get_enabled_stat_types(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get the list of stat types currently enabled for a guild"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        try:
+            int(guild_id)
+        except ValueError as e:
+            raise ValidationError(
+                "Invalid guild_id format",
+                context={'guild_id': guild_id, 'error': str(e)},
+                original=e
+            )
+
+        enabled = await db_stats.get_enabled_stat_types(guild_id)
+        return {'enabled': enabled}
+
+    except ValidationError as e:
+        logger.warning(f"Validation error in get_enabled_stat_types: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseQueryError as e:
+        logger.error(f"Database query error in get_enabled_stat_types: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch enabled stat types")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_enabled_stat_types: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/settings/stat-toggles/disabled")
+async def get_disabled_stat_types(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get the list of stat types currently disabled for a guild"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        try:
+            int(guild_id)
+        except ValueError as e:
+            raise ValidationError(
+                "Invalid guild_id format",
+                context={'guild_id': guild_id, 'error': str(e)},
+                original=e
+            )
+
+        disabled = await db_stats.get_disabled_stat_types(guild_id)
+        return {'disabled': disabled}
+
+    except ValidationError as e:
+        logger.warning(f"Validation error in get_disabled_stat_types: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseQueryError as e:
+        logger.error(f"Database query error in get_disabled_stat_types: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch disabled stat types")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_disabled_stat_types: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/settings/stat-toggles/metadata")
+async def get_stat_toggle_metadata(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get static metadata (label, description, default) for all stat toggle keys"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        metadata = db_stats.get_stat_toggle_metadata()
+        result = {
+            key: {'label': label, 'description': desc, 'default': default}
+            for key, (label, desc, default) in metadata.items()
+        }
+        return result
+
+    except Exception as e:
+        logger.error(f"Unexpected error in get_stat_toggle_metadata: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/settings/stat-toggles/set")
+async def set_stat_toggle(
+    request: StatToggleRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Enable or disable a single stat toggle for a guild"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        try:
+            int(request.guild_id)
+        except ValueError as e:
+            raise ValidationError(
+                "Invalid guild_id format",
+                context={'guild_id': request.guild_id, 'error': str(e)},
+                original=e
+            )
+
+        success = await db_stats.set_stat_toggle(
+            request.guild_id, request.toggle_key, request.value
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to update toggle '{request.toggle_key}' — invalid key or update failed"
+            )
+
+        return {'success': True, 'toggle_key': request.toggle_key, 'value': request.value}
+
+    except ValidationError as e:
+        logger.warning(f"Validation error in set_stat_toggle: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseQueryError as e:
+        logger.error(f"Database query error in set_stat_toggle: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update stat toggle")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in set_stat_toggle: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/settings/stat-toggles/set-bulk")
+async def set_stat_toggles_bulk(
+    request: StatTogglesBulkRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Update multiple stat toggle columns at once for a guild"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        try:
+            int(request.guild_id)
+        except ValueError as e:
+            raise ValidationError(
+                "Invalid guild_id format",
+                context={'guild_id': request.guild_id, 'error': str(e)},
+                original=e
+            )
+
+        if not request.toggles:
+            raise HTTPException(status_code=400, detail="No toggles provided")
+
+        success = await db_stats.set_stat_toggles_bulk(
+            request.guild_id, request.toggles
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to update toggles — no valid toggle keys found or update failed"
+            )
+
+        updated_toggles = await db_stats.get_stat_toggles(request.guild_id)
+        return {'success': True, 'toggles': updated_toggles}
+
+    except ValidationError as e:
+        logger.warning(f"Validation error in set_stat_toggles_bulk: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseQueryError as e:
+        logger.error(f"Database query error in set_stat_toggles_bulk: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update stat toggles")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in set_stat_toggles_bulk: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/settings/stat-toggles/reset")
+async def reset_stat_toggles_to_default(
+    request: ResetStatTogglesRequest,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Reset all stat toggles for a guild back to their default values"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        try:
+            int(request.guild_id)
+        except ValueError as e:
+            raise ValidationError(
+                "Invalid guild_id format",
+                context={'guild_id': request.guild_id, 'error': str(e)},
+                original=e
+            )
+        success = await db_stats.reset_stat_toggles_to_default(request.guild_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to reset stat toggles")
+        updated_toggles = await db_stats.get_stat_toggles(request.guild_id)
+        return {'success': True, 'toggles': updated_toggles}
+    except ValidationError as e:
+        logger.warning(f"Validation error in reset_stat_toggles_to_default: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseQueryError as e:
+        logger.error(f"Database query error in reset_stat_toggles_to_default: {e}")
+        raise HTTPException(status_code=500, detail="Failed to reset stat toggles")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in reset_stat_toggles_to_default: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
 # ============================================
 # CART SYSTEM ENDPOINTS
 # ============================================

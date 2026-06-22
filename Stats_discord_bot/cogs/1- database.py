@@ -183,6 +183,11 @@ class DatabaseStats(commands.Cog):
         self.active_voice_sessions: Dict[int, Dict[str, Any]] = {}
         self.connection_semaphore = Semaphore(20)
 
+        # Stat type toggle caching
+        # guild_id -> {stat: bool}
+        self._stat_toggle_cache: Dict[int, Dict[str, bool]] = {}
+        self._stat_toggle_cache_time: Dict[int, float] = {}
+
         # Voice state flags mapping
         self.voice_state_bits = {
             'afk_channel': 1 << 0,
@@ -1097,6 +1102,47 @@ class DatabaseStats(commands.Cog):
             print(f"Error fetching all role members for guild {guild_id}: {e}")
             return {}
 
+    # Stat type toggle helpers
+    async def _get_stat_toggles(self, guild_id: int) -> Dict[str, bool]:
+        """Get stat toggle settings for a guild with 60s cache."""
+        now = time.time()
+        if guild_id in self._stat_toggle_cache and (now - self._stat_toggle_cache_time.get(guild_id, 0)) < 60:
+            return self._stat_toggle_cache[guild_id]
+
+        defaults = {
+            'track_messages': True, 'track_voice': True, 'track_invites': True,
+            'track_emojis': False, 'track_status_activity': False,
+            'track_mentions': False, 'track_member_growth': False, 'track_role_growth': False
+        }
+
+        if not self.pool or not self.db_connected:
+            return defaults
+
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT track_messages, track_voice, track_emojis, track_invites,
+                        track_status_activity, track_mentions, track_member_growth, track_role_growth
+                    FROM settings WHERE guild_id = $1
+                """, guild_id)
+                if row:
+                    toggles = dict(row)
+                    # Fill nulls with defaults
+                    for k, v in defaults.items():
+                        if toggles.get(k) is None:
+                            toggles[k] = v
+                else:
+                    toggles = defaults
+
+            self._stat_toggle_cache[guild_id] = toggles
+            self._stat_toggle_cache_time[guild_id] = now
+            return toggles
+        except Exception:
+            return defaults
+
+    def _invalidate_stat_toggle_cache(self, guild_id: int):
+        self._stat_toggle_cache.pop(guild_id, None)
+        self._stat_toggle_cache_time.pop(guild_id, None)
     # ======================================================================
     # BUFFERING METHODS - UNCHANGED
     # ======================================================================
@@ -3344,6 +3390,14 @@ class DatabaseStats(commands.Cog):
                     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ",
                     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS guild_name TEXT",
                     "ALTER TABLE history_sync_progress ADD COLUMN IF NOT EXISTS sync_depth_cutoff TIMESTAMPTZ",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_messages BOOLEAN DEFAULT TRUE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_voice BOOLEAN DEFAULT TRUE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_emojis BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_invites BOOLEAN DEFAULT TRUE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_status_activity BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_mentions BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_member_growth BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_role_growth BOOLEAN DEFAULT FALSE",
                 ]
 
                 for query in alter_queries:
@@ -20086,6 +20140,11 @@ class DatabaseStats(commands.Cog):
                 try:
                     guild_id = session_data['guild_id']
 
+                    # ✅ TOGGLE CHECK - voice
+                    toggles = await self._get_stat_toggles(guild_id)
+                    if not toggles.get('track_voice'):
+                        continue
+
                     guild = self.bot.get_guild(guild_id)
                     if not guild:
                         async with self.voice_lock:
@@ -20140,7 +20199,6 @@ class DatabaseStats(commands.Cog):
                         self.metrics['voice_updates'] += 1
 
                 except Exception as e:
-                    # Don't raise during tracking - just continue
                     continue
 
         except Exception as e:
@@ -20165,8 +20223,12 @@ class DatabaseStats(commands.Cog):
         if not member.guild or self.shutting_down:
             return
 
-        # ✅ PRIVACY MODE CHECK - Skip if user has privacy mode enabled
         if await self._is_privacy_mode_enabled(member.id, member.guild.id):
+            return
+
+        # ✅ TOGGLE CHECK - voice only, checked once at entry
+        toggles = await self._get_stat_toggles(member.guild.id)
+        if not toggles.get('track_voice'):
             return
 
         try:
@@ -20174,7 +20236,6 @@ class DatabaseStats(commands.Cog):
             guild_id = guild.id
             user_id = member.id
 
-            # 👇 FIXED: Use aware datetime consistently
             current_time = datetime.now(timezone.utc)
 
             def ensure_channel_id(channel):
@@ -20329,10 +20390,6 @@ class DatabaseStats(commands.Cog):
                 original=e
             )
 
-    # ======================================================================
-    # SLASH COMMAND TRACKING - UNCHANGED (still uses raw table for tracking, but writes to daily aggregated)
-    # ======================================================================
-
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         """Track slash command usage."""
@@ -20342,9 +20399,11 @@ class DatabaseStats(commands.Cog):
         if interaction.type != discord.InteractionType.application_command:
             return
 
-        # ✅ PRIVACY MODE CHECK - Skip if user has privacy mode enabled
         if await self._is_privacy_mode_enabled(interaction.user.id, interaction.guild.id):
             return
+
+        # Slash commands are not a user-toggled stat type - no toggle check needed here.
+        # They are internal bot analytics, not a tracked stat type in the toggle system.
 
         if not await self.check_rate_limit(interaction.user.id, 'slash_command', limit=50, window=30):
             return
@@ -20394,19 +20453,20 @@ class DatabaseStats(commands.Cog):
                 original=e
             )
 
-    # ======================================================================
-    # ROLE GROWTH TRACKING - UNCHANGED (still uses raw table for tracking, but writes to hourly aggregated)
-    # ======================================================================
-
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Track role changes for both history and current memberships."""
         if not before.guild or self.shutting_down:
             return
 
-        # ✅ PRIVACY MODE CHECK - Skip if user has privacy mode enabled
         if await self._is_privacy_mode_enabled(before.id, before.guild.id):
             return
+
+        # ✅ TOGGLE CHECK - role_growth only.
+        # current_role_members (role_members batch type) is internal bookkeeping used
+        # for role filtering across ALL stat types - it must always stay in sync
+        # regardless of whether role_growth history tracking is enabled.
+        toggles = await self._get_stat_toggles(before.guild.id)
 
         try:
             blacklists = await self._get_cached_blacklists(before.guild.id)
@@ -20418,12 +20478,12 @@ class DatabaseStats(commands.Cog):
             if user_role_ids.intersection(blacklists['roles']):
                 return
 
-            # Only process if roles actually changed
             if before.roles != after.roles:
                 added_roles = set(after.roles) - set(before.roles)
                 removed_roles = set(before.roles) - set(after.roles)
 
-                # 👇 INVALIDATE ROLE CACHE
+                # ✅ Always invalidate role cache regardless of toggle -
+                # current_role_members must stay accurate for filtering.
                 cache_key_prefix = f"role_members:{before.guild.id}:"
                 keys_to_delete = []
                 for key in list(self.role_members_cache.keys()):
@@ -20436,44 +20496,50 @@ class DatabaseStats(commands.Cog):
                 encrypted_username = self.encrypt_username(str(after))
                 is_bot = after.bot
 
-                # Track historical role growth (writes to role_growth_hourly via batch)
-                for role in added_roles:
-                    if role.is_default():
-                        continue
-                    if role.id in blacklists['roles']:
-                        continue
+                # ✅ TOGGLE GATE: role_growth history tracking
+                if toggles.get('track_role_growth'):
+                    for role in added_roles:
+                        if role.is_default():
+                            continue
+                        if role.id in blacklists['roles']:
+                            continue
 
-                    await self.redis_batch_write('role_growth', {
-                        'params': [
-                            before.guild.id,
-                            role.id,
-                            before.id,
-                            'added',
-                            current_time,
-                            encrypted_username,
-                            is_bot
-                        ]
-                    })
+                        await self.redis_batch_write('role_growth', {
+                            'params': [
+                                before.guild.id,
+                                role.id,
+                                before.id,
+                                'added',
+                                current_time,
+                                encrypted_username,
+                                is_bot
+                            ]
+                        })
 
-                for role in removed_roles:
-                    if role.is_default():
-                        continue
-                    if role.id in blacklists['roles']:
-                        continue
+                    for role in removed_roles:
+                        if role.is_default():
+                            continue
+                        if role.id in blacklists['roles']:
+                            continue
 
-                    await self.redis_batch_write('role_growth', {
-                        'params': [
-                            before.guild.id,
-                            role.id,
-                            before.id,
-                            'removed',
-                            current_time,
-                            encrypted_username,
-                            is_bot
-                        ]
-                    })
+                        await self.redis_batch_write('role_growth', {
+                            'params': [
+                                before.guild.id,
+                                role.id,
+                                before.id,
+                                'removed',
+                                current_time,
+                                encrypted_username,
+                                is_bot
+                            ]
+                        })
 
-                # Track current role memberships (current_role_members table - static)
+                    async with self.metrics_lock:
+                        self.metrics['role_growth_inserts'] += len(
+                            added_roles) + len(removed_roles)
+
+                # ✅ ALWAYS run - current_role_members is internal bookkeeping,
+                # not a user-facing stat. It powers role filters for all other stats.
                 for role in added_roles:
                     if role.is_default() or role.id in blacklists['roles']:
                         continue
@@ -20483,8 +20549,8 @@ class DatabaseStats(commands.Cog):
                             before.guild.id,
                             before.id,
                             role.id,
-                            role.name,              # ADDED: role name
-                            role.color.value,       # ADDED: role color
+                            role.name,
+                            role.color.value,
                             current_time,
                             is_bot
                         ]
@@ -20499,8 +20565,8 @@ class DatabaseStats(commands.Cog):
                             before.guild.id,
                             before.id,
                             role.id,
-                            role.name,              # ADDED: role name
-                            role.color.value,       # ADDED: role color
+                            role.name,
+                            role.color.value,
                             current_time,
                             is_bot,
                             'DELETE'
@@ -20508,8 +20574,6 @@ class DatabaseStats(commands.Cog):
                     })
 
                 async with self.metrics_lock:
-                    self.metrics['role_growth_inserts'] += len(
-                        added_roles) + len(removed_roles)
                     self.metrics['role_members_updates'] = self.metrics.get(
                         'role_members_updates', 0) + len(added_roles) + len(removed_roles)
 
@@ -20520,22 +20584,22 @@ class DatabaseStats(commands.Cog):
                 original=e
             )
 
-    # ======================================================================
-    # MESSAGE TRACKING - UNCHANGED (still uses raw table for tracking, but writes to hourly aggregated)
-    # ======================================================================
-
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Track message content and emojis."""
+        """Track message content, mentions and emojis."""
         if not message.guild or self.shutting_down:
             return
 
-        # ✅ EXCLUDE WEBHOOKS - Check if message is from a webhook
         if message.webhook_id is not None:
             return
 
-        # ✅ PRIVACY MODE CHECK - Skip if user has privacy mode enabled
         if await self._is_privacy_mode_enabled(message.author.id, message.guild.id):
+            return
+
+        # ✅ TOGGLE CHECK - fetch once, used for all three stat types in this listener.
+        # If none of the three are enabled we can exit immediately.
+        toggles = await self._get_stat_toggles(message.guild.id)
+        if not toggles.get('track_messages') and not toggles.get('track_emojis') and not toggles.get('track_mentions'):
             return
 
         if not await self.check_rate_limit(message.author.id, 'message', limit=30, window=10):
@@ -20559,8 +20623,12 @@ class DatabaseStats(commands.Cog):
             for key in old_keys:
                 del self.processed_messages[key]
 
-            await self._track_message_emojis(message)
-            await self._track_message_content(message)
+            # ✅ Each stat type gated individually - toggles already fetched above
+            if toggles.get('track_emojis'):
+                await self._track_message_emojis(message)
+
+            if toggles.get('track_messages') or toggles.get('track_mentions'):
+                await self._track_message_content(message, toggles)
 
         except Exception as e:
             raise DatabaseQueryError(
@@ -20569,10 +20637,6 @@ class DatabaseStats(commands.Cog):
                          'message_id': message.id},
                 original=e
             )
-
-    # ======================================================================
-    # EMOJI AND MENTION TRACKING - UNCHANGED (still uses raw table for tracking, but writes to hourly aggregated)
-    # ======================================================================
 
     def _extract_all_emojis_from_content(self, content: str) -> List[Dict[str, Any]]:
         """Extract all emojis from message content."""
@@ -20649,12 +20713,15 @@ class DatabaseStats(commands.Cog):
         if not after.guild or self.shutting_down:
             return
 
-        # ✅ EXCLUDE WEBHOOKS - Check if message is from a webhook
         if after.webhook_id is not None:
             return
 
-        # ✅ PRIVACY MODE CHECK - Skip if user has privacy mode enabled
         if await self._is_privacy_mode_enabled(after.author.id, after.guild.id):
+            return
+
+        # ✅ TOGGLE CHECK - only emojis are tracked on edits
+        toggles = await self._get_stat_toggles(after.guild.id)
+        if not toggles.get('track_emojis'):
             return
 
         if not await self.check_rate_limit(after.author.id, 'message_edit', limit=20, window=10):
@@ -20684,12 +20751,19 @@ class DatabaseStats(commands.Cog):
                 original=e
             )
 
-    async def _track_message_content(self, message: discord.Message):
-        """Track message content and mentions (writes to aggregated tables via batch)."""
+    async def _track_message_content(self, message: discord.Message, toggles: Dict[str, bool] = None):
+        """Track message content and mentions (writes to aggregated tables via batch).
+
+        toggles is passed in from on_message to avoid a second cache lookup.
+        When called directly (e.g. from history sync) it fetches its own toggles.
+        """
         try:
-            # ✅ EXCLUDE WEBHOOKS - Double-check before processing
             if message.webhook_id is not None:
                 return
+
+            # Fetch toggles if not passed in (e.g. called from history sync path)
+            if toggles is None:
+                toggles = await self._get_stat_toggles(message.guild.id)
 
             guild_id = message.guild.id
             user_id = message.author.id
@@ -20702,47 +20776,53 @@ class DatabaseStats(commands.Cog):
             encrypted_username = self.encrypt_username(str(message.author))
             created_at = message.created_at.astimezone(timezone.utc)
 
-            await self.redis_batch_write('messages', {
-                'params': [
-                    guild_id, user_id, channel_id, category_id, message.id,
-                    encrypted_username, len(message.content),
-                    json.dumps([user.id for user in message.mentions]),
-                    len(message.attachments) > 0,
-                    len(message.embeds) > 0,
-                    created_at, message.author.bot
-                ]
-            })
-
-            for user in message.mentions:
-                if user.id == user_id:
-                    continue
-
-                if not await self.check_rate_limit(user_id, 'mention', limit=50, window=30):
-                    continue
-
-                # Encrypt BOTH usernames
-                encrypted_mentioner_username = self.encrypt_username(
-                    str(message.author))
-                encrypted_mentioned_username = self.encrypt_username(str(user))
-
-                await self.redis_batch_write('mentions', {
+            # ✅ TOGGLE GATE: messages
+            if toggles.get('track_messages'):
+                await self.redis_batch_write('messages', {
                     'params': [
-                        guild_id,
-                        user.id,                      # mentioned_user_id
-                        user_id,                      # mentioner_user_id
-                        channel_id,
-                        category_id,
-                        message.id,
-                        created_at,
-                        encrypted_mentioner_username,  # mentioner's username
-                        message.author.bot,
-                        encrypted_mentioned_username  # mentioned user's username
+                        guild_id, user_id, channel_id, category_id, message.id,
+                        encrypted_username, len(message.content),
+                        json.dumps([user.id for user in message.mentions]),
+                        len(message.attachments) > 0,
+                        len(message.embeds) > 0,
+                        created_at, message.author.bot
                     ]
                 })
 
-            async with self.metrics_lock:
-                self.metrics['message_inserts'] += 1
-                self.metrics['mention_inserts'] += len(message.mentions)
+                async with self.metrics_lock:
+                    self.metrics['message_inserts'] += 1
+
+            # ✅ TOGGLE GATE: mentions - independent of track_messages
+            if toggles.get('track_mentions'):
+                for user in message.mentions:
+                    if user.id == user_id:
+                        continue
+
+                    if not await self.check_rate_limit(user_id, 'mention', limit=50, window=30):
+                        continue
+
+                    encrypted_mentioner_username = self.encrypt_username(
+                        str(message.author))
+                    encrypted_mentioned_username = self.encrypt_username(
+                        str(user))
+
+                    await self.redis_batch_write('mentions', {
+                        'params': [
+                            guild_id,
+                            user.id,
+                            user_id,
+                            channel_id,
+                            category_id,
+                            message.id,
+                            created_at,
+                            encrypted_mentioner_username,
+                            message.author.bot,
+                            encrypted_mentioned_username
+                        ]
+                    })
+
+                async with self.metrics_lock:
+                    self.metrics['mention_inserts'] += len(message.mentions)
 
         except Exception as e:
             raise DatabaseQueryError(
@@ -20791,8 +20871,12 @@ class DatabaseStats(commands.Cog):
         return emojis
 
     async def _track_message_emojis(self, message: discord.Message):
-        """Track emojis in a message (writes to aggregated tables via batch)."""
-        # ✅ EXCLUDE WEBHOOKS
+        """Track emojis in a message (writes to aggregated tables via batch).
+
+        Callers are responsible for checking track_emojis toggle before calling this.
+        No toggle check here to avoid double lookups when called from on_message
+        which already checked.
+        """
         if not message.guild or message.webhook_id is not None:
             return
 
@@ -20836,12 +20920,15 @@ class DatabaseStats(commands.Cog):
         if not reaction.message.guild:
             return
 
-        # ✅ EXCLUDE WEBHOOKS - Check if the user is a webhook (webhooks can't react, but just in case)
         if isinstance(user, discord.Webhook) or (hasattr(user, 'webhook_id') and user.webhook_id):
             return
 
-        # ✅ PRIVACY MODE CHECK - Skip if user has privacy mode enabled
         if await self._is_privacy_mode_enabled(user.id, reaction.message.guild.id):
+            return
+
+        # ✅ TOGGLE CHECK - emojis
+        toggles = await self._get_stat_toggles(reaction.message.guild.id)
+        if not toggles.get('track_emojis'):
             return
 
         if not await self.check_rate_limit(user.id, 'reaction', limit=40, window=10):
@@ -20891,7 +20978,10 @@ class DatabaseStats(commands.Cog):
             )
 
     async def _buffer_emoji_event(self, guild_id: int, data: Dict[str, Any]):
-        """Buffer an emoji event for batch processing (writes to aggregated tables)."""
+        """Buffer an emoji event for batch processing (writes to aggregated tables).
+
+        Callers are responsible for checking track_emojis toggle before calling this.
+        """
         try:
             guild = self.bot.get_guild(guild_id)
             member = guild.get_member(data['user_id']) if guild else None
@@ -20929,10 +21019,6 @@ class DatabaseStats(commands.Cog):
                 original=e
             )
 
-    # ======================================================================
-    # INVITE & GROWTH LISTENING EVENTS - UNCHANGED (still uses raw tables for tracking, static tables unchanged)
-    # ======================================================================
-
     def _get_member_count(self, guild: discord.Guild) -> int:
         """Get total member count for a guild."""
         if not guild:
@@ -20949,25 +21035,22 @@ class DatabaseStats(commands.Cog):
         }
 
         try:
-            # Get all regular invites
             invites = await guild.invites()
 
             print(
                 f"📸 Took snapshot for {guild.name}: Found {len(invites)} invites")
 
             for invite in invites:
-
                 snapshot['regular_invites'][invite.code] = {
                     'code': invite.code,
                     'uses': invite.uses,
-                    'inviter_id': invite.inviter.id if invite.inviter else 0,  # ← Make sure this is set!
+                    'inviter_id': invite.inviter.id if invite.inviter else 0,
                     'max_uses': invite.max_uses,
                     'max_age': invite.max_age,
                     'created_at': invite.created_at,
                     'is_vanity': False
                 }
 
-            # Get vanity invite info
             if guild.vanity_url_code:
                 vanity_invite = await guild.vanity_invite()
                 if vanity_invite:
@@ -20992,32 +21075,24 @@ class DatabaseStats(commands.Cog):
         return snapshot
 
     def _get_invite_lock(self, guild_id: int) -> asyncio.Lock:
-        """Get or create a per-guild invite lock."""
         if guild_id not in self.invite_snapshot_locks:
             self.invite_snapshot_locks[guild_id] = asyncio.Lock()
         return self.invite_snapshot_locks[guild_id]
 
     def _get_invite_snapshot(self, guild_id: int) -> Optional[dict]:
-        """Get the cached invite snapshot for a guild."""
         return self.invite_snapshots.get(guild_id)
 
     def _set_invite_snapshot(self, guild_id: int, snapshot: dict):
-        """Store the cached invite snapshot for a guild."""
         self.invite_snapshots[guild_id] = snapshot
 
     def _clear_invite_snapshot(self, guild_id: int):
-        """Remove the cached invite snapshot for a guild."""
         self.invite_snapshots.pop(guild_id, None)
 
-    async def _find_used_invite_by_comparison(self, guild: discord.Guild,
-                                              before: dict, after: dict):
+    async def _find_used_invite_by_comparison(self, guild: discord.Guild, before: dict, after: dict):
         """Find which invite was used by comparing snapshots."""
-
-        # Check regular invites that still exist and have increased usage
         for code, after_invite in after['regular_invites'].items():
             before_invite = before['regular_invites'].get(code)
             if before_invite and after_invite['uses'] is not None:
-
                 if after_invite['uses'] > before_invite['uses']:
                     return {
                         'code': code,
@@ -21027,7 +21102,6 @@ class DatabaseStats(commands.Cog):
                         'uncertain': False
                     }
 
-        # Check invites that existed before but are now gone
         for code, before_invite in before['regular_invites'].items():
             if code not in after['regular_invites']:
                 return {
@@ -21042,7 +21116,6 @@ class DatabaseStats(commands.Cog):
         return None
 
     async def _get_min_account_age(self, guild_id: int) -> int:
-        """Get minimum account age requirement in days for a guild."""
         try:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow('''
@@ -21056,22 +21129,17 @@ class DatabaseStats(commands.Cog):
         except Exception:
             pass
 
-        return 3  # Default to 3 days
+        return 3
 
     async def _is_suspicious_account(self, member: discord.Member, inviter: Optional[discord.Member], min_age_days: int) -> bool:
-        """Check if either the member or inviter account is too new."""
         current_time = datetime.now(timezone.utc)
-
-        # Convert days to seconds
         min_age_seconds = min_age_days * 24 * 60 * 60
 
-        # Check member's account age - use ensure_aware
         member_created = ensure_aware(member.created_at)
         member_age = current_time - member_created
         if member_age.total_seconds() < min_age_seconds:
             return True
 
-        # Check inviter's account age if exists
         if inviter:
             inviter_created = ensure_aware(inviter.created_at)
             inviter_age = current_time - inviter_created
@@ -21081,7 +21149,6 @@ class DatabaseStats(commands.Cog):
         return False
 
     async def _increment_invite_usage(self, guild_id: int, invite_code: str):
-        """Increment usage count for a regular invite."""
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute("""
@@ -21095,7 +21162,6 @@ class DatabaseStats(commands.Cog):
             print(f"Error incrementing invite usage: {e}")
 
     async def _increment_vanity_usage(self, guild_id: int, invite_code: str):
-        """Increment usage count for a vanity invite."""
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute("""
@@ -21109,7 +21175,6 @@ class DatabaseStats(commands.Cog):
             print(f"Error incrementing vanity usage: {e}")
 
     async def _increment_invite_leave_count(self, guild_id: int, invite_code: str, is_vanity: bool = False):
-        """Increment leave count for an invite."""
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute("""
@@ -21122,17 +21187,14 @@ class DatabaseStats(commands.Cog):
             print(f"Error incrementing leave count: {e}")
 
     async def _update_invite_in_database(self, guild_id: int, invite_code: str, uses: int, inviter_id: int):
-        """Update or insert invite information in the invite_uses table."""
         try:
             async with self.pool.acquire() as conn:
-                # Check if invite already exists
                 existing = await conn.fetchrow('''
                     SELECT id FROM invite_uses 
                     WHERE guild_id = $1 AND invite_code = $2
                 ''', guild_id, invite_code)
 
                 if existing:
-                    # Update existing invite
                     await conn.execute('''
                         UPDATE invite_uses 
                         SET uses = $3, 
@@ -21142,7 +21204,6 @@ class DatabaseStats(commands.Cog):
                         WHERE guild_id = $1 AND invite_code = $2
                     ''', guild_id, invite_code, uses, inviter_id)
                 else:
-                    # Insert new invite
                     await conn.execute('''
                         INSERT INTO invite_uses (guild_id, invite_code, uses, inviter_id, created_at, updated_at)
                         VALUES ($1, $2, $3, $4, NOW(), NOW())
@@ -21164,11 +21225,15 @@ class DatabaseStats(commands.Cog):
         if self.shutting_down:
             return
 
-        # ✅ PRIVACY MODE CHECK - Skip if user has privacy mode enabled
         if await self._is_privacy_mode_enabled(member.id, member.guild.id):
             return
 
+        # ✅ TOGGLE CHECK - fetch once, used for both member_growth and invites below.
+        # update_user_servers_in_db is internal bookkeeping and always runs.
+        toggles = await self._get_stat_toggles(member.guild.id)
+
         try:
+            # ✅ ALWAYS run - internal bookkeeping for dashboard server list
             await self.update_user_servers_in_db(member.id, member.guild, "add")
 
             blacklists = await self._get_cached_blacklists(member.guild.id)
@@ -21184,103 +21249,107 @@ class DatabaseStats(commands.Cog):
             encrypted_username = self.encrypt_username(str(member))
             member_count = self._get_member_count(member.guild)
 
-            await self.redis_batch_write('member_joins', {
-                'params': [
-                    member.guild.id,
-                    member.id,
-                    current_time,
-                    encrypted_username,
-                    member.bot,
-                    member_count
-                ]
-            })
+            # ✅ TOGGLE GATE: member_growth
+            if toggles.get('track_member_growth'):
+                await self.redis_batch_write('member_joins', {
+                    'params': [
+                        member.guild.id,
+                        member.id,
+                        current_time,
+                        encrypted_username,
+                        member.bot,
+                        member_count
+                    ]
+                })
 
-            async with self.metrics_lock:
-                self.metrics['member_join_inserts'] = self.metrics.get(
-                    'member_join_inserts', 0) + 1
+                async with self.metrics_lock:
+                    self.metrics['member_join_inserts'] = self.metrics.get(
+                        'member_join_inserts', 0) + 1
 
-            invite_lock = self._get_invite_lock(member.guild.id)
-            async with invite_lock:
-                previous_snapshot = self._get_invite_snapshot(member.guild.id)
+            # ✅ TOGGLE GATE: invites
+            # Snapshot comparison always runs when invites are enabled so the
+            # snapshot stays fresh for subsequent joins even if this particular
+            # join happens not to produce a record.
+            if toggles.get('track_invites'):
+                invite_lock = self._get_invite_lock(member.guild.id)
+                async with invite_lock:
+                    previous_snapshot = self._get_invite_snapshot(
+                        member.guild.id)
 
-                if previous_snapshot is None:
-                    # No baseline - bot restarted or first ever join in this guild.
-                    # Take a snapshot for future joins but we can't determine this invite.
-                    fresh_snapshot = await self._take_invite_snapshot(member.guild)
-                    self._set_invite_snapshot(member.guild.id, fresh_snapshot)
+                    if previous_snapshot is None:
+                        fresh_snapshot = await self._take_invite_snapshot(member.guild)
+                        self._set_invite_snapshot(
+                            member.guild.id, fresh_snapshot)
 
-                    await self._buffer_invite_event(
-                        guild_id=member.guild.id,
-                        inviter_id=0,
-                        invitee_id=member.id,
-                        invite_code="unknown",
-                        invite_type="unknown",
-                        is_vanity=False
+                        await self._buffer_invite_event(
+                            guild_id=member.guild.id,
+                            inviter_id=0,
+                            invitee_id=member.id,
+                            invite_code="unknown",
+                            invite_type="unknown",
+                            is_vanity=False
+                        )
+                        return
+
+                    current_snapshot = await self._take_invite_snapshot(member.guild)
+                    used_invite = await self._find_used_invite_by_comparison(
+                        member.guild, previous_snapshot, current_snapshot
                     )
-                    return
 
-                # Take current snapshot inside the lock so no concurrent join
-                # can read or write the snapshot between our compare and update
-                current_snapshot = await self._take_invite_snapshot(member.guild)
-                used_invite = await self._find_used_invite_by_comparison(
-                    member.guild, previous_snapshot, current_snapshot
+                    self._set_invite_snapshot(
+                        member.guild.id, current_snapshot)
+
+                is_vanity = used_invite.get(
+                    'is_vanity', False) if used_invite else False
+                is_uncertain = used_invite.get(
+                    'uncertain', False) if used_invite else False
+
+                min_age_days = await self._get_min_account_age(member.guild.id)
+
+                inviter = None
+                if used_invite and used_invite.get('inviter_id', 0) != 0:
+                    inviter = member.guild.get_member(
+                        used_invite['inviter_id'])
+
+                is_suspicious = await self._is_suspicious_account(member, inviter, min_age_days)
+
+                if used_invite is None:
+                    invite_type = "unknown"
+                    invite_code = "unknown"
+                    inviter_id = 0
+                    is_vanity = False
+                elif is_uncertain:
+                    invite_type = "unknown"
+                    invite_code = "unknown"
+                    inviter_id = 0
+                    is_vanity = False
+                elif is_vanity:
+                    invite_type = "vanity"
+                    invite_code = used_invite['code']
+                    inviter_id = used_invite['inviter_id']
+                elif is_suspicious:
+                    invite_type = "suspicious"
+                    invite_code = used_invite['code']
+                    inviter_id = used_invite['inviter_id']
+                else:
+                    invite_type = "valid"
+                    invite_code = used_invite['code']
+                    inviter_id = used_invite['inviter_id']
+
+                await self._buffer_invite_event(
+                    guild_id=member.guild.id,
+                    inviter_id=inviter_id,
+                    invitee_id=member.id,
+                    invite_code=invite_code,
+                    invite_type=invite_type,
+                    is_vanity=is_vanity
                 )
 
-                # Update snapshot immediately after comparison, still inside lock
-                self._set_invite_snapshot(member.guild.id, current_snapshot)
-
-            # Everything below is safe to run concurrently
-            is_vanity = used_invite.get(
-                'is_vanity', False) if used_invite else False
-            is_uncertain = used_invite.get(
-                'uncertain', False) if used_invite else False
-
-            min_age_days = await self._get_min_account_age(member.guild.id)
-
-            inviter = None
-            if used_invite and used_invite.get('inviter_id', 0) != 0:
-                inviter = member.guild.get_member(used_invite['inviter_id'])
-
-            is_suspicious = await self._is_suspicious_account(member, inviter, min_age_days)
-
-            if used_invite is None:
-                invite_type = "unknown"
-                invite_code = "unknown"
-                inviter_id = 0
-                is_vanity = False
-            elif is_uncertain:
-                # Guessed vanity because nothing else matched - safer to mark unknown
-                invite_type = "unknown"
-                invite_code = "unknown"
-                inviter_id = 0
-                is_vanity = False
-            elif is_vanity:
-                invite_type = "vanity"
-                invite_code = used_invite['code']
-                inviter_id = used_invite['inviter_id']
-            elif is_suspicious:
-                invite_type = "suspicious"
-                invite_code = used_invite['code']
-                inviter_id = used_invite['inviter_id']
-            else:
-                invite_type = "valid"
-                invite_code = used_invite['code']
-                inviter_id = used_invite['inviter_id']
-
-            await self._buffer_invite_event(
-                guild_id=member.guild.id,
-                inviter_id=inviter_id,
-                invitee_id=member.id,
-                invite_code=invite_code,
-                invite_type=invite_type,
-                is_vanity=is_vanity
-            )
-
-            if used_invite and not is_uncertain:
-                if is_vanity:
-                    await self._increment_vanity_usage(member.guild.id, invite_code)
-                else:
-                    await self._increment_invite_usage(member.guild.id, invite_code)
+                if used_invite and not is_uncertain:
+                    if is_vanity:
+                        await self._increment_vanity_usage(member.guild.id, invite_code)
+                    else:
+                        await self._increment_invite_usage(member.guild.id, invite_code)
 
         except Exception as e:
             if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
@@ -21294,11 +21363,14 @@ class DatabaseStats(commands.Cog):
         if self.shutting_down:
             return
 
-        # ✅ PRIVACY MODE CHECK - Skip if user has privacy mode enabled
         if await self._is_privacy_mode_enabled(member.id, member.guild.id):
             return
 
+        # ✅ TOGGLE CHECK - fetch once, used for both member_growth and invites below.
+        toggles = await self._get_stat_toggles(member.guild.id)
+
         try:
+            # ✅ ALWAYS run - internal bookkeeping
             await self.update_user_servers_in_db(member.id, member.guild, "remove")
 
             blacklists = await self._get_cached_blacklists(member.guild.id)
@@ -21314,24 +21386,25 @@ class DatabaseStats(commands.Cog):
             encrypted_username = self.encrypt_username(str(member))
             member_count = self._get_member_count(member.guild)
 
-            # Track leave event in member_leaves_hourly
-            await self.redis_batch_write('member_leaves', {
-                'params': [
-                    member.guild.id,
-                    member.id,
-                    current_time,
-                    encrypted_username,
-                    member.bot,
-                    member_count
-                ]
-            })
+            # ✅ TOGGLE GATE: member_growth
+            if toggles.get('track_member_growth'):
+                await self.redis_batch_write('member_leaves', {
+                    'params': [
+                        member.guild.id,
+                        member.id,
+                        current_time,
+                        encrypted_username,
+                        member.bot,
+                        member_count
+                    ]
+                })
 
-            async with self.metrics_lock:
-                self.metrics['member_leave_inserts'] = self.metrics.get(
-                    'member_leave_inserts', 0) + 1
+                async with self.metrics_lock:
+                    self.metrics['member_leave_inserts'] = self.metrics.get(
+                        'member_leave_inserts', 0) + 1
 
-            # Get the original invite they used to join
-            if self.pool:
+            # ✅ TOGGLE GATE: invites - record the "left" event against their original invite
+            if toggles.get('track_invites') and self.pool:
                 try:
                     async with self.pool.acquire() as conn:
                         row = await conn.fetchrow('''
@@ -21343,25 +21416,21 @@ class DatabaseStats(commands.Cog):
                         ''', member.guild.id, member.id)
 
                         if row:
-                            # ✅ FIXED: Use the original invite_code, not "left"
                             await self._buffer_invite_event(
                                 guild_id=member.guild.id,
                                 inviter_id=row['inviter_id'],
                                 invitee_id=member.id,
-                                # ← FIXED: Use actual code
                                 invite_code=row['invite_code'],
                                 invite_type="left",
                                 is_vanity=row['is_vanity']
                             )
 
-                            # Increment leave count for that invite
                             await self._increment_invite_leave_count(
                                 member.guild.id,
                                 row['invite_code'],
                                 row['is_vanity']
                             )
                         else:
-                            # No original invite found - track as unknown left
                             await self._buffer_invite_event(
                                 guild_id=member.guild.id,
                                 inviter_id=0,
@@ -21383,8 +21452,18 @@ class DatabaseStats(commands.Cog):
 
     @commands.Cog.listener()
     async def on_invite_create(self, invite: discord.Invite):
-        """Track invite creation - updates invite_uses table and refreshes snapshot."""
+        """Track invite creation - updates invite_uses table and refreshes snapshot.
+
+        Snapshot refresh always runs when invites are enabled so the comparison
+        baseline stays accurate. When invites are disabled we skip both the DB
+        write and the snapshot so no unnecessary API calls are made.
+        """
         if self.shutting_down:
+            return
+
+        # ✅ TOGGLE CHECK - invites
+        toggles = await self._get_stat_toggles(invite.guild.id)
+        if not toggles.get('track_invites'):
             return
 
         try:
@@ -21412,8 +21491,16 @@ class DatabaseStats(commands.Cog):
 
     @commands.Cog.listener()
     async def on_invite_delete(self, invite: discord.Invite):
-        """Track invite deletion and update snapshot."""
+        """Track invite deletion and update snapshot.
+
+        Same reasoning as on_invite_create - skip everything when invites are disabled.
+        """
         if self.shutting_down:
+            return
+
+        # ✅ TOGGLE CHECK - invites
+        toggles = await self._get_stat_toggles(invite.guild.id)
+        if not toggles.get('track_invites'):
             return
 
         try:
@@ -21444,7 +21531,10 @@ class DatabaseStats(commands.Cog):
     async def _buffer_invite_event(self, guild_id: int, inviter_id: int,
                                    invitee_id: Optional[int], invite_code: str,
                                    invite_type: str, is_vanity: bool = False):
-        """Buffer an invite event for batch processing."""
+        """Buffer an invite event for batch processing.
+
+        Callers are responsible for checking track_invites toggle before calling this.
+        """
         if invitee_id is None:
             return
 
@@ -21452,7 +21542,7 @@ class DatabaseStats(commands.Cog):
             current_time = datetime.now(timezone.utc)
 
             is_bot = False
-            encrypted_username = None  # Initialize
+            encrypted_username = None
 
             if inviter_id and inviter_id != 0:
                 guild = self.bot.get_guild(guild_id)
@@ -21461,9 +21551,8 @@ class DatabaseStats(commands.Cog):
                     if inviter:
                         is_bot = inviter.bot
                         encrypted_username = self.encrypt_username(
-                            str(inviter))  # ✅ Add this
+                            str(inviter))
             else:
-                # If no inviter, try to get invitee info
                 guild = self.bot.get_guild(guild_id)
                 if guild:
                     invitee = guild.get_member(invitee_id)
@@ -21472,15 +21561,15 @@ class DatabaseStats(commands.Cog):
                             str(invitee))
 
             params = [
-                guild_id,           # 0
-                inviter_id,         # 1
-                invitee_id,         # 2
-                invite_code,        # 3
-                invite_type,        # 4
-                current_time,       # 5
-                is_bot,             # 6
-                is_vanity,          # 7
-                encrypted_username  # 8 ✅ ADD THIS
+                guild_id,
+                inviter_id,
+                invitee_id,
+                invite_code,
+                invite_type,
+                current_time,
+                is_bot,
+                is_vanity,
+                encrypted_username
             ]
 
             await self.redis_batch_write('invites', {'params': params})
@@ -21504,35 +21593,48 @@ class DatabaseStats(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Pre-populate invite snapshots for all guilds on startup with rate limiting."""
-        # Wait for the bot to fully cache - reduced from 60 to 10 seconds
+        """Pre-populate invite snapshots for all guilds on startup with rate limiting.
+
+        We only take snapshots for guilds that have invites enabled. For guilds
+        that have it disabled we don't need a baseline since on_member_join will
+        skip the comparison entirely.
+        """
         await asyncio.sleep(10)
 
-        print(
-            f"📋 Taking invite snapshots for {len(self.bot.guilds)} guilds...")
+        print(f"📋 Taking invite snapshots for guilds with invites enabled...")
 
         success = 0
         failed = 0
-        rate_limited = 0
+        rate_limited_count = 0
+        skipped = 0
 
-        # Process guilds in batches to respect rate limits
-        batch_size = 5  # Process 5 guilds at a time
+        batch_size = 5
         guild_list = list(self.bot.guilds)
 
         for i in range(0, len(guild_list), batch_size):
             batch = guild_list[i:i + batch_size]
 
-            # Process batch concurrently but with rate limiting
             tasks = []
+            guilds_to_process = []
+
             for guild in batch:
+                # ✅ Only take snapshot if invites are enabled for this guild
+                toggles = await self._get_stat_toggles(guild.id)
+                if not toggles.get('track_invites'):
+                    skipped += 1
+                    continue
                 tasks.append(self._safe_take_snapshot(guild))
+                guilds_to_process.append(guild)
+
+            if not tasks:
+                continue
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for guild, result in zip(batch, results):
+            for guild, result in zip(guilds_to_process, results):
                 if isinstance(result, Exception):
                     if isinstance(result, discord.HTTPException) and result.status == 429:
-                        rate_limited += 1
+                        rate_limited_count += 1
                         print(f"⚠️ Rate limited for {guild.name} ({guild.id})")
                     else:
                         failed += 1
@@ -21542,14 +21644,13 @@ class DatabaseStats(commands.Cog):
                     self._set_invite_snapshot(guild.id, result)
                     success += 1
 
-            # Add delay between batches to respect rate limits
             if i + batch_size < len(guild_list):
-                await asyncio.sleep(1)  # 1 second between batches
+                await asyncio.sleep(1)
 
         print(
-            f"✅ Invite snapshots complete — {success} succeeded, {failed} failed, {rate_limited} rate limited")
-
-    # But the method doesn't exist. Add it:
+            f"✅ Invite snapshots complete — {success} succeeded, {failed} failed, "
+            f"{rate_limited_count} rate limited, {skipped} skipped (invites disabled)"
+        )
 
     async def _safe_take_snapshot(self, guild: discord.Guild) -> dict:
         """Safely take a snapshot with proper error handling for rate limits."""
