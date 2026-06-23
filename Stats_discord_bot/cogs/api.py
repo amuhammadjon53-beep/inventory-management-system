@@ -3,7 +3,7 @@ import uuid
 import logging
 import aiohttp
 import asyncpg
-from typing import Optional, List, Dict, Any, Tuple, Union, Literal
+from typing import Optional, List, Dict, Any, Tuple, Union, Literal, Set
 from contextlib import asynccontextmanager
 import asyncio
 import aiocron
@@ -3005,6 +3005,29 @@ class Constants:
         'video': 1 << 6,
         'suppressed': 1 << 7
     }
+    
+    OLDEST_WEEK_PURGE_MONTHS = 6
+
+    # table_name -> (time_column, guild_id_column)
+    PURGE_ELIGIBLE_TABLES = {
+        'message_tracking_hourly':       ('hour', 'guild_id'),
+        'voice_session_history_hourly':  ('hour', 'guild_id'),
+        'emoji_usage_hourly':            ('hour', 'guild_id'),
+        'user_mentions_hourly':          ('hour', 'guild_id'),
+        'activity_sessions_hourly':      ('hour', 'guild_id'),
+        'role_growth_hourly':            ('hour', 'guild_id'),
+        'member_joins_hourly':           ('hour', 'guild_id'),
+        'member_leaves_hourly':          ('hour', 'guild_id'),
+        'slash_commands_daily':          ('day', 'guild_id'),
+        'invite_tracking':               ('created_at', 'guild_id'),
+        'member_growth_stats':           ('date', 'guild_id'),
+    }
+
+    RETENTION_ALERT_WEEK_TARGETS = {1: 1, 2: 2, 3: 3, 4: 5}
+    RETENTION_ALERT_LIFETIME_CAP = 10
+    RETENTION_ALERT_MESSAGE = (
+        "⚠️ Your server's data history is approaching the 6 month retention limit for free servers. Upgrade to **Optimization+** to keep your full history and unlock unlimited data retention."
+    )
 
 
 def ensure_aware(dt: Optional[datetime]) -> Optional[datetime]:
@@ -3034,6 +3057,8 @@ class DatabaseStatsAPI:
         self.entity_cache_ttl = 3600  # 1 hour cache for entity existence
         self._stat_toggle_cache: Dict[int, Dict[str, bool]] = {}
         self._stat_toggle_cache_time: Dict[int, float] = {}
+        self._module_access_cache: Dict[int, Dict[str, Dict[str, Any]]] = {}
+        self._module_access_cache_time: Dict[int, float] = {}
         self.rate_limiter = get_rate_limiter()
         self.fernet = fernet
         print(
@@ -21370,6 +21395,362 @@ class DatabaseStatsAPI:
                 context={'guild_id': guild_id},
                 original=e
             ) from e
+            
+    # ======================================================================
+    # SUBSCRIPTION / MODULE ACCESS CHECKS
+    # ======================================================================
+
+    async def get_guild_module_access(self, guild_id: int) -> Dict[str, Dict[str, Any]]:
+        """
+        Get all currently-active module access for a guild, keyed by module_key.
+        Cached for 60 seconds per guild.
+        """
+        guild_id = int(guild_id)
+        now = time.time()
+        if guild_id in self._module_access_cache and \
+                (now - self._module_access_cache_time.get(guild_id, 0)) < 60:
+            return self._module_access_cache[guild_id]
+
+        if not self.pool or not self.db_connected:
+            return {}
+
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT
+                        m.module_key,
+                        gma.subscription_id,
+                        s.tier_id,
+                        s.billing_cycle,
+                        s.current_period_end,
+                        s.source,
+                        s.status
+                    FROM guild_module_access gma
+                    JOIN modules m ON gma.module_id = m.id
+                    JOIN subscriptions s ON gma.subscription_id = s.id
+                    WHERE gma.guild_id = $1
+                    AND gma.is_active = TRUE
+                    AND s.status IN ('active', 'trialing')
+                """, guild_id)
+
+            access = {}
+            for row in rows:
+                access[row['module_key']] = {
+                    'subscription_id': row['subscription_id'],
+                    'tier_id': row['tier_id'],
+                    'billing_cycle': row['billing_cycle'],
+                    'current_period_end': row['current_period_end'],
+                    'source': row['source'],
+                    'status': row['status'],
+                }
+
+            self._module_access_cache[guild_id] = access
+            self._module_access_cache_time[guild_id] = now
+            return access
+
+        except asyncpg.exceptions.PostgresError as e:
+            logger.error(f"Error fetching module access for guild {guild_id}: {e}")
+            return {}
+        except Exception as e:
+            logger.error(f"Unexpected error fetching module access for guild {guild_id}: {e}")
+            return {}
+
+    async def guild_has_module_access(self, guild_id: int, module_key: str) -> bool:
+        """Quick boolean check: does this guild currently have active access to module_key?"""
+        access = await self.get_guild_module_access(guild_id)
+        return module_key in access
+
+    def _invalidate_module_access_cache(self, guild_id: int):
+        """Call after granting/revoking/updating a guild's subscription access."""
+        guild_id = int(guild_id)
+        self._module_access_cache.pop(guild_id, None)
+        self._module_access_cache_time.pop(guild_id, None)
+
+    # ======================================================================
+    # OLDEST-WEEK ROLLING PURGE (non-Optimization+ guilds only)
+    # ======================================================================
+
+    async def _get_all_guild_ids_with_data(self) -> Set[int]:
+        """Union of every guild_id present across all purge-eligible tables."""
+        guild_ids: Set[int] = set()
+
+        async with self.pool.acquire() as conn:
+            for table_name in Constants.PURGE_ELIGIBLE_TABLES.keys():
+                try:
+                    rows = await conn.fetch(f"SELECT DISTINCT guild_id FROM {table_name}")
+                    guild_ids.update(row['guild_id'] for row in rows)
+                except asyncpg.exceptions.PostgresError as e:
+                    logger.warning(f"Could not read guild_ids from {table_name}: {e}")
+                    continue
+
+        return guild_ids
+
+    async def _get_oldest_timestamp_for_guild(self, guild_id: int) -> Optional[datetime]:
+        """Find the single oldest timestamp for this guild across every
+        purge-eligible table. Returns None if the guild has no data in any of them."""
+        oldest: Optional[datetime] = None
+        async with self.pool.acquire() as conn:
+            for table_name, (time_col, guild_col) in Constants.PURGE_ELIGIBLE_TABLES.items():
+                try:
+                    row = await conn.fetchrow(
+                        f"SELECT MIN({time_col}) as oldest FROM {table_name} WHERE {guild_col} = $1",
+                        guild_id
+                    )
+                except asyncpg.exceptions.PostgresError as e:
+                    logger.warning(
+                        f"Could not read oldest timestamp from {table_name} for guild {guild_id}: {e}")
+                    continue
+                if row and row['oldest'] is not None:
+                    value = row['oldest']
+                    if isinstance(value, datetime):
+                        candidate = ensure_aware(value)
+                    else:
+                        # DATE column (e.g. member_growth_stats.date)
+                        candidate = datetime.combine(value, dt_time.min, tzinfo=timezone.utc)
+                    if oldest is None or candidate < oldest:
+                        oldest = candidate
+        return oldest
+
+    async def _purge_week_for_guild(self, guild_id: int, week_start: datetime, week_end: datetime):
+        """Delete rows in [week_start, week_end) for this guild across every
+        purge-eligible table. Each table gets its own DELETE; failures on one
+        table don't block the others."""
+        async with self.pool.acquire() as conn:
+            for table_name, (time_col, guild_col) in Constants.PURGE_ELIGIBLE_TABLES.items():
+                try:
+                    if table_name == 'member_growth_stats':
+                        await conn.execute(
+                            f"""DELETE FROM {table_name}
+                                WHERE {guild_col} = $1
+                                AND {time_col} >= $2 AND {time_col} < $3""",
+                            guild_id, week_start.date(), week_end.date()
+                        )
+                    else:
+                        await conn.execute(
+                            f"""DELETE FROM {table_name}
+                                WHERE {guild_col} = $1
+                                AND {time_col} >= $2 AND {time_col} < $3""",
+                            guild_id, week_start, week_end
+                        )
+                except asyncpg.exceptions.PostgresError as e:
+                    logger.warning(f"Failed to purge {table_name} for guild {guild_id}: {e}")
+                    continue
+
+    async def purge_oldest_week_for_free_guilds(self):
+        """
+        For every guild that currently lacks the 'optimization' module:
+            1. Find that guild's single oldest timestamp across all
+               PURGE_ELIGIBLE_TABLES.
+            2. If that oldest timestamp falls more than 6 months before "now",
+               delete only the ONE oldest week's worth of data
+               (i.e. everything in [oldest_week_start, oldest_week_start + 7d))
+               across all those tables for that guild.
+
+        Guilds WITH an active optimization module are skipped entirely.
+        Removes at most one week per guild per call. Evaluates every
+        guild_id present in the data, not just guilds the bot is currently in.
+        """
+        if not self.pool or not self.db_connected:
+            logger.warning("Oldest-week purge skipped - database not connected")
+            return
+
+        now = datetime.now(timezone.utc)
+        six_months_ago = now - timedelta(days=Constants.OLDEST_WEEK_PURGE_MONTHS * 30)
+
+        try:
+            guild_ids = await self._get_all_guild_ids_with_data()
+        except Exception as e:
+            logger.error(f"Failed to enumerate guilds for purge: {e}")
+            return
+
+        if not guild_ids:
+            return
+
+        checked = skipped_subscribed = purged = no_old_data = failed = 0
+
+        for guild_id in guild_ids:
+            checked += 1
+            try:
+                has_optimization = await self.guild_has_module_access(guild_id, 'optimization')
+                if has_optimization:
+                    skipped_subscribed += 1
+                    continue
+
+                oldest_timestamp = await self._get_oldest_timestamp_for_guild(guild_id)
+                if oldest_timestamp is None:
+                    no_old_data += 1
+                    continue
+
+                if oldest_timestamp >= six_months_ago:
+                    no_old_data += 1
+                    continue
+
+                week_start = oldest_timestamp
+                week_end = oldest_timestamp + timedelta(days=7)
+
+                await self._purge_week_for_guild(guild_id, week_start, week_end)
+                purged += 1
+
+            except Exception as e:
+                failed += 1
+                logger.error(f"Error processing guild {guild_id} during purge: {e}")
+                continue
+
+        logger.info(
+            f"Oldest-week purge complete: {checked} checked, "
+            f"{skipped_subscribed} skipped (Optimization+), {purged} purged, "
+            f"{no_old_data} had nothing to purge, {failed} failed")
+
+    # ======================================================================
+    # RETENTION ALERT WINDOWS
+    # ======================================================================
+
+    async def update_retention_alert_windows(self):
+        if not self.pool or not self.db_connected:
+            return
+
+        now = datetime.now(timezone.utc)
+        base_target = Constants.RETENTION_ALERT_WEEK_TARGETS
+        lifetime_cap = Constants.RETENTION_ALERT_LIFETIME_CAP
+
+        try:
+            guild_ids = await self._get_all_guild_ids_with_data()
+        except Exception as e:
+            logger.error(f"Failed to enumerate guilds for retention alert update: {e}")
+            return
+
+        for guild_id in guild_ids:
+            try:
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT * FROM retention_alert_progress WHERE guild_id = $1", guild_id
+                    )
+
+                    if row and row['lifetime_alerts_exhausted']:
+                        continue
+
+                    has_optimization = await self.guild_has_module_access(guild_id, 'optimization')
+
+                    if has_optimization:
+                        if row and row['in_alert_window']:
+                            await conn.execute(
+                                "UPDATE retention_alert_progress SET in_alert_window = FALSE, "
+                                "current_week = 0, updated_at = NOW() WHERE guild_id = $1",
+                                guild_id
+                            )
+                        continue
+
+                    oldest_timestamp = await self._get_oldest_timestamp_for_guild(guild_id)
+                    if oldest_timestamp is None:
+                        continue
+
+                    purge_date = oldest_timestamp + timedelta(days=Constants.OLDEST_WEEK_PURGE_MONTHS * 30)
+                    weeks_until_purge = (purge_date - now).total_seconds() / (7 * 86400)
+
+                    if weeks_until_purge > 4:
+                        continue
+
+                    if weeks_until_purge <= 0:
+                        await conn.execute("""
+                            INSERT INTO retention_alert_progress (guild_id, lifetime_alerts_exhausted, in_alert_window)
+                            VALUES ($1, TRUE, FALSE)
+                            ON CONFLICT (guild_id) DO UPDATE SET
+                                lifetime_alerts_exhausted = TRUE, in_alert_window = FALSE, updated_at = NOW()
+                        """, guild_id)
+                        continue
+
+                    computed_week = max(1, min(4, 5 - math.ceil(weeks_until_purge)))
+                    current_week = row['current_week'] if row else 0
+
+                    if computed_week == current_week:
+                        continue
+
+                    prev_target = row['week_effective_target'] if row else 0
+                    prev_sent = row['week_alerts_sent'] if row else 0
+                    deficit = max(0, prev_target - prev_sent) if current_week > 0 else 0
+
+                    already_sent_total = row['alerts_sent_total'] if row else 0
+                    new_target = base_target[computed_week] + deficit
+                    new_target = max(0, min(new_target, lifetime_cap - already_sent_total))
+
+                    await conn.execute("""
+                        INSERT INTO retention_alert_progress
+                            (guild_id, in_alert_window, current_week, week_effective_target,
+                            week_alerts_sent, week_commands_seen, week_started_at)
+                        VALUES ($1, TRUE, $2, $3, 0, 0, NOW())
+                        ON CONFLICT (guild_id) DO UPDATE SET
+                            in_alert_window = TRUE, current_week = $2, week_effective_target = $3,
+                            week_alerts_sent = 0, week_commands_seen = 0, week_started_at = NOW(),
+                            updated_at = NOW()
+                    """, guild_id, computed_week, new_target)
+
+            except Exception as e:
+                logger.warning(f"Error updating retention alert window for guild {guild_id}: {e}")
+                continue
+
+    async def maybe_get_retention_alert(self, guild_id: int) -> Optional[str]:
+        """Call alongside any image-producing command. Returns alert text to
+        send as plain message content, or None most of the time."""
+        if not self.pool:
+            return None
+
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT * FROM retention_alert_progress WHERE guild_id = $1 "
+                    "AND in_alert_window = TRUE AND lifetime_alerts_exhausted = FALSE",
+                    guild_id
+                )
+                if not row or row['alerts_sent_total'] >= Constants.RETENTION_ALERT_LIFETIME_CAP:
+                    return None
+
+                new_commands_seen = row['week_commands_seen'] + 1
+                target = row['week_effective_target']
+                already_sent = row['week_alerts_sent']
+
+                if already_sent >= target:
+                    await conn.execute(
+                        "UPDATE retention_alert_progress SET week_commands_seen = $2, updated_at = NOW() WHERE guild_id = $1",
+                        guild_id, new_commands_seen
+                    )
+                    return None
+
+                should_fire = self._should_fire_retention_alert(row)
+
+                if should_fire:
+                    await conn.execute("""
+                        UPDATE retention_alert_progress
+                        SET week_commands_seen = $2, week_alerts_sent = week_alerts_sent + 1,
+                            alerts_sent_total = alerts_sent_total + 1, updated_at = NOW()
+                        WHERE guild_id = $1
+                    """, guild_id, new_commands_seen)
+                    return Constants.RETENTION_ALERT_MESSAGE
+                else:
+                    await conn.execute(
+                        "UPDATE retention_alert_progress SET week_commands_seen = $2, updated_at = NOW() WHERE guild_id = $1",
+                        guild_id, new_commands_seen
+                    )
+                    return None
+
+        except Exception as e:
+            logger.warning(f"Error checking retention alert for guild {guild_id}: {e}")
+            return None
+
+    def _should_fire_retention_alert(self, row) -> bool:
+        remaining_target = row['week_effective_target'] - row['week_alerts_sent']
+        if remaining_target <= 0:
+            return False
+
+        week_started = row['week_started_at']
+        if week_started is None:
+            return True
+
+        week_started = ensure_aware(week_started)
+        elapsed_fraction = (datetime.now(timezone.utc) - week_started).total_seconds() / (7 * 86400)
+        elapsed_fraction = min(max(elapsed_fraction, 0.0), 1.0)
+
+        expected_fired_by_now = elapsed_fraction * row['week_effective_target']
+        return row['week_alerts_sent'] < expected_fired_by_now
 
 
 # ======================================================================
@@ -47226,9 +47607,7 @@ async def history_sync_pause(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-app.post("/api/history-sync/cancel")
-
-
+@app.post("/api/history-sync/cancel")
 async def history_sync_cancel(
     request: HistorySyncCancelRequest,
     user: Optional[Dict] = Depends(get_current_user)
@@ -47339,6 +47718,187 @@ async def history_sync_reset(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============================================
+# SUBSCRIPTION / MODULE ACCESS ENDPOINTS
+# ============================================
+
+@app.get("/api/subscription/guild")
+async def get_subscription_for_guild(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get the full module/subscription access map for a guild."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid guild_id format: {e}")
+
+    try:
+        access = await db_stats.get_guild_module_access(guild_id_int)
+
+        modules = list(access.keys())
+        is_staff_grant = any(v.get('source') == 'staff_grant' for v in access.values())
+        expiries = [v['current_period_end'] for v in access.values() if v.get('current_period_end')]
+        earliest_expiry = min(expiries) if expiries else None
+
+        return {
+            'guild_id': guild_id,
+            'has_any_subscription': bool(access),
+            'modules': modules,
+            'access_detail': {
+                k: {
+                    'subscription_id': v['subscription_id'],
+                    'tier_id': v['tier_id'],
+                    'billing_cycle': v['billing_cycle'],
+                    'current_period_end': v['current_period_end'].isoformat() if v.get('current_period_end') else None,
+                    'source': v['source'],
+                    'status': v['status'],
+                } for k, v in access.items()
+            },
+            'is_staff_grant': is_staff_grant,
+            'earliest_expiry': earliest_expiry.isoformat() if earliest_expiry else None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error in get_subscription_for_guild: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Failed to fetch subscription data")
+
+
+@app.get("/api/subscription/guild/has-module")
+async def check_guild_has_module(
+    guild_id: str,
+    module_key: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Quick boolean check: does this guild have active access to module_key?"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid guild_id format: {e}")
+
+    try:
+        has_access = await db_stats.guild_has_module_access(guild_id_int, module_key)
+        return {
+            'guild_id': guild_id,
+            'module_key': module_key,
+            'has_access': has_access,
+        }
+    except Exception as e:
+        logger.error(f"Error in check_guild_has_module: {e}")
+        raise HTTPException(status_code=500, detail="Failed to check module access")
+
+
+# ============================================
+# RETENTION ALERT ENDPOINT
+# ============================================
+
+@app.get("/api/retention/status")
+async def get_retention_status(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Read-only retention alert status for a guild, safe to poll from a dashboard
+    (does NOT increment alert counters, unlike maybe_get_retention_alert).
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid guild_id format: {e}")
+
+    if not db_stats.pool or not db_stats.db_connected:
+        raise HTTPException(status_code=503, detail="Database connection failed")
+
+    try:
+        has_optimization = await db_stats.guild_has_module_access(guild_id_int, 'optimization')
+        if has_optimization:
+            return {
+                'guild_id': guild_id,
+                'show_alert': False,
+                'reason': 'has_optimization',
+            }
+
+        async with db_stats.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM retention_alert_progress WHERE guild_id = $1",
+                guild_id_int
+            )
+
+        if not row:
+            return {
+                'guild_id': guild_id,
+                'show_alert': False,
+                'reason': 'no_progress_row',
+            }
+
+        if row['lifetime_alerts_exhausted']:
+            return {
+                'guild_id': guild_id,
+                'show_alert': False,
+                'reason': 'lifetime_exhausted',
+            }
+
+        show_alert = bool(
+            row['in_alert_window']
+            and row['alerts_sent_total'] < Constants.RETENTION_ALERT_LIFETIME_CAP
+            and row['week_alerts_sent'] < row['week_effective_target']
+        )
+
+        return {
+            'guild_id': guild_id,
+            'show_alert': show_alert,
+            'message': Constants.RETENTION_ALERT_MESSAGE if show_alert else None,
+            'current_week': row['current_week'],
+            'alerts_sent_total': row['alerts_sent_total'],
+            'week_effective_target': row['week_effective_target'],
+            'week_alerts_sent': row['week_alerts_sent'],
+        }
+
+    except Exception as e:
+        logger.error(f"Error in get_retention_status: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Failed to fetch retention status")
+
+
+@app.get("/api/retention/check-and-fire")
+async def check_and_fire_retention_alert(
+    guild_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Stateful check that mirrors the bot-side usage pattern (increments
+    week_commands_seen / alert counters on each call). Use this only where
+    you intend each call to count as a "command seen" — NOT for dashboard
+    polling. Prefer /api/retention/status for read-only display.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        guild_id_int = int(guild_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid guild_id format: {e}")
+
+    try:
+        alert_text = await db_stats.maybe_get_retention_alert(guild_id_int)
+        return {
+            'guild_id': guild_id,
+            'show_alert': alert_text is not None,
+            'message': alert_text,
+        }
+    except Exception as e:
+        logger.error(f"Error in check_and_fire_retention_alert: {e}")
+        raise HTTPException(status_code=500, detail="Failed to check retention alert")
 
 # ============================================
 # PUBLIC ENDPOINTS (No Authentication Required)

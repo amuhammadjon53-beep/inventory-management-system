@@ -235,6 +235,8 @@ const VoiceDashboard = () => {
   const [dashboardAccessLevel, setDashboardAccessLevel] = useState('Member');
   const [currentUserId, setCurrentUserId] = useState(null);
   const [serverTimezone, setServerTimezone] = useState('UTC');
+  const [retentionAlert, setRetentionAlert] = useState(null);
+  const [retentionDismissed, setRetentionDismissed] = useState(false);
   
   const [loadingTopUsers, setLoadingTopUsers] = useState(true);
   const [loadingTopChannels, setLoadingTopChannels] = useState(true);
@@ -555,6 +557,29 @@ const VoiceDashboard = () => {
       fetchServerTimezone();
     }
   }, [currentServer, isPublicMode]);
+
+  useEffect(() => {
+    if (!currentServer || isPublicMode || hasAccess === null) { setRetentionAlert(null); return; }
+    let cancelled = false;
+    const fetchRetentionStatus = async () => {
+      try {
+        const r = await fetch(`${API_BASE_URL}/api/retention/status?guild_id=${currentServer.id}`, {
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!cancelled) {
+          setRetentionAlert(d.show_alert ? { message: d.message } : null);
+          setRetentionDismissed(false);
+        }
+      } catch {
+        if (!cancelled) setRetentionAlert(null);
+      }
+    };
+    fetchRetentionStatus();
+    return () => { cancelled = true; };
+  }, [currentServer, isPublicMode, hasAccess]);
 
   useEffect(() => {
     loadInitialData();
@@ -3162,6 +3187,11 @@ const VoiceDashboard = () => {
       }
     }
 
+    .retention-banner { width:100%; box-sizing:border-box; background:linear-gradient(135deg,#3a2f00 0%,#4a3a00 100%); border-bottom:1px solid #ffcc00; padding:12px 24px; display:flex; align-items:center; justify-content:center; gap:16px; position:relative; }
+    .retention-banner-text { color:#ffe066; font-size:14px; font-weight:500; text-align:center; max-width:900px; }
+    .retention-banner-close { background:none; border:none; color:#ffe066; font-size:14px; cursor:pointer; padding:4px 8px; border-radius:6px; line-height:1; flex-shrink:0; transition:background-color 0.15s,color 0.15s; }
+    .retention-banner-close:hover { background-color:rgba(255,224,102,0.15); color:#fff; }
+
     .stat-value, 
     .average-value,
     .stat-number,
@@ -3895,6 +3925,18 @@ const VoiceDashboard = () => {
   return (
     <>
       <NavBar />
+      {retentionAlert && !retentionDismissed && (
+        <div className="retention-banner">
+          <span className="retention-banner-text">⚠️ {retentionAlert.message}</span>
+          <button
+            className="retention-banner-close"
+            onClick={() => setRetentionDismissed(true)}
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div className="dashboard-page">
         <DashboardSidebar 
           currentServerId={currentServer?.id} 

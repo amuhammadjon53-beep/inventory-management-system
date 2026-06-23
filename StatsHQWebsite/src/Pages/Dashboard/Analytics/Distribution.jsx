@@ -4,6 +4,7 @@ import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
 import ActivityHeatmap from "../../../Components/ActivityHeatmap.jsx";
+import TimezonePieChart from "../../../Components/PieChart.jsx";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 const PUBLIC_GUILD_ID = '1424021358680998022';
@@ -153,6 +154,10 @@ const DistributionDashboard = () => {
   const [loadingServers, setLoadingServers]             = useState(true);
   const [serverTimezone, setServerTimezone]             = useState('UTC');
 
+  // Retention alert banner
+  const [retentionAlert, setRetentionAlert]         = useState(null);
+  const [retentionDismissed, setRetentionDismissed] = useState(false);
+
   // Filters
   const [selectedView, setSelectedView]         = useState('server');
   const [selectedStatType, setSelectedStatType] = useState('messages');
@@ -169,7 +174,6 @@ const DistributionDashboard = () => {
   const autoHeatmapView   = getHeatmapView(timePeriod, customDaysBack);
   const [activeHeatmapView, setActiveHeatmapView] = useState(autoHeatmapView);
 
-  // When filters change auto view, reset active view to match
   const prevAutoViewRef = useRef(autoHeatmapView);
   useEffect(() => {
     if (prevAutoViewRef.current !== autoHeatmapView) {
@@ -207,11 +211,12 @@ const DistributionDashboard = () => {
   const [loadingHeatmap, setLoadingHeatmap]   = useState(false);
 
   const rolesRef              = useRef([]);
-  const prevFiltersRef        = useRef('');  // pie chart cache key
-  const prevHeatmapFiltersRef = useRef('');  // heatmap cache key (includes activeHeatmapView)
+  const prevFiltersRef        = useRef('');
+  const prevHeatmapFiltersRef = useRef('');
   const NAVBAR_HEIGHT         = "80px";
 
   useEffect(() => { rolesRef.current = roles; }, [roles]);
+  useEffect(() => { loadInitialData(); }, []);
 
   // Reset stat type when view changes
   useEffect(() => {
@@ -235,7 +240,32 @@ const DistributionDashboard = () => {
     fetchTz();
   }, [currentServer, isPublicMode]);
 
-  // FIXED: applyServerTimePeriod now returns computed values
+  // ── FIX: Retention alert — only fires once hasAccess is resolved (not null)
+  // This prevents the banner fetch from racing with the access check and
+  // causing the settings useEffect below to see a stale hasAccess=null.
+  useEffect(() => {
+    if (!currentServer || isPublicMode || hasAccess === null) { setRetentionAlert(null); return; }
+    let cancelled = false;
+    const fetchRetentionStatus = async () => {
+      try {
+        const r = await fetch(`${API_BASE_URL}/api/retention/status?guild_id=${currentServer.id}`, {
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!cancelled) {
+          setRetentionAlert(d.show_alert ? { message: d.message } : null);
+          setRetentionDismissed(false);
+        }
+      } catch {
+        if (!cancelled) setRetentionAlert(null);
+      }
+    };
+    fetchRetentionStatus();
+    return () => { cancelled = true; };
+  }, [currentServer, isPublicMode, hasAccess]); // ← hasAccess added so it waits for resolution
+
   const applyServerTimePeriod = (settings) => {
     const mode = settings.default_time_mode || 'days_back';
     const result = {};
@@ -259,10 +289,10 @@ const DistributionDashboard = () => {
       setTimePeriod('custom-range');
       const today = new Date();
       const formattedToday = today.toISOString().split('T')[0];
-      
+
       let fromDate = null;
       let toDate = null;
-      
+
       if (settings.default_from_date) {
         fromDate = settings.default_from_date.split('T')[0];
         setCustomStartDate(fromDate);
@@ -271,7 +301,7 @@ const DistributionDashboard = () => {
         toDate = settings.default_to_date.split('T')[0];
         setCustomEndDate(toDate);
       }
-      
+
       if (fromDate && !toDate) {
         toDate = formattedToday;
         setCustomEndDate(toDate);
@@ -279,7 +309,7 @@ const DistributionDashboard = () => {
         fromDate = '';
         setCustomStartDate('');
       }
-      
+
       result.timePeriod = 'custom-range';
       result.customStartDate = fromDate || '';
       result.customEndDate = toDate || '';
@@ -287,28 +317,28 @@ const DistributionDashboard = () => {
       const today = new Date();
       const formattedToday = today.toISOString().split('T')[0];
       let startDate = null;
-      
+
       if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
         const targetWeekday = settings.default_rolling_value;
         const currentWeekday = today.getDay();
         const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
-        
+
         let daysToSubtract;
         if (currentWeekdayMonday >= targetWeekday) {
           daysToSubtract = currentWeekdayMonday - targetWeekday;
         } else {
           daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
         }
-        
+
         startDate = new Date(today);
         startDate.setDate(today.getDate() - daysToSubtract);
-        
+
       } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
         const targetDay = settings.default_rolling_value;
         const currentDate = today.getDate();
-        
+
         startDate = new Date(today);
-        
+
         if (currentDate >= targetDay) {
           startDate.setDate(targetDay);
         } else {
@@ -317,7 +347,7 @@ const DistributionDashboard = () => {
           startDate.setDate(Math.min(targetDay, lastDayOfMonth));
         }
       }
-      
+
       if (startDate) {
         const formattedStartDate = startDate.toISOString().split('T')[0];
         setTimePeriod('custom-range');
@@ -331,7 +361,7 @@ const DistributionDashboard = () => {
         result.timePeriod = 'all';
       }
     }
-    
+
     return result;
   };
 
@@ -367,7 +397,9 @@ const DistributionDashboard = () => {
     setLoadingServers(false);
   };
 
-  // UPDATED: checkServerAccess now uses fetchDataWithParams
+  // ── FIX: checkServerAccess only sets state — does NOT call fetchDataWithParams.
+  // The settings useEffect below owns the initial data fetch and waits for
+  // hasAccess to be resolved before firing, eliminating the double-fetch race.
   const checkServerAccess = async (guildId, hasAdmin, hasManageServer) => {
     try {
       const r = await fetch(`${API_BASE_URL}/api/settings/get`, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'include', body: JSON.stringify({ guild_id: guildId }) });
@@ -377,31 +409,28 @@ const DistributionDashboard = () => {
       setDashboardAccessLevel(lvl);
       const access = (lvl === 'Public' || lvl === 'Member') ? true : lvl === 'Moderator' ? (hasAdmin || hasManageServer) : lvl === 'Admin' ? hasAdmin : true;
       setHasAccess(access);
-      const timeParams = applyServerTimePeriod(d);
+      applyServerTimePeriod(d); // set time period state only — fetch happens in useEffect below
       setLoadingServers(false);
-      
-      // Fetch data immediately with the computed params
-      await fetchDataWithParams(timeParams);
     } catch { setHasAccess(false); }
   };
 
-  // NEW: fetchDataWithParams - uses overrides instead of state
+  // ── FIX: fetchDataWithParams — guard moved BEFORE setLoadingPieChart so we
+  // never enter a stuck-loading state when hasAccess hasn't resolved yet.
   const fetchDataWithParams = async (overrides = {}) => {
-    if (!currentServer || !hasAccess) return;
-    
+    if (!currentServer) return; // guard before any state mutation
+
     setLoadingPieChart(true);
-    
-    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
-    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+
+    const effectiveTimePeriod      = overrides.timePeriod      ?? timePeriod;
+    const effectiveCustomDaysBack  = overrides.customDaysBack  ?? customDaysBack;
     const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
-    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
-    
-    // Compute date range directly
+    const effectiveCustomEndDate   = overrides.customEndDate   ?? customEndDate;
+
     let startDate = null;
-    let endDate = null;
-    
+    let endDate   = null;
+
     if (effectiveTimePeriod === "all") {
-      // No date range
+      // no date range
     } else if (effectiveTimePeriod === "custom-lookback") {
       if (effectiveCustomDaysBack && parseInt(effectiveCustomDaysBack) > 0) {
         endDate = new Date();
@@ -411,39 +440,39 @@ const DistributionDashboard = () => {
     } else if (effectiveTimePeriod === "custom-range") {
       if (effectiveCustomStartDate && effectiveCustomEndDate) {
         startDate = new Date(effectiveCustomStartDate);
-        endDate = new Date(effectiveCustomEndDate);
+        endDate   = new Date(effectiveCustomEndDate);
       }
     } else {
       endDate = new Date();
       startDate = new Date();
       startDate.setDate(startDate.getDate() - parseInt(effectiveTimePeriod));
     }
-    
+
     try {
       const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
       if (!statConf) return;
-      
+
       const roleFilterArray = selectedRoleId && statConf.hasRoleFilter ? [String(selectedRoleId)] : null;
-      
+
       const body = { guild_id: currentServer.id, timezone_str: serverTimezone };
       if (startDate) body.start_time = startDate.toISOString();
       if (endDate) { const e = new Date(endDate); e.setHours(23, 59, 59, 999); body.end_time = e.toISOString(); }
       if (roleFilterArray) body.role_filter_ids = roleFilterArray;
-      if (selectedView === 'user') body.user_id = selectedUserId;
-      if (selectedView === 'channel') body.channel_id = selectedChannelId;
+      if (selectedView === 'user')     body.user_id     = selectedUserId;
+      if (selectedView === 'channel')  body.channel_id  = selectedChannelId;
       if (selectedView === 'category') body.category_id = selectedCategoryId;
-      
+
       const distEndpoint = isPublicMode
         ? `${API_BASE_URL}/api/public/${selectedView}/distribution/${statConf.endpoint}`
         : `${API_BASE_URL}/api/${selectedView}/distribution/${statConf.endpoint}`;
-      
+
       const r = await fetch(distEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: isPublicMode ? 'omit' : 'include',
         body: JSON.stringify(body),
       });
-      
+
       if (r.ok) {
         const data = await r.json();
         const hourly = Array.from({ length: 24 }, (_, i) => {
@@ -452,10 +481,9 @@ const DistributionDashboard = () => {
         });
         setHourlyData(hourly);
       }
-      
-      // Also fetch heatmap data with the computed params
+
       await fetchDailyHeatmapDataWithParams(activeHeatmapView, startDate, endDate, effectiveTimePeriod);
-      
+
     } catch (e) {
       console.error('fetchDataWithParams error:', e);
     } finally {
@@ -463,11 +491,10 @@ const DistributionDashboard = () => {
     }
   };
 
-  // Helper for heatmap fetch with params
   const fetchDailyHeatmapDataWithParams = async (heatmapView, startDate, endDate, effectiveTimePeriod) => {
-    if (!currentServer || !hasAccess) return;
-    if (selectedView === 'user' && !selectedUserId) return;
-    if (selectedView === 'channel' && !selectedChannelId) return;
+    if (!currentServer) return;
+    if (selectedView === 'user'     && !selectedUserId)     return;
+    if (selectedView === 'channel'  && !selectedChannelId)  return;
     if (selectedView === 'category' && !selectedCategoryId) return;
 
     const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
@@ -477,20 +504,19 @@ const DistributionDashboard = () => {
     setHeatmapData({});
 
     const roleFilterArray = selectedRoleId && statConf.hasRoleFilter ? [String(selectedRoleId)] : null;
-    
+
     const body = { guild_id: currentServer.id, timezone_str: serverTimezone };
     if (startDate) body.start_time = startDate.toISOString();
     if (endDate) { const e = new Date(endDate); e.setHours(23, 59, 59, 999); body.end_time = e.toISOString(); }
     if (roleFilterArray) body.role_filter_ids = roleFilterArray;
-    if (selectedView === 'user') body.user_id = selectedUserId;
-    if (selectedView === 'channel') body.channel_id = selectedChannelId;
+    if (selectedView === 'user')     body.user_id     = selectedUserId;
+    if (selectedView === 'channel')  body.channel_id  = selectedChannelId;
     if (selectedView === 'category') body.category_id = selectedCategoryId;
 
     if (heatmapView === 'weekly') {
       const weeklyEndpoint = isPublicMode
         ? `${API_BASE_URL}/api/public/${selectedView}/distribution-weekly/${statConf.endpoint}`
         : `${API_BASE_URL}/api/${selectedView}/distribution-weekly/${statConf.endpoint}`;
-
       try {
         const r = await fetch(weeklyEndpoint, {
           method: 'POST',
@@ -548,9 +574,12 @@ const DistributionDashboard = () => {
     }
   };
 
-  // UPDATED: Fetch settings and apply time period, then fetch data immediately
+  // ── FIX: Settings useEffect now depends on [currentServer, hasAccess] and
+  // guards on hasAccess === null so it never fires until the access check
+  // resolves. This is the single owner of the initial data fetch.
   useEffect(() => {
-    if (!currentServer) return;
+    if (!currentServer || hasAccess === null) return;
+    let cancelled = false;
     const fetchAndApplyTimePeriod = async () => {
       try {
         const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
@@ -559,21 +588,22 @@ const DistributionDashboard = () => {
           credentials: isPublicMode ? 'omit' : 'include',
           body: JSON.stringify({ guild_id: currentServer.id })
         });
+        if (cancelled) return;
         if (response.ok) {
           const data = await response.json();
           const timeParams = applyServerTimePeriod(data);
-          // Fetch data immediately with the computed params
-          await fetchDataWithParams(timeParams);
+          if (!cancelled) await fetchDataWithParams(timeParams);
         } else {
-          await fetchDistributionData();
+          if (!cancelled) await fetchDistributionData();
         }
       } catch (e) {
         console.error('Error fetching time period settings:', e);
-        await fetchDistributionData();
+        if (!cancelled) await fetchDistributionData();
       }
     };
     fetchAndApplyTimePeriod();
-  }, [currentServer]);
+    return () => { cancelled = true; };
+  }, [currentServer, hasAccess]); // ← hasAccess added; fires once it resolves to true/false
 
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
@@ -787,8 +817,8 @@ const DistributionDashboard = () => {
 
   const fetchDistributionData = async () => {
     if (!currentServer || !hasAccess) return;
-    if (selectedView === 'user' && !selectedUserId) return;
-    if (selectedView === 'channel' && !selectedChannelId) return;
+    if (selectedView === 'user'     && !selectedUserId)     return;
+    if (selectedView === 'channel'  && !selectedChannelId)  return;
     if (selectedView === 'category' && !selectedCategoryId) return;
 
     const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
@@ -822,12 +852,12 @@ const DistributionDashboard = () => {
     }
   };
 
-  // ── FETCH 2: Heatmap data — endpoint depends on requested view ────────────
+  // ── FETCH 2: Heatmap data ─────────────────────────────────────────────────
 
   const fetchDailyHeatmapData = async (heatmapView) => {
     if (!currentServer || !hasAccess) return;
-    if (selectedView === 'user' && !selectedUserId) return;
-    if (selectedView === 'channel' && !selectedChannelId) return;
+    if (selectedView === 'user'     && !selectedUserId)     return;
+    if (selectedView === 'channel'  && !selectedChannelId)  return;
     if (selectedView === 'category' && !selectedCategoryId) return;
 
     const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
@@ -896,7 +926,6 @@ const DistributionDashboard = () => {
     }
   };
 
-  // ── Handle manual view change from the heatmap toggle ────────────────────
   const handleHeatmapViewChange = (newView) => {
     setActiveHeatmapView(newView);
   };
@@ -1101,8 +1130,8 @@ const DistributionDashboard = () => {
   // ── Render content ────────────────────────────────────────────────────────
 
   const renderContent = () => {
-    if (selectedView === 'user' && !selectedUserId)         return <div className="no-selection"><h2>Select a User</h2><p>Please select a user from the dropdown above to view distribution data.</p></div>;
-    if (selectedView === 'channel' && !selectedChannelId)   return <div className="no-selection"><h2>Select a Channel</h2><p>Please select a channel from the dropdown above to view distribution data.</p></div>;
+    if (selectedView === 'user'     && !selectedUserId)     return <div className="no-selection"><h2>Select a User</h2><p>Please select a user from the dropdown above to view distribution data.</p></div>;
+    if (selectedView === 'channel'  && !selectedChannelId)  return <div className="no-selection"><h2>Select a Channel</h2><p>Please select a channel from the dropdown above to view distribution data.</p></div>;
     if (selectedView === 'category' && !selectedCategoryId) return <div className="no-selection"><h2>Select a Category</h2><p>Please select a category from the dropdown above to view distribution data.</p></div>;
 
     const statLabel  = currentStatLabel();
@@ -1111,20 +1140,19 @@ const DistributionDashboard = () => {
 
     return (
       <>
-        {/* Pie chart */}
         <div className="charts-section">
           <h2 className="section-title">{statLabel} — Hourly Distribution</h2>
           <div className="chart-wrapper">
             {loadingPieChart ? (
               <LoadingSpinner size="large" text="Loading distribution data..." />
             ) : hasData ? (
-              <ActivityHeatmap
+              <TimezonePieChart
                 hourlyData={hourlyData}
-                view="hourly"
+                timezone={serverTimezone}
+                activityType={statLabel}
+                guildName={currentServer?.name || 'Server'}
+                daysBack={getTimePeriodLabel()}
                 valueFormatter={valueFormatter}
-                title={`${statLabel} — Hourly Distribution`}
-                subtitle={`${currentServer?.name || 'Server'} • ${timePeriodSubtitle}`}
-                isPieChart={true}
               />
             ) : (
               <div className="no-chart-data">No {statLabel.toLowerCase()} data available for this period</div>
@@ -1132,7 +1160,6 @@ const DistributionDashboard = () => {
           </div>
         </div>
 
-        {/* Heatmap — view and data endpoint controlled from dashboard */}
         <div className="charts-section">
           <h2 className="section-title">{statLabel} — Activity Heatmap</h2>
           <div className="chart-wrapper heatmap-wrapper">
@@ -1169,6 +1196,41 @@ const DistributionDashboard = () => {
     .dashboard-page { max-width:100%; margin:0 auto; background-color:#0a0a0a; color:#fff; min-height:100vh; display:flex; position:relative; }
     .dashboard-main { flex:1; margin-left:280px; background-color:#0a0a0a; min-height:100vh; overflow-x:hidden; width:calc(100% - 280px); }
     .dashboard-content { max-width:1600px; margin:0 auto; padding:20px 40px 40px; background-color:#0a0a0a; width:100%; }
+    .retention-banner {
+      width: 100%;
+      box-sizing: border-box;
+      background: linear-gradient(135deg, #3a2f00 0%, #4a3a00 100%);
+      border-bottom: 1px solid #ffcc00;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      position: relative;
+    }
+    .retention-banner-text {
+      color: #ffe066;
+      font-size: 14px;
+      font-weight: 500;
+      text-align: center;
+      max-width: 900px;
+    }
+    .retention-banner-close {
+      background: none;
+      border: none;
+      color: #ffe066;
+      font-size: 14px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 6px;
+      line-height: 1;
+      flex-shrink: 0;
+      transition: background-color 0.15s, color 0.15s;
+    }
+    .retention-banner-close:hover {
+      background-color: rgba(255, 224, 102, 0.15);
+      color: #fff;
+    }
     .filters-section { background-color:#0a0a0a; padding:24px; border-radius:16px; margin-bottom:20px; border:1px solid #1a1a1a; display:flex; flex-wrap:wrap; gap:24px; align-items:flex-start; width:100%; position:relative; overflow:visible; }
     .filter-row { display:flex; align-items:center; gap:12px; min-width:200px; }
     .filter-row label { color:#b0b0b0; font-size:14px; font-weight:500; white-space:nowrap; text-transform:uppercase; letter-spacing:0.5px; min-width:80px; }
@@ -1232,6 +1294,8 @@ const DistributionDashboard = () => {
     @media (max-width:768px) {
       .dashboard-main { margin-left:0; width:100%; }
       .dashboard-content { padding:12px; }
+      .retention-banner { padding:10px 16px; flex-wrap:wrap; }
+      .retention-banner-text { font-size:13px; }
       .filters-section { flex-direction:column; align-items:stretch; padding:16px; }
       .filter-row { flex-direction:column; align-items:flex-start; width:100%; }
       .filter-row label { margin-bottom:4px; min-width:auto; }
@@ -1260,6 +1324,18 @@ const DistributionDashboard = () => {
   return (
     <>
       <NavBar />
+      {retentionAlert && !retentionDismissed && (
+        <div className="retention-banner">
+          <span className="retention-banner-text">⚠️ {retentionAlert.message}</span>
+          <button
+            className="retention-banner-close"
+            onClick={() => setRetentionDismissed(true)}
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div className="dashboard-page">
         <DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} isPublicMode={isPublicMode} publicGuildId={PUBLIC_GUILD_ID} />
         <main className="dashboard-main">
