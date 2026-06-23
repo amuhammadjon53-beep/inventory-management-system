@@ -523,10 +523,14 @@ class ChartView(discord.ui.View):
             file = discord.File(final_image_bytes, filename='chart.png')
             self._update_buttons()
 
+            # Fetch retention alert
+            _db_stats = self.cog.bot.get_cog('DatabaseStats')
+            retention_alert = await _db_stats.maybe_get_retention_alert(self.guild_id) if _db_stats else None
+
             if interaction:
-                await self._safe_edit_response(interaction, content=None, attachments=[file], view=self)
+                await self._safe_edit_response(interaction, content=retention_alert, attachments=[file], view=self)
             else:
-                await self._safe_send_or_edit(file=file, view=self)
+                await self._safe_send_or_edit(content=retention_alert, file=file, view=self)
 
         except Exception as e:
             print(f"\n❌❌❌ ERROR IN UPDATE_CHART: {e}")

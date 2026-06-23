@@ -2362,10 +2362,13 @@ class GrowthSystem(commands.Cog):
 
             file = discord.File(final_image_bytes, filename='growth_chart.png')
 
+            db_cog = self.bot.get_cog('DatabaseStats')
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                msg = await send_method(content=retention_alert_text, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await send_method(content=retention_alert_text, file=file, view=view, delete_after=300)
 
         except Exception as e:
             traceback.print_exc()
@@ -2461,10 +2464,13 @@ class GrowthSystem(commands.Cog):
 
             file = discord.File(final_image_bytes, filename='growth_chart.png')
 
+            db_cog = self.bot.get_cog('DatabaseStats')
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                msg = await send_method(content=retention_alert_text, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await send_method(content=retention_alert_text, file=file, view=view, delete_after=300)
 
         except Exception as e:
             traceback.print_exc()

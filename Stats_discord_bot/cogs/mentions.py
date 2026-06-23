@@ -1779,7 +1779,9 @@ class Mentions(commands.Cog):
         img_bytes = await view.generate_image()
         file = discord.File(img_bytes, filename="mentions_leaderboard.png")
 
-        msg = await interaction.followup.send(file=file, view=view)
+        retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
+
+        msg = await interaction.followup.send(content=retention_alert_text, file=file, view=view)
         self.active_views[msg.id] = view
 
     async def _handle_slash_ratio(self, interaction: discord.Interaction, target_user: discord.Member):
@@ -1877,7 +1879,9 @@ class Mentions(commands.Cog):
         file = discord.File(
             img_bytes, filename="mentions_ratios_leaderboard.png")
 
-        msg = await interaction.followup.send(file=file, view=view)
+        retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
+
+        msg = await interaction.followup.send(content=retention_alert_text, file=file, view=view)
         self.active_views[msg.id] = view
 
     async def _handle_prefix_leaderboard(
@@ -1932,7 +1936,9 @@ class Mentions(commands.Cog):
         img_bytes = await view.generate_image()
         file = discord.File(img_bytes, filename="mentions_leaderboard.png")
 
-        msg = await ctx.send(file=file, view=view)
+        retention_alert_text = await self.db_cog.maybe_get_retention_alert(ctx.guild.id) if self.db_cog else None
+
+        msg = await ctx.send(content=retention_alert_text, file=file, view=view)
         self.active_views[msg.id] = view
 
     async def _handle_prefix_ratio(self, ctx: commands.Context, target_user: discord.Member):
@@ -2040,7 +2046,9 @@ class Mentions(commands.Cog):
         file = discord.File(
             img_bytes, filename="mentions_ratios_leaderboard.png")
 
-        msg = await ctx.send(file=file, view=view)
+        retention_alert_text = await self.db_cog.maybe_get_retention_alert(ctx.guild.id) if self.db_cog else None
+
+        msg = await ctx.send(content=retention_alert_text, file=file, view=view)
         self.active_views[msg.id] = view
 
 

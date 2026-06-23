@@ -3816,10 +3816,12 @@ class Leaderboards(commands.Cog):
                     await ctx_or_interaction.send("❌ Invalid command type.", delete_after=10)
                 return
 
+            retention_alert_text = await self.db_cog.maybe_get_retention_alert(guild.id) if self.db_cog else None
+
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                msg = await send_method(content=retention_alert_text, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await send_method(content=retention_alert_text, file=file, view=view, delete_after=300)
 
             self.active_views[msg.id] = view
 

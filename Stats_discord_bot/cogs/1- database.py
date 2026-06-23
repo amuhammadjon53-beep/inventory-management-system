@@ -31,6 +31,7 @@ import io
 import numpy as np
 import hashlib
 import re
+import math
 from asyncio import Semaphore
 import emoji
 import unicodedata
@@ -108,6 +109,31 @@ class Constants:
         'slash_commands_daily': 365
     }
 
+    # 6 months deletion policy
+    OLDEST_WEEK_PURGE_MONTHS = 6
+    PURGE_ELIGIBLE_TABLES = {
+        'message_tracking_hourly':        ('hour', 'guild_id'),
+        'voice_session_history_hourly':   ('hour', 'guild_id'),
+        'emoji_usage_hourly':             ('hour', 'guild_id'),
+        'user_mentions_hourly':           ('hour', 'guild_id'),
+        'activity_sessions_hourly':       ('hour', 'guild_id'),
+        'role_growth_hourly':             ('hour', 'guild_id'),
+        'member_joins_hourly':            ('hour', 'guild_id'),
+        'member_leaves_hourly':           ('hour', 'guild_id'),
+        'slash_commands_daily':           ('day', 'guild_id'),
+        'invite_tracking':                ('created_at', 'guild_id'),
+        'activities':                     ('created_at', 'guild_id'),
+        'member_growth_stats':            ('date', 'guild_id'),
+        'server_member_counts':           ('recorded_at', 'guild_id'),
+    }
+
+    RETENTION_ALERT_WEEK_TARGETS = {1: 1, 2: 1, 3: 1, 4: 2}
+    RETENTION_ALERT_LIFETIME_CAP = 5
+    RETENTION_ALERT_MESSAGE = (
+        "⚠️ Data older than 6 months gets automatically deleted, "
+        "get the Optimization+ module to keep your data indefinitely!"
+    )
+
     EMPTY_VOICE_RESULT = {
         'total_seconds': 0, 'total_hours': 0.0, 'session_count': 0,
         'avg_session': 0.0, 'first_session': None, 'last_session': None
@@ -184,9 +210,12 @@ class DatabaseStats(commands.Cog):
         self.connection_semaphore = Semaphore(20)
 
         # Stat type toggle caching
-        # guild_id -> {stat: bool}
         self._stat_toggle_cache: Dict[int, Dict[str, bool]] = {}
         self._stat_toggle_cache_time: Dict[int, float] = {}
+
+        # Subscrption caching
+        self._module_access_cache: Dict[int, Dict[str, Dict[str, Any]]] = {}
+        self._module_access_cache_time: Dict[int, float] = {}
 
         # Voice state flags mapping
         self.voice_state_bits = {
@@ -269,6 +298,12 @@ class DatabaseStats(commands.Cog):
             '0 */3 * * *', func=self.send_server_count_message, tz=ZoneInfo('UTC'))
         self.reset_schedule_cron = aiocron.crontab(
             '*/30 * * * *', func=self.check_and_execute_scheduled_resets, tz=ZoneInfo('UTC'))
+        self.oldest_week_purge_cron = aiocron.crontab(
+            # Every Friday at 12:00 UTC (cron weekday 5 = Friday)
+            '0 12 * * 5',
+            func=self.purge_oldest_week_for_free_guilds, tz=ZoneInfo('UTC'))
+        self.retention_alert_cron = aiocron.crontab(
+            '0 10 * * *', func=self.update_retention_alert_windows, tz=ZoneInfo('UTC'))
 
         print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, Server count message every 3 hours, Reset schedule checker every 30 minutes.")
 
@@ -294,6 +329,329 @@ class DatabaseStats(commands.Cog):
             print(f"❌ Error in scheduled reset check: {e}")
             import traceback
             traceback.print_exc()
+
+    # ======================================================================
+    # OLDEST-WEEK ROLLING PURGE (non-Optimization+ guilds only)
+    # ======================================================================
+
+    async def purge_oldest_week_for_free_guilds(self):
+        """
+        Runs every Friday at 12:00 UTC.
+
+        For every guild that currently lacks the 'optimization' module:
+            1. Find that guild's single oldest timestamp across all
+            PURGE_ELIGIBLE_TABLES.
+            2. If that oldest timestamp falls more than 6 months before "now",
+            delete only the ONE oldest week's worth of data
+            (i.e. everything in [oldest_week_start, oldest_week_start + 7d) )
+            across all those tables for that guild.
+
+        Guilds WITH an active optimization module are skipped entirely - no
+        deletion happens for them regardless of how old their data is.
+
+        This only ever removes a single week per guild per run, by design:
+        even a guild that's been unsubscribed for years loses at most ~1 week
+        of history per Friday, and the moment they resubscribe this stops
+        touching their data at all.
+
+        Evaluates every guild_id present in the data, not just guilds the bot
+        is currently in.
+        """
+        if not self.pool or not self.db_connected:
+            print("⚠️ Oldest-week purge skipped - database not connected")
+            return
+
+        print(f"\n{'='*60}")
+        print(
+            f"🗑️ Starting oldest-week purge at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        print(f"{'='*60}")
+
+        now = datetime.now(timezone.utc)
+        six_months_ago = now - \
+            timedelta(days=Constants.OLDEST_WEEK_PURGE_MONTHS * 30)
+
+        try:
+            guild_ids = await self._get_all_guild_ids_with_data()
+        except Exception as e:
+            print(f"❌ Failed to enumerate guilds for purge: {e}")
+            return
+
+        if not guild_ids:
+            print("ℹ️ No guilds with data found - nothing to purge")
+            print(f"{'='*60}\n")
+            return
+
+        checked = 0
+        skipped_subscribed = 0
+        purged = 0
+        no_old_data = 0
+        failed = 0
+
+        for guild_id in guild_ids:
+            checked += 1
+            try:
+                has_optimization = await self.guild_has_module_access(guild_id, 'optimization')
+                if has_optimization:
+                    skipped_subscribed += 1
+                    continue
+
+                oldest_timestamp = await self._get_oldest_timestamp_for_guild(guild_id)
+                if oldest_timestamp is None:
+                    no_old_data += 1
+                    continue
+
+                if oldest_timestamp >= six_months_ago:
+                    # Oldest data isn't 6 months old yet - nothing to purge this week
+                    no_old_data += 1
+                    continue
+
+                week_start = oldest_timestamp
+                week_end = oldest_timestamp + timedelta(days=7)
+
+                await self._purge_week_for_guild(guild_id, week_start, week_end)
+                purged += 1
+
+            except Exception as e:
+                failed += 1
+                print(f"  ❌ Error processing guild {guild_id}: {e}")
+                continue
+
+        print(
+            f"\n✅ Oldest-week purge complete: {checked} guilds checked, "
+            f"{skipped_subscribed} skipped (has Optimization+), "
+            f"{purged} purged, {no_old_data} had nothing to purge, {failed} failed")
+        print(f"{'='*60}\n")
+
+    async def update_retention_alert_windows(self):
+        if not self.pool or not self.db_connected:
+            return
+
+        now = datetime.now(timezone.utc)
+        base_target = Constants.RETENTION_ALERT_WEEK_TARGETS
+        lifetime_cap = Constants.RETENTION_ALERT_LIFETIME_CAP
+
+        try:
+            guild_ids = await self._get_all_guild_ids_with_data()
+        except Exception as e:
+            print(
+                f"❌ Failed to enumerate guilds for retention alert update: {e}")
+            return
+
+        for guild_id in guild_ids:
+            try:
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT * FROM retention_alert_progress WHERE guild_id = $1", guild_id
+                    )
+
+                    if row and row['lifetime_alerts_exhausted']:
+                        continue
+
+                    has_optimization = await self.guild_has_module_access(guild_id, 'optimization')
+
+                    if has_optimization:
+                        if row and row['in_alert_window']:
+                            await conn.execute(
+                                "UPDATE retention_alert_progress SET in_alert_window = FALSE, "
+                                "current_week = 0, updated_at = NOW() WHERE guild_id = $1",
+                                guild_id
+                            )
+                        continue
+
+                    oldest_timestamp = await self._get_oldest_timestamp_for_guild(guild_id)
+                    if oldest_timestamp is None:
+                        continue
+
+                    purge_date = oldest_timestamp + \
+                        timedelta(days=Constants.OLDEST_WEEK_PURGE_MONTHS * 30)
+                    weeks_until_purge = (
+                        purge_date - now).total_seconds() / (7 * 86400)
+
+                    if weeks_until_purge > 4:
+                        continue
+
+                    if weeks_until_purge <= 0:
+                        await conn.execute("""
+                            INSERT INTO retention_alert_progress (guild_id, lifetime_alerts_exhausted, in_alert_window)
+                            VALUES ($1, TRUE, FALSE)
+                            ON CONFLICT (guild_id) DO UPDATE SET
+                                lifetime_alerts_exhausted = TRUE, in_alert_window = FALSE, updated_at = NOW()
+                        """, guild_id)
+                        continue
+
+                    computed_week = max(
+                        1, min(4, 5 - math.ceil(weeks_until_purge)))
+                    current_week = row['current_week'] if row else 0
+
+                    if computed_week == current_week:
+                        continue
+
+                    prev_target = row['week_effective_target'] if row else 0
+                    prev_sent = row['week_alerts_sent'] if row else 0
+                    deficit = max(0, prev_target -
+                                  prev_sent) if current_week > 0 else 0
+
+                    already_sent_total = row['alerts_sent_total'] if row else 0
+                    new_target = base_target[computed_week] + deficit
+                    new_target = max(
+                        0, min(new_target, lifetime_cap - already_sent_total))
+
+                    await conn.execute("""
+                        INSERT INTO retention_alert_progress
+                            (guild_id, in_alert_window, current_week, week_effective_target,
+                            week_alerts_sent, week_commands_seen, week_started_at)
+                        VALUES ($1, TRUE, $2, $3, 0, 0, NOW())
+                        ON CONFLICT (guild_id) DO UPDATE SET
+                            in_alert_window = TRUE, current_week = $2, week_effective_target = $3,
+                            week_alerts_sent = 0, week_commands_seen = 0, week_started_at = NOW(),
+                            updated_at = NOW()
+                    """, guild_id, computed_week, new_target)
+
+            except Exception as e:
+                print(
+                    f"⚠️ Error updating retention alert window for guild {guild_id}: {e}")
+                continue
+
+    async def maybe_get_retention_alert(self, guild_id: int) -> Optional[str]:
+        """Call alongside any image-producing command. Returns alert text to
+        send as plain message content, or None most of the time."""
+        if not self.pool:
+            return None
+
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT * FROM retention_alert_progress WHERE guild_id = $1 "
+                    "AND in_alert_window = TRUE AND lifetime_alerts_exhausted = FALSE",
+                    guild_id
+                )
+                if not row or row['alerts_sent_total'] >= Constants.RETENTION_ALERT_LIFETIME_CAP:
+                    return None
+
+                new_commands_seen = row['week_commands_seen'] + 1
+                target = row['week_effective_target']
+                already_sent = row['week_alerts_sent']
+
+                if already_sent >= target:
+                    await conn.execute(
+                        "UPDATE retention_alert_progress SET week_commands_seen = $2, updated_at = NOW() WHERE guild_id = $1",
+                        guild_id, new_commands_seen
+                    )
+                    return None
+
+                should_fire = self._should_fire_retention_alert(row)
+
+                if should_fire:
+                    await conn.execute("""
+                        UPDATE retention_alert_progress
+                        SET week_commands_seen = $2, week_alerts_sent = week_alerts_sent + 1,
+                            alerts_sent_total = alerts_sent_total + 1, updated_at = NOW()
+                        WHERE guild_id = $1
+                    """, guild_id, new_commands_seen)
+                    return Constants.RETENTION_ALERT_MESSAGE
+                else:
+                    await conn.execute(
+                        "UPDATE retention_alert_progress SET week_commands_seen = $2, updated_at = NOW() WHERE guild_id = $1",
+                        guild_id, new_commands_seen
+                    )
+                    return None
+
+        except Exception as e:
+            print(
+                f"⚠️ Error checking retention alert for guild {guild_id}: {e}")
+            return None
+
+    def _should_fire_retention_alert(self, row) -> bool:
+        remaining_target = row['week_effective_target'] - \
+            row['week_alerts_sent']
+        if remaining_target <= 0:
+            return False
+
+        week_started = row['week_started_at']
+        if week_started is None:
+            return True
+
+        week_started = ensure_aware(week_started)
+        elapsed_fraction = (datetime.now(timezone.utc) -
+                            week_started).total_seconds() / (7 * 86400)
+        elapsed_fraction = min(max(elapsed_fraction, 0.0), 1.0)
+
+        expected_fired_by_now = elapsed_fraction * row['week_effective_target']
+        return row['week_alerts_sent'] < expected_fired_by_now
+
+    async def _get_all_guild_ids_with_data(self) -> Set[int]:
+        """Union of every guild_id present across all purge-eligible tables."""
+        guild_ids: Set[int] = set()
+
+        async with self.pool.acquire() as conn:
+            for table_name in Constants.PURGE_ELIGIBLE_TABLES.keys():
+                try:
+                    rows = await conn.fetch(f"SELECT DISTINCT guild_id FROM {table_name}")
+                    guild_ids.update(row['guild_id'] for row in rows)
+                except asyncpg.exceptions.PostgresError as e:
+                    print(
+                        f"  ⚠️ Could not read guild_ids from {table_name}: {e}")
+                    continue
+
+        return guild_ids
+
+    async def _get_oldest_timestamp_for_guild(self, guild_id: int) -> Optional[datetime]:
+        """Find the single oldest timestamp for this guild across every
+        purge-eligible table. Returns None if the guild has no data in any
+        of them."""
+        oldest: Optional[datetime] = None
+
+        async with self.pool.acquire() as conn:
+            for table_name, (time_col, guild_col) in Constants.PURGE_ELIGIBLE_TABLES.items():
+                try:
+                    row = await conn.fetchrow(
+                        f"SELECT MIN({time_col}) as oldest FROM {table_name} WHERE {guild_col} = $1",
+                        guild_id
+                    )
+                except asyncpg.exceptions.PostgresError as e:
+                    print(
+                        f"  ⚠️ Could not read oldest timestamp from {table_name} for guild {guild_id}: {e}")
+                    continue
+
+                if row and row['oldest'] is not None:
+                    candidate = ensure_aware(row['oldest']) if isinstance(
+                        row['oldest'], datetime) else None
+                    # member_growth_stats.date is a DATE, not TIMESTAMPTZ - normalize it
+                    if candidate is None and row['oldest'] is not None:
+                        candidate = datetime.combine(
+                            row['oldest'], dt.time.min, tzinfo=timezone.utc)
+
+                    if candidate is not None and (oldest is None or candidate < oldest):
+                        oldest = candidate
+
+        return oldest
+
+    async def _purge_week_for_guild(self, guild_id: int, week_start: datetime, week_end: datetime):
+        """Delete rows in [week_start, week_end) for this guild across every
+        purge-eligible table. Each table gets its own DELETE; failures on one
+        table don't block the others."""
+        async with self.pool.acquire() as conn:
+            for table_name, (time_col, guild_col) in Constants.PURGE_ELIGIBLE_TABLES.items():
+                try:
+                    if table_name == 'member_growth_stats':
+                        # date column - compare against .date() bounds
+                        await conn.execute(
+                            f"""DELETE FROM {table_name}
+                                WHERE {guild_col} = $1
+                                AND {time_col} >= $2 AND {time_col} < $3""",
+                            guild_id, week_start.date(), week_end.date()
+                        )
+                    else:
+                        await conn.execute(
+                            f"""DELETE FROM {table_name}
+                                WHERE {guild_col} = $1
+                                AND {time_col} >= $2 AND {time_col} < $3""",
+                            guild_id, week_start, week_end
+                        )
+                except asyncpg.exceptions.PostgresError as e:
+                    print(
+                        f"  ⚠️ Failed to purge {table_name} for guild {guild_id}: {e}")
+                    continue
 
     async def send_server_count_message(self):
         """Send a message with the total server count and total users every 3 hours, and update bot lists."""
@@ -2876,6 +3234,22 @@ class DatabaseStats(commands.Cog):
                 ''')
                 print("  ✅ Created/verified table: current_role_members")
 
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS retention_alert_progress (
+                        guild_id BIGINT PRIMARY KEY,
+                        lifetime_alerts_exhausted BOOLEAN NOT NULL DEFAULT FALSE,
+                        in_alert_window BOOLEAN NOT NULL DEFAULT FALSE,
+                        current_week INT NOT NULL DEFAULT 0,
+                        alerts_sent_total INT NOT NULL DEFAULT 0,
+                        week_effective_target INT NOT NULL DEFAULT 0,
+                        week_alerts_sent INT NOT NULL DEFAULT 0,
+                        week_commands_seen INT NOT NULL DEFAULT 0,
+                        week_started_at TIMESTAMPTZ,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: retention_alert_progress")
+
                 # Create cart_items table
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS cart_items (
@@ -3567,6 +3941,10 @@ class DatabaseStats(commands.Cog):
             self.streak_update_cron.stop()
         if hasattr(self, 'server_count_cron'):
             self.server_count_cron.stop()
+        if hasattr(self, 'oldest_week_purge_cron'):
+            self.oldest_week_purge_cron.stop()
+        if hasattr(self, 'retention_alert_cron'):
+            self.retention_alert_cron.stop()
 
         for task in loop_tasks:
             if task and task.is_running():
@@ -4553,6 +4931,195 @@ class DatabaseStats(commands.Cog):
                 return row['role_name'] if row else None
         except:
             return None
+
+    # ======================================================================
+    # SUBSCRIPTION / MODULE ACCESS CHECKS - usable by other cogs
+    # ======================================================================
+
+    async def get_guild_module_access(self, guild_id: int) -> Dict[str, Dict[str, Any]]:
+        """
+        Get all currently-active module access for a guild, keyed by module_key.
+
+        Returns a dict like:
+            {
+                'optimization': {
+                    'subscription_id': 4,
+                    'tier_id': None,
+                    'billing_cycle': 'monthly',
+                    'current_period_end': datetime(...),
+                    'source': 'paddle',
+                    'status': 'active'
+                },
+                ...
+            }
+        Empty dict if the guild has no active module access or the DB is unavailable.
+
+        Cached for 60 seconds per guild to avoid hammering Postgres on every
+        command check; call _invalidate_module_access_cache(guild_id) after
+        granting/revoking access so the change takes effect immediately.
+        """
+        now = time.time()
+        if guild_id in self._module_access_cache and (now - self._module_access_cache_time.get(guild_id, 0)) < 60:
+            return self._module_access_cache[guild_id]
+
+        if not self.pool or not self.db_connected:
+            return {}
+
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT
+                        m.module_key,
+                        gma.subscription_id,
+                        s.tier_id,
+                        s.billing_cycle,
+                        s.current_period_end,
+                        s.source,
+                        s.status
+                    FROM guild_module_access gma
+                    JOIN modules m ON gma.module_id = m.id
+                    JOIN subscriptions s ON gma.subscription_id = s.id
+                    WHERE gma.guild_id = $1
+                    AND gma.is_active = TRUE
+                    AND s.status IN ('active', 'trialing')
+                """, guild_id)
+
+            access = {}
+            for row in rows:
+                access[row['module_key']] = {
+                    'subscription_id': row['subscription_id'],
+                    'tier_id': row['tier_id'],
+                    'billing_cycle': row['billing_cycle'],
+                    'current_period_end': row['current_period_end'],
+                    'source': row['source'],
+                    'status': row['status'],
+                }
+
+            self._module_access_cache[guild_id] = access
+            self._module_access_cache_time[guild_id] = now
+            return access
+
+        except asyncpg.exceptions.PostgresError as e:
+            print(f"Error fetching module access for guild {guild_id}: {e}")
+            # Fail closed-but-cached: don't cache a DB error, just return empty for this call
+            return {}
+        except Exception as e:
+            print(
+                f"Unexpected error fetching module access for guild {guild_id}: {e}")
+            return {}
+
+    async def guild_has_module_access(self, guild_id: int, module_key: str) -> bool:
+        """
+        Quick boolean check: does this guild currently have active access to module_key?
+
+        Usage from another cog:
+            db_cog = self.bot.get_cog('DatabaseStats')
+            if db_cog and await db_cog.guild_has_module_access(guild_id, 'optimization'):
+                ...allow the feature...
+        """
+        access = await self.get_guild_module_access(guild_id)
+        return module_key in access
+
+    async def get_guild_subscription_summary(self, guild_id: int) -> Dict[str, Any]:
+        """
+        Higher-level summary for a guild's subscription state, useful for things like
+        a `/subscription` or `/premium` status command.
+
+        Returns:
+            {
+                'has_any_subscription': bool,
+                'modules': ['optimization', ...],         # active module_keys
+                'tier': 'tier_key_or_None',                # active tier_key, if any
+                'is_staff_grant': bool,                    # True if ANY active access is a comp grant
+                'earliest_expiry': datetime or None,       # soonest current_period_end among active subs
+            }
+        """
+        access = await self.get_guild_module_access(guild_id)
+
+        if not access:
+            return {
+                'has_any_subscription': False,
+                'modules': [],
+                'tier': None,
+                'is_staff_grant': False,
+                'earliest_expiry': None,
+            }
+
+        modules = list(access.keys())
+        is_staff_grant = any(
+            v.get('source') == 'staff_grant' for v in access.values())
+
+        expiries = [v['current_period_end']
+                    for v in access.values() if v.get('current_period_end')]
+        earliest_expiry = min(expiries) if expiries else None
+
+        tier_key = None
+        tier_id = next((v['tier_id']
+                       for v in access.values() if v.get('tier_id')), None)
+        if tier_id and self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow("SELECT tier_key FROM tiers WHERE id = $1", tier_id)
+                    if row:
+                        tier_key = row['tier_key']
+            except Exception:
+                pass
+
+        return {
+            'has_any_subscription': True,
+            'modules': modules,
+            'tier': tier_key,
+            'is_staff_grant': is_staff_grant,
+            'earliest_expiry': earliest_expiry,
+        }
+
+    def _invalidate_module_access_cache(self, guild_id: int):
+        """Call this immediately after granting/revoking/updating a guild's
+        subscription access so guild_has_module_access reflects it right away
+        instead of waiting up to 60s for the cache to expire."""
+        self._module_access_cache.pop(guild_id, None)
+        self._module_access_cache_time.pop(guild_id, None)
+
+    async def _get_all_guild_ids_with_data(self) -> Set[int]:
+        guild_ids: Set[int] = set()
+        async with self.pool.acquire() as conn:
+            for table_name in Constants.PURGE_ELIGIBLE_TABLES.keys():
+                try:
+                    rows = await conn.fetch(f"SELECT DISTINCT guild_id FROM {table_name}")
+                    guild_ids.update(row['guild_id'] for row in rows)
+                except asyncpg.exceptions.PostgresError as e:
+                    print(
+                        f"  ⚠️ Could not read guild_ids from {table_name}: {e}")
+                    continue
+        return guild_ids
+
+    async def _get_oldest_timestamp_for_guild(self, guild_id: int) -> Optional[datetime]:
+        oldest: Optional[datetime] = None
+        async with self.pool.acquire() as conn:
+            for table_name, (time_col, guild_col) in Constants.PURGE_ELIGIBLE_TABLES.items():
+                try:
+                    row = await conn.fetchrow(
+                        f"SELECT MIN({time_col}) as oldest FROM {table_name} WHERE {guild_col} = $1",
+                        guild_id
+                    )
+                except asyncpg.exceptions.PostgresError as e:
+                    print(
+                        f"  ⚠️ Could not read oldest timestamp from {table_name} for guild {guild_id}: {e}")
+                    continue
+
+                if row and row['oldest'] is not None:
+                    value = row['oldest']
+                    if isinstance(value, datetime):
+                        candidate = ensure_aware(value)
+                    else:
+                        # DATE column (member_growth_stats.date)
+                        candidate = datetime.combine(
+                            value, dt.time.min, tzinfo=timezone.utc)
+
+                    if oldest is None or candidate < oldest:
+                        oldest = candidate
+
+        return oldest
 
     # ======================================================================
     # VOICE SESSION HELPER FUNCTIONS

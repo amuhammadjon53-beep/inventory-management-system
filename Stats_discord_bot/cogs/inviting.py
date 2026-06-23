@@ -1966,7 +1966,9 @@ class Invites(commands.Cog):
                 self, guild, start_time=start_time, end_time=end_time, days_back_equiv=days_back_equiv, display_text=display_text, using_server_default=True
             )
 
-            msg = await send_method(file=file, view=view)
+            retention_alert_text = await self.db_stats.maybe_get_retention_alert(guild.id) if self.db_stats else None
+
+            msg = await send_method(content=retention_alert_text, file=file, view=view)
 
             # Store the view
             self.active_views[msg.id] = view

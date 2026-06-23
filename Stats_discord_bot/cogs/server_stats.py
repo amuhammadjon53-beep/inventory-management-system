@@ -2931,11 +2931,14 @@ class ServerStats(commands.Cog):
                 start_time=start_time, end_time=end_time, days_back_equiv=days_back_equiv,
                 stat_type="message", using_server_default=True)
 
+            db_cog = self.bot.get_cog('DatabaseStats')
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
             # Send the image
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                msg = await send_method(content=retention_alert_text, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await send_method(content=retention_alert_text, file=file, view=view, delete_after=300)
 
             # Store session
             self.active_sessions[msg.id] = {

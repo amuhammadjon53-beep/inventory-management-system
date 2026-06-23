@@ -2446,9 +2446,14 @@ class EmojiLeaderboard(commands.Cog):
                 return
 
             # Generate and send the image
+            # Generate and send the image
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(img_bytes, filename="emoji_leaderboard.png")
-            msg = await ctx.send(file=file, view=view)
+
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+            msg = await ctx.send(content=retention_alert_text, file=file, view=view)
             view.message = msg
 
             # Update buttons
@@ -2636,7 +2641,10 @@ class EmojiLeaderboard(commands.Cog):
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(img_bytes, filename="emoji_leaderboard.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2688,7 +2696,10 @@ class EmojiLeaderboard(commands.Cog):
             file = discord.File(
                 img_bytes, filename="user_emoji_leaderboard.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2728,7 +2739,10 @@ class EmojiLeaderboard(commands.Cog):
             file = discord.File(
                 img_bytes, filename="channel_emoji_leaderboard.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2768,7 +2782,10 @@ class EmojiLeaderboard(commands.Cog):
             file = discord.File(
                 img_bytes, filename="category_emoji_leaderboard.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2821,7 +2838,10 @@ class EmojiLeaderboard(commands.Cog):
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(img_bytes, filename="user_emoji_stats.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message

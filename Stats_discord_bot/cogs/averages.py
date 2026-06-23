@@ -885,10 +885,11 @@ class AverageStats(commands.Cog):
                     self, start_time, end_time, days_back_equiv, display_text, user.id, period, using_server_default=True)
 
                 # Send the image
+                retention_alert_text = await self.db_cog.maybe_get_retention_alert(guild.id) if self.db_cog else None
                 if is_interaction:
-                    msg = await send_method(file=image_file, view=view)
+                    msg = await send_method(content=retention_alert_text, file=image_file, view=view)
                 else:
-                    msg = await send_method(file=image_file, view=view, delete_after=300)
+                    msg = await send_method(content=retention_alert_text, file=image_file, view=view, delete_after=300)
 
             except Exception as e:
                 print(f"Error generating user stats image: {e}")
@@ -1002,10 +1003,11 @@ class AverageStats(commands.Cog):
                     self, start_time, end_time, days_back_equiv, display_text, role_id, period, using_server_default=True)
 
                 # Send the image
+                retention_alert_text = await self.db_cog.maybe_get_retention_alert(guild.id) if self.db_cog else None
                 if is_interaction:
-                    msg = await send_method(file=image_file, view=view)
+                    msg = await send_method(content=retention_alert_text, file=image_file, view=view)
                 else:
-                    msg = await send_method(file=image_file, view=view, delete_after=300)
+                    msg = await send_method(content=retention_alert_text, file=image_file, view=view, delete_after=300)
 
             except Exception as e:
                 print(f"Error generating server stats image: {e}")
@@ -1785,7 +1787,8 @@ class AverageStats(commands.Cog):
             image_file = await self.generate_server_stats_image(interaction, start_time, end_time, days_back_equiv, None, "day", display_text)
             view = AverageServerStatsView(
                 self, start_time, end_time, days_back_equiv, display_text, None, "day", using_server_default=True)
-            await interaction.followup.send(file=image_file, view=view)
+            retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
+            await interaction.followup.send(content=retention_alert_text, file=image_file, view=view)
         except Exception as e:
             print(f"Error in average server command: {e}")
             await interaction.followup.send(
@@ -1819,7 +1822,8 @@ class AverageStats(commands.Cog):
             image_file = await self.generate_user_stats_image(interaction, start_time, end_time, days_back_equiv, user.id, "day", display_text)
             view = AverageUserStatsView(
                 self, start_time, end_time, days_back_equiv, display_text, user.id, "day", using_server_default=True)
-            await interaction.followup.send(file=image_file, view=view)
+            retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
+            await interaction.followup.send(content=retention_alert_text, file=image_file, view=view)
         except Exception as e:
             print(f"Error in average user command: {e}")
             await interaction.followup.send(

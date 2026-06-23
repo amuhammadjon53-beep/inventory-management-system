@@ -3437,6 +3437,10 @@ class ActivityTracker(commands.Cog):
                     pass
                 send_method = ctx_or_interaction.send
 
+            # Get retention alert once for all branches
+            _db_stats = self.bot.get_cog('DatabaseStats')
+            _retention_alert = await _db_stats.maybe_get_retention_alert(guild.id) if _db_stats else None
+
             if guild is None:
                 msg = "❌ This command can only be used in a server."
                 if is_interaction:
@@ -3458,7 +3462,7 @@ class ActivityTracker(commands.Cog):
                 stats = await self.db.get_user_activity_stats(guild.id, target_user.id, start_time, end_time, days_back_equiv, None, "time")
                 streak_stats = await self.db.get_user_streak_stats(guild.id, target_user.id)
                 file = await generate_user_activity_image(guild, target_user, display_text, stats, streak_stats, "time")
-                await send_method(file=file, view=view)
+                await send_method(content=_retention_alert, file=file, view=view)
 
             # ---- server activity ----
             elif command_type == "server":
@@ -3466,7 +3470,7 @@ class ActivityTracker(commands.Cog):
                                     "none", None, "all", "users", 0, using_server_default=True)
                 stats = await self.db.get_server_activity_stats(guild.id, start_time, end_time, days_back_equiv, None, "users")
                 file = await generate_server_activity_image(guild, display_text, stats, "none", "users")
-                await send_method(file=file, view=view)
+                await send_method(content=_retention_alert, file=file, view=view)
 
             # ---- leaderboard (server or per-user) ----
             elif command_type == "leaderboard":
@@ -3488,7 +3492,7 @@ class ActivityTracker(commands.Cog):
                     view.last_stats = stats
                     file = await generate_activity_leaderboard_image(
                         guild, stats, "all", display_text, "none", "users", 0)
-                await send_method(file=file, view=view)
+                await send_method(content=_retention_alert, file=file, view=view)
 
             # ---- streak (server or per-user) ----
             elif command_type == "streak":
@@ -3509,7 +3513,7 @@ class ActivityTracker(commands.Cog):
                     file = await generate_activity_streak_image(
                         guild, stats, "none",
                         db_pool=self.db.pool)
-                await send_method(file=file, view=view)
+                await send_method(content=_retention_alert, file=file, view=view)
 
             # ---- whos ----
             elif command_type == "whos":
@@ -3564,7 +3568,7 @@ class ActivityTracker(commands.Cog):
                     embed.color = discord.Color.orange()
                     embed.set_footer(text="No users found")
 
-                await send_method(embed=embed, view=view)
+                await send_method(content=_retention_alert, embed=embed, view=view)
 
         except Exception as e:
             print(f"[ERROR] Error in _handle_activity_command: {e}")

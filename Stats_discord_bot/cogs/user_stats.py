@@ -1702,6 +1702,10 @@ class UserStats(commands.Cog):
 
             file = discord.File(image_buffer, filename="user_stats.png")
 
+            # Retention alert: cheap, single-row check; returns None almost always
+            db_cog = self.bot.get_cog('DatabaseStats')
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
             # Create view with None params to indicate using server default
             view = UserStatsView(self, guild, member, start_time=start_time, end_time=end_time,
                                  display_text=display_text, days_back_equiv=days_back_equiv)
@@ -1710,9 +1714,9 @@ class UserStats(commands.Cog):
             if is_interaction:
                 # When we defer with thinking=True, we need to use followup.send
                 # edit_original_response doesn't support file attachments
-                msg = await ctx_or_interaction.followup.send(file=file, view=view)
+                msg = await ctx_or_interaction.followup.send(content=retention_alert_text, file=file, view=view)
             else:
-                msg = await ctx_or_interaction.send(file=file, view=view, delete_after=300)
+                msg = await ctx_or_interaction.send(content=retention_alert_text, file=file, view=view, delete_after=300)
 
             # Store session
             self.active_user_stats_sessions[msg.id] = {

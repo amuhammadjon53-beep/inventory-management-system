@@ -1040,7 +1040,11 @@ class TimezoneDistribution(commands.Cog):
 
             buf = await view.generate_chart()
             file = discord.File(buf, filename="distribution.png")
-            await send(file=file, view=view)
+
+            db_cog = self.get_db_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+            await send(content=retention_alert_text, file=file, view=view)
 
         except Exception as e:
             print(f"❌ Error in _send_distribution ({scope}): {e}")

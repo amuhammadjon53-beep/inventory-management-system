@@ -2200,7 +2200,11 @@ class ShipCog(commands.Cog):
 
                 file = discord.File(
                     img_bytes, filename="ship_compatibility.png")
-                await send_method(file=file)
+
+                db_cog = self.bot.get_cog('DatabaseStats')
+                retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+                await send_method(content=retention_alert_text, file=file)
 
             except Exception as e:
                 print(f"❌ Error in ship command: {e}")
@@ -2302,7 +2306,10 @@ class ShipCog(commands.Cog):
                     display_text=display_text, days_back_equiv=days_back_equiv, using_server_default=True
                 )
 
-                msg = await send_method(file=file, view=view)
+                db_cog = self.bot.get_cog('DatabaseStats')
+                retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+                msg = await send_method(content=retention_alert_text, file=file, view=view)
 
                 if msg:
                     self.active_views[msg.id] = view

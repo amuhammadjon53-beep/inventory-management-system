@@ -1710,6 +1710,8 @@ class CategoryStats(commands.Cog):
             if is_interaction:
                 await ctx_or_interaction.response.defer()
 
+            db_cog = self.bot.get_cog('DatabaseStats')
+
             # Get server default time range
             start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
 
@@ -1746,10 +1748,12 @@ class CategoryStats(commands.Cog):
 
             file = discord.File(img_bytes, filename="category_stats.png")
 
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id)
+
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                msg = await send_method(content=retention_alert_text, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await send_method(content=retention_alert_text, file=file, view=view, delete_after=300)
 
             self.active_category_sessions[stats_type][msg.id] = {
                 'guild_id': guild.id,
