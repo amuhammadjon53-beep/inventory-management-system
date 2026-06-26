@@ -26,7 +26,7 @@ const Footer = () => {
           <span className="footer-separator">|</span>
           
           <a 
-            href="/Premium/index.html" 
+            href="/Premium/" 
             className="footer-link premium-link"
           >
             Premium
@@ -34,7 +34,7 @@ const Footer = () => {
           <span className="footer-separator">|</span>
           
           <a 
-            href="/docs/index.html?page=privacy" 
+            href="/docs/?page=privacy" 
             className="footer-link"
           >
             Privacy Policy
@@ -42,7 +42,7 @@ const Footer = () => {
           <span className="footer-separator">|</span>
           
           <a 
-            href="/docs/index.html?page=terms" 
+            href="/docs/?page=terms" 
             className="footer-link"
           >
             Terms Of Service
@@ -50,7 +50,7 @@ const Footer = () => {
           <span className="footer-separator">|</span>
           
           <a 
-            href="/docs/index.html?page=cookies" 
+            href="/docs/?page=cookies" 
             className="footer-link"
           >
             Cookie Policy

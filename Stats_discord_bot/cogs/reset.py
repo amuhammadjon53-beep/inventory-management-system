@@ -1405,6 +1405,18 @@ class DatabaseManager:
 
 
 # =========================================================
+# PREMIUM HELPER
+# =========================================================
+
+async def _guild_has_optimization(bot, guild_id: int) -> bool:
+    """Return True if the guild has an active Optimization+ subscription."""
+    db_cog = bot.get_cog('DatabaseStats')
+    if db_cog is None:
+        return False
+    return await db_cog.guild_has_module_access(guild_id, 'optimization')
+
+
+# =========================================================
 # DELETE SCHEDULE MODAL
 # =========================================================
 
@@ -1590,7 +1602,6 @@ class ScheduleView(View):
         schedule_type = schedule.get('schedule_type', 'one_time')
         reset_types = ", ".join(schedule['reset_types'])
 
-        # Title with just the name if exists, otherwise just "Schedule"
         if schedule.get('schedule_name'):
             title = schedule['schedule_name']
         else:
@@ -1607,13 +1618,11 @@ class ScheduleView(View):
             timestamp=datetime.now(timezone.utc)
         )
 
-        # Schedule ID as a detail field
         embed.add_field(name="Schedule ID",
                         value=f"`{schedule['id']}`", inline=True)
         embed.add_field(name="Reset Types",
                         value=f"```{reset_types}```", inline=False)
 
-        # Get scope display text
         scope_display = schedule.get('scope_type', 'Unknown')
         if schedule.get('scope_type') == 'channel' and schedule.get('channel_id') and self.guild:
             channel = self.guild.get_channel(schedule['channel_id'])
@@ -1839,7 +1848,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
         self.scope_details = scope_details
         self.time_period_text = time_period_text
 
-        # Input 1: Schedule Name (Optional)
         self.schedule_name = TextInput(
             label="Schedule Name (Optional)",
             placeholder="Give your schedule a name (e.g., Weekly Cleanup)",
@@ -1848,7 +1856,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
         )
         self.add_item(self.schedule_name)
 
-        # Input 2: Time of Day (Required)
         self.time_of_day = TextInput(
             label="Time of Day (Required)",
             placeholder="HH:MM (24-hour format, e.g., 18:00, 14:30)",
@@ -1857,7 +1864,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
         )
         self.add_item(self.time_of_day)
 
-        # Input 3: Every X Days (Optional)
         self.every_x_days = TextInput(
             label="Every X Days (Optional)",
             placeholder="Enter number of days (e.g., 3, 7, 14)",
@@ -1866,7 +1872,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
         )
         self.add_item(self.every_x_days)
 
-        # Input 4: Weekdays (Optional - comma separated)
         self.weekdays = TextInput(
             label="Weekdays (Optional)",
             placeholder="Enter weekdays (e.g., monday,wednesday,friday or mon,wed,fri)",
@@ -1875,7 +1880,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
         )
         self.add_item(self.weekdays)
 
-        # Input 5: Month Days (Optional - comma separated)
         self.month_days = TextInput(
             label="Month Days (Optional)",
             placeholder="Enter days of month (e.g., 1,15,28)",
@@ -1886,7 +1890,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            # Parse time of day (required)
             time_str = self.time_of_day.value.strip()
             if not time_str:
                 await interaction.response.send_message(
@@ -1895,7 +1898,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
                 )
                 return
 
-            # Validate time format
             try:
                 parts = time_str.split(':')
                 if len(parts) < 2:
@@ -1911,7 +1913,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
                 )
                 return
 
-            # Parse weekdays
             weekdays_list = None
             weekdays_has_value = bool(self.weekdays.value.strip())
             if weekdays_has_value:
@@ -1924,7 +1925,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
                     )
                     return
 
-            # Parse month days
             month_days_list = None
             month_days_has_value = bool(self.month_days.value.strip())
             if month_days_has_value:
@@ -1941,7 +1941,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
                     )
                     return
 
-            # Parse interval days
             interval_days = None
             interval_has_value = bool(self.every_x_days.value.strip())
             if interval_has_value:
@@ -1956,7 +1955,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
                     )
                     return
 
-            # VALIDATION: Only ONE of weekdays, month days, or interval days can be provided
             provided_count = sum(
                 [weekdays_has_value, month_days_has_value, interval_has_value])
             if provided_count > 1:
@@ -1971,8 +1969,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
                 )
                 return
 
-            # Determine pattern based on what the user provided
-            pattern = None
             if weekdays_has_value:
                 pattern = 'weekly'
             elif month_days_has_value:
@@ -1982,7 +1978,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
             else:
                 pattern = 'daily'
 
-            # Build times list
             times_list = [time_str]
 
             self.view.schedule_data = {
@@ -1994,7 +1989,6 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
                 'schedule_name': self.schedule_name.value.strip() or None
             }
 
-            # Build description for display
             desc_parts = []
             if pattern == 'daily':
                 desc_parts.append(f"Every day at {time_str}")
@@ -2107,12 +2101,14 @@ class IDInputModal(Modal, title="Enter Channel/Category ID"):
 
 class ResetView(View):
     def __init__(self, interaction: discord.Interaction, db_manager: DatabaseManager,
-                 command_type: Literal["server", "user"], target_user_id: Optional[int] = None):
+                 command_type: Literal["server", "user"], target_user_id: Optional[int] = None,
+                 bot=None):
         super().__init__(timeout=300)
         self.interaction = interaction
         self.db_manager = db_manager
         self.command_type = command_type
         self.target_user_id = target_user_id
+        self.bot = bot  # stored so we can check premium in page 5
         self.scope = None
         self.stat_type = None
         self.channel_id = None
@@ -2294,30 +2290,6 @@ class ResetView(View):
 
         embed = self.create_embed(title, description)
 
-        STAT_TYPES = {
-            "server": {
-                "all": {"label": "All", "emoji": "⚠️", "description": "Reset ALL statistics (irreversible!)"},
-                "messages": {"label": "Messages", "emoji": "💬", "description": "Reset message tracking"},
-                "voice activity": {"label": "Voice Activity", "emoji": "🔊", "description": "Reset voice session history"},
-                "invite tracking": {"label": "Invite Tracking", "emoji": "📨", "description": "Reset invite tracking"},
-                "emoji stats": {"label": "Emoji Stats", "emoji": "😀", "description": "Reset emoji usage"},
-                "activity": {"label": "Activity", "emoji": "🎮", "description": "Reset activity tracking"},
-                "mentions": {"label": "Mentions", "emoji": "📢", "description": "Reset user mentions"},
-                "role growth": {"label": "Role Growth", "emoji": "👥", "description": "Reset role growth tracking"},
-                "member growth": {"label": "Member Growth", "emoji": "📈", "description": "Reset member join/leave tracking"}
-            },
-            "user": {
-                "all": {"label": "All", "emoji": "⚠️", "description": "Reset ALL statistics"},
-                "messages": {"label": "Messages", "emoji": "💬", "description": "Reset message tracking"},
-                "voice activity": {"label": "Voice Activity", "emoji": "🔊", "description": "Reset voice activity"},
-                "activity": {"label": "Activity", "emoji": "🎮", "description": "Reset activity tracking"},
-                "invite tracking": {"label": "Invite Tracking", "emoji": "📨", "description": "Reset invite tracking"},
-                "emoji stats": {"label": "Emoji Stats", "emoji": "😀", "description": "Reset emoji usage"},
-                "mentions": {"label": "Mentions", "emoji": "📢", "description": "Reset mentions"},
-                "role growth": {"label": "Role Growth", "emoji": "👥", "description": "Reset role growth tracking"}
-            }
-        }
-
         if self.command_type == "server":
             if self.scope == "server":
                 options = [
@@ -2486,10 +2458,16 @@ class ResetView(View):
 
         await self.interaction.edit_original_response(embed=embed, view=self)
 
-    # PAGE 5: ADVANCED SCHEDULING
+    # PAGE 5: ADVANCED SCHEDULING (premium-gated)
     async def show_advanced_schedule(self):
         self.clear_items()
         self.current_page = 5
+
+        # Check Optimization+ once for the whole page
+        has_premium = False
+        if self.bot:
+            guild_id = self.interaction.guild.id
+            has_premium = await _guild_has_optimization(self.bot, guild_id)
 
         scope_text = ""
         scope_details = ""
@@ -2515,7 +2493,12 @@ class ResetView(View):
         title = "Schedule Reset (Optional)"
         description = "**Page 5/6**\n**Do you want to schedule this reset to run automatically?**\n\n"
         description += "• **Skip:** Run the reset immediately\n"
-        description += "• **Schedule:** Set up automatic recurring resets\n\n"
+
+        if has_premium:
+            description += "• **Schedule:** Set up automatic recurring resets\n\n"
+        else:
+            description += "• **Schedule:** ⭐ **Requires Optimization+**\n\n"
+
         description += f"**Reset Details:**\n"
         description += f"• **Command Type:** `{scope_text}`\n"
         description += f"• **Target:** {scope_details}\n"
@@ -2542,13 +2525,33 @@ class ResetView(View):
         skip_button.callback = skip_callback
         self.add_item(skip_button)
 
+        # Schedule button — always visible, but gate the action behind premium
         schedule_button = Button(
-            label="Schedule Reset", style=discord.ButtonStyle.primary, emoji="📅")
+            label="Schedule Reset ⭐" if not has_premium else "Schedule Reset",
+            style=discord.ButtonStyle.primary,
+            emoji="📅"
+        )
 
         async def schedule_callback(interaction: discord.Interaction):
             if interaction.user.id != self.interaction.user.id:
                 await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
                 return
+
+            # Re-check premium at click time (handles subscription changes mid-session)
+            premium_now = await _guild_has_optimization(self.bot, interaction.guild.id) if self.bot else False
+            if not premium_now:
+                embed = discord.Embed(
+                    title="⭐ Optimization+ Required",
+                    description=(
+                        "Scheduling automated resets is a premium feature available exclusively "
+                        "to servers with an active **Optimization+** subscription.\n\n"
+                        "You can still run an immediate reset by pressing **Skip**."
+                    ),
+                    color=discord.Color.gold()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
             modal = AdvancedScheduleModal(
                 self, scope_text, scope_details, self.time_period_text)
             await interaction.response.send_modal(modal)
@@ -2611,6 +2614,21 @@ class ResetView(View):
             if interaction.user.id != self.interaction.user.id:
                 await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
                 return
+
+            # If a schedule was configured, do a final premium check before saving
+            if self.schedule_data:
+                premium_now = await _guild_has_optimization(self.bot, interaction.guild.id) if self.bot else False
+                if not premium_now:
+                    embed = discord.Embed(
+                        title="⭐ Optimization+ Required",
+                        description=(
+                            "Scheduling automated resets requires an active **Optimization+** subscription.\n\n"
+                            "Go back and choose **Skip** on the scheduling page to run an immediate reset instead."
+                        ),
+                        color=discord.Color.gold()
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
 
             for item in self.children:
                 item.disabled = True
@@ -2838,7 +2856,7 @@ async def _handle_reset_command(self, ctx_or_interaction, command_type: str, tar
 
             fake_interaction = FakeInteraction(guild, user, message)
             view = ResetView(fake_interaction, self.db_manager,
-                             command_type, target_user_id)
+                             command_type, target_user_id, bot=self.bot)
             self.active_sessions[message.id] = {
                 'guild_id': guild.id, 'user_id': user.id, 'target_user_id': target_user_id,
                 'command_type': command_type, 'view': view
@@ -2847,7 +2865,7 @@ async def _handle_reset_command(self, ctx_or_interaction, command_type: str, tar
 
         else:
             view = ResetView(ctx_or_interaction, self.db_manager,
-                             command_type, target_user_id)
+                             command_type, target_user_id, bot=self.bot)
             embed = view.create_embed(
                 f"{'Server' if command_type == 'server' else 'User'} Stats Reset",
                 "This command allows you to reset statistics. Please follow the 6-step process.\n\n"
@@ -2993,8 +3011,6 @@ class ResetStats(commands.Cog):
                 logger.error(
                     f"Failed to execute scheduled reset {schedule_id}: {e}")
                 logger.error(traceback.format_exc())
-                # Don't mark completed on failure — leave next_execution_at as-is so
-                # it gets retried on the next poll instead of silently skipping a run
 
     # =========================================================
     # PREFIX COMMANDS

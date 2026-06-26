@@ -3,10 +3,12 @@ import { createRoot } from "react-dom/client";
 import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
+import { Crown } from "lucide-react";
 
 // API base URL
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 const NAVBAR_HEIGHT = "80px";
+const ACCENT = "#aa00ff";
 
 // PRIVILEGED USERS - bypass all access levels
 const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
@@ -229,6 +231,35 @@ const LoadingSpinner = ({ size = "medium", text = "Loading..." }) => {
     </div>
   );
 };
+
+const renderWithOptimizationLink = (text) => {
+  if (!text || !text.includes('Optimization+')) {
+    return (
+      <>
+        This needs the <a href="/Premium/" className="optimization-lock-link">Optimization+</a> Module
+      </>
+    );
+  }
+  const [before, after] = text.split('Optimization+');
+  return (
+    <>
+      {before}
+      <a href="/Premium/" className="optimization-lock-link">Optimization+</a>
+      {after}
+    </>
+  );
+};
+
+const OptimizationLockNotice = ({ message }) => (
+  <div className="optimization-lock">
+    <div className="optimization-lock-icon">
+      <Crown size={16} color={ACCENT} />
+    </div>
+    <div className="optimization-lock-text">
+      {renderWithOptimizationLink(message)}
+    </div>
+  </div>
+);
 
 // Info Icon Component - without question mark cursor (cursor: pointer)
 const InfoIcon = ({ descriptions }) => {
@@ -652,6 +683,48 @@ const styles = `
     background-color: #1a1a1a;
     border-radius: 16px;
     color: #888;
+  }
+
+  .optimization-lock {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    background: linear-gradient(135deg, rgba(170, 0, 255, 0.08), rgba(170, 0, 255, 0.02));
+    border: 1px solid rgba(170, 0, 255, 0.35);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-top: 4px;
+  }
+
+  .optimization-lock-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background-color: rgba(170, 0, 255, 0.15);
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .optimization-lock-text {
+    color: #d8d8d8;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .optimization-lock-link {
+    color: #c266ff;
+    font-weight: 600;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(194, 102, 255, 0.4);
+    transition: all 0.15s ease;
+  }
+
+  .optimization-lock-link:hover {
+    color: #e0aaff;
+    border-bottom-color: #e0aaff;
   }
 
   /* Section styles */
@@ -3438,6 +3511,7 @@ const ScheduleManagement = ({ currentServer }) => {
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [selectedSchedule, setSelectedSchedule] = useState(null);
   const [showToast, setShowToast] = useState(null);
+  const [lockMessage, setLockMessage] = useState(null); 
 
   const showToastMessage = (message, type = 'info') => {
     setShowToast({ message, type });
@@ -3448,6 +3522,7 @@ const ScheduleManagement = ({ currentServer }) => {
     if (!currentServer) return;
     
     setLoading(true);
+    setLockMessage(null); // ADD THIS
     try {
       const response = await fetch(`${API_BASE_URL}/api/reset/schedules`, {
         method: 'POST',
@@ -3457,8 +3532,17 @@ const ScheduleManagement = ({ currentServer }) => {
       });
       
       const data = await response.json();
+
+      if (response.status === 403) {           // ADD THIS BLOCK
+        setLockMessage(data.detail || data.message);
+        setSchedules([]);
+        return;
+      }
+
       if (data.success) {
         setSchedules(data.schedules);
+      } else if (data.message && data.message.includes('Optimization+')) {  // ADD THIS (covers the 200-with-swallowed-403 case from your logs)
+        setLockMessage(data.message);
       }
     } catch (error) {
       console.error('Error fetching schedules:', error);
@@ -3482,7 +3566,11 @@ const ScheduleManagement = ({ currentServer }) => {
       });
       
       const data = await response.json();
-      if (data.success) {
+
+      if (response.status === 403) {
+        setLockMessage(data.detail || data.message);
+        showToastMessage(data.detail || data.message || 'Scheduled resets require Optimization+', 'error');
+      } else if (data.success) {
         showToastMessage(`Schedule #${scheduleId} deleted successfully`, 'success');
         fetchSchedules();
       } else {
@@ -3506,7 +3594,11 @@ const ScheduleManagement = ({ currentServer }) => {
       });
       
       const data = await response.json();
-      if (data.success) {
+
+      if (response.status === 403) {
+        setLockMessage(data.detail || data.message);
+        showToastMessage(data.detail || data.message || 'Scheduled resets require Optimization+', 'error');
+      } else if (data.success) {
         showToastMessage(`Schedule #${scheduleId} updated successfully`, 'success');
         fetchSchedules();
       } else {
@@ -3573,6 +3665,12 @@ const ScheduleManagement = ({ currentServer }) => {
           <div className="section-title">Manage Schedules</div>
           <div className="section-subtitle">{schedules.length} schedules</div>
         </div>
+
+        {lockMessage && (
+          <div style={{ marginBottom: '16px' }}>
+            <OptimizationLockNotice message={lockMessage} />
+          </div>
+        )}
         
         <div className="schedules-container">
           {schedules.length === 0 ? (

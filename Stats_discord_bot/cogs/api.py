@@ -147,6 +147,9 @@ STATSHQ_GUILD_NAME = "StatsHQ"
 STATSHQ_GUILD_ICON = None  # Add icon hash if available
 STATSHQ_MEMBER_COUNT = 0  # Approximate member count
 
+FREE_MAX_ACTIVE_STATS = 4
+FREE_MAX_HISTORY_SYNC_DAYS = 180
+OPTIMIZATION_MODULE_KEY = "optimization"
 # ============================================
 # DATABASE MODELS FOR AUTH
 # ============================================
@@ -39275,6 +39278,12 @@ async def create_advanced_reset_schedule(request: CreateAdvancedScheduleRequest)
 
         # Convert string IDs to integers
         guild_id_int = int(request.guild_id)
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail="Scheduled resets require the Optimization+ module."
+            )
         requested_by_id_int = int(request.requested_by_id)
         channel_id_int = int(
             request.channel_id) if request.channel_id else None
@@ -39420,6 +39429,13 @@ async def get_reset_schedules(request: GetSchedulesRequest):
                 success=False,
                 error="Database not connected"
             )
+            
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail="Scheduled resets require the Optimization+ module."
+            )
 
         async with db_stats.pool.acquire() as conn:
             rows = await conn.fetch("""
@@ -39478,6 +39494,13 @@ async def cancel_reset_schedule(request: CancelScheduleRequest):
                 success=False,
                 message="Database not connected",
                 error="Database connection unavailable"
+            )
+            
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail="Scheduled resets require the Optimization+ module."
             )
 
         async with db_stats.pool.acquire() as conn:
@@ -39543,6 +39566,13 @@ async def get_upcoming_reset_schedules(request: GetSchedulesRequest):
                 success=False,
                 error="Database not connected"
             )
+            
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail="Scheduled resets require the Optimization+ module."
+            )
 
         async with db_stats.pool.acquire() as conn:
             rows = await conn.fetch("""
@@ -39593,6 +39623,13 @@ async def get_reset_schedule_history(request: GetSchedulesRequest):
                 success=False,
                 error="Database not connected"
             )
+            
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail="Scheduled resets require the Optimization+ module."
+            )
 
         async with db_stats.pool.acquire() as conn:
             rows = await conn.fetch("""
@@ -39637,6 +39674,13 @@ async def update_reset_schedule(request: UpdateScheduleRequest):
             return {"success": False, "message": "Database not connected"}
 
         guild_id_int = int(request.guild_id)
+        
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail="Scheduled resets require the Optimization+ module."
+            )
 
         async with db_stats.pool.acquire() as conn:
             # Verify the schedule exists
@@ -42013,6 +42057,19 @@ async def settings_time_period_update(request: TimePeriodUpdateRequest):
         if not db_stats.db_connected:
             return {"success": False, "message": "Database not connected"}
 
+        try:
+            guild_id_int = int(request.guild_id)
+        except ValueError as e:
+            return {"success": False, "message": f"Invalid guild ID format: {str(e)}"}
+
+        # --- Optimization+ gate: free tier cannot change the default time period at all ---
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail="Custom default time periods require the Optimization+ module."
+            )
+
         # Validate time_mode
         valid_modes = ['all_time', 'days_back', 'date_range', 'rolling_window']
         if request.default_time_mode not in valid_modes:
@@ -42026,11 +42083,8 @@ async def settings_time_period_update(request: TimePeriodUpdateRequest):
                 return {"success": False, "message": "Days back must be between 1 and 3650"}
 
         elif request.default_time_mode == 'date_range':
-            # At least one date should be provided
             if request.default_from_date is None and request.default_to_date is None:
                 return {"success": False, "message": "At least one date (from or to) must be provided for date range mode"}
-
-            # If both dates are provided, validate from < to
             if request.default_from_date and request.default_to_date:
                 if request.default_from_date >= request.default_to_date:
                     return {"success": False, "message": "From date must be before to date"}
@@ -42038,24 +42092,17 @@ async def settings_time_period_update(request: TimePeriodUpdateRequest):
         elif request.default_time_mode == 'rolling_window':
             if request.default_rolling_type is None:
                 return {"success": False, "message": "Rolling type is required for rolling_window mode"}
-
             if request.default_rolling_type not in ['weekday', 'monthly']:
                 return {"success": False, "message": "Rolling type must be 'weekday' or 'monthly'"}
-
             if request.default_rolling_value is None:
                 return {"success": False, "message": "Rolling value is required for rolling_window mode"}
-
             if request.default_rolling_type == 'weekday':
                 if not 0 <= request.default_rolling_value <= 6:
                     return {"success": False, "message": "Weekday value must be between 0 (Monday) and 6 (Sunday)"}
-            else:  # monthly
+            else:
                 if not 1 <= request.default_rolling_value <= 31:
                     return {"success": False, "message": "Day of month must be between 1 and 31"}
 
-        # Convert guild_id to integer (Discord snowflake)
-        guild_id_int = int(request.guild_id)
-
-        # Update all time period settings in one query
         query = """
             UPDATE settings SET
                 default_time_mode = $1,
@@ -42076,13 +42123,15 @@ async def settings_time_period_update(request: TimePeriodUpdateRequest):
                 request.default_to_date,
                 request.default_rolling_type,
                 request.default_rolling_value,
-                guild_id_int  # Use integer version
+                guild_id_int
             )
 
         logger.info(
             f"Successfully updated time period settings for guild {request.guild_id}")
         return {"success": True, "message": "Successfully updated time period settings"}
 
+    except HTTPException:
+        raise
     except DatabaseError as e:
         logger.error(f"Database error in settings_time_period_update: {e}")
         return {"success": False, "message": f"Database error: {str(e)}"}
@@ -45431,13 +45480,27 @@ async def set_stat_toggle(
 
     try:
         try:
-            int(request.guild_id)
+            guild_id_int = int(request.guild_id)
         except ValueError as e:
             raise ValidationError(
                 "Invalid guild_id format",
                 context={'guild_id': request.guild_id, 'error': str(e)},
                 original=e
             )
+
+        # --- Optimization+ gate: free tier capped at 4 simultaneous active stats ---
+        if request.value:
+            has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
+            if not has_access:
+                current = await db_stats.get_stat_toggles(request.guild_id)
+                already_enabled = current.get(request.toggle_key, False)
+                enabled_count = sum(1 for v in current.values() if v)
+                if not already_enabled and enabled_count >= FREE_MAX_ACTIVE_STATS:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Free tier allows up to {FREE_MAX_ACTIVE_STATS} active stat types at once. "
+                               f"Upgrade to Optimization+ to enable all 8."
+                    )
 
         success = await db_stats.set_stat_toggle(
             request.guild_id, request.toggle_key, request.value
@@ -45475,7 +45538,7 @@ async def set_stat_toggles_bulk(
 
     try:
         try:
-            int(request.guild_id)
+            guild_id_int = int(request.guild_id)
         except ValueError as e:
             raise ValidationError(
                 "Invalid guild_id format",
@@ -45485,6 +45548,21 @@ async def set_stat_toggles_bulk(
 
         if not request.toggles:
             raise HTTPException(status_code=400, detail="No toggles provided")
+
+        # --- Optimization+ gate: free tier capped at 4 simultaneous active stats ---
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
+        if not has_access:
+            current = await db_stats.get_stat_toggles(request.guild_id)
+            valid_keys = set(db_stats.get_stat_toggle_metadata().keys())
+            merged = dict(current)
+            merged.update({k: v for k, v in request.toggles.items() if k in valid_keys})
+            enabled_count = sum(1 for k, v in merged.items() if k in valid_keys and v)
+            if enabled_count > FREE_MAX_ACTIVE_STATS:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Free tier allows up to {FREE_MAX_ACTIVE_STATS} active stat types at once. "
+                           f"Upgrade to Optimization+ to enable all 8."
+                )
 
         success = await db_stats.set_stat_toggles_bulk(
             request.guild_id, request.toggles
@@ -47320,18 +47398,44 @@ async def history_sync_start(
         if request.sync_depth_days is not None and request.sync_depth_days <= 0:
             raise HTTPException(
                 status_code=400, detail="sync_depth_days must be a positive integer")
-
-        # --- cooldown gate ---
+            
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
         cooldown = await db_stats.get_guild_sync_cooldown_status(guild_id_int)
+        
+        if not has_access:
+            stat_flags_requested = sum([
+                request.sync_messages, request.sync_mentions, request.sync_emoji
+            ])
+            if stat_flags_requested > 1:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Free tier can only sync one stat type at a time. "
+                        "Upgrade to Optimization+ to sync messages, mentions, and emoji together."
+                )
+            if request.sync_depth_days is None or request.sync_depth_days > FREE_MAX_HISTORY_SYNC_DAYS:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Free tier can only sync up to {FREE_MAX_HISTORY_SYNC_DAYS} days of history. "
+                        f"Upgrade to Optimization+ for unlimited history sync."
+                )
+            # One-sync-ever: if last_sync_completed_at is set, they've used their one sync.
+            if cooldown.get('last_sync_completed_at') is not None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Free tier only allows one history sync. "
+                        "Upgrade to Optimization+ to run history syncs repeatedly."
+                )
+        
         if cooldown['on_cooldown']:
             raise HTTPException(
                 status_code=429,
                 detail={
                     "message": "History sync is on cooldown for this server. "
-                               "Another sync can't be started until the cooldown ends.",
+                            "Another sync can't be started until the cooldown ends.",
                     "eligible_at": cooldown['eligible_at'],
                 }
             )
+
 
         if guild_id_int in _active_sync_runs:
             raise HTTPException(
@@ -47443,18 +47547,44 @@ async def history_sync_start_all(
         if request.sync_depth_days is not None and request.sync_depth_days <= 0:
             raise HTTPException(
                 status_code=400, detail="sync_depth_days must be a positive integer")
-
-        # --- cooldown gate ---
+            
+        has_access = await db_stats.guild_has_module_access(guild_id_int, OPTIMIZATION_MODULE_KEY)
         cooldown = await db_stats.get_guild_sync_cooldown_status(guild_id_int)
+        
+        if not has_access:
+            stat_flags_requested = sum([
+                request.sync_messages, request.sync_mentions, request.sync_emoji
+            ])
+            if stat_flags_requested > 1:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Free tier can only sync one stat type at a time. "
+                        "Upgrade to Optimization+ to sync messages, mentions, and emoji together."
+                )
+            if request.sync_depth_days is None or request.sync_depth_days > FREE_MAX_HISTORY_SYNC_DAYS:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Free tier can only sync up to {FREE_MAX_HISTORY_SYNC_DAYS} days of history. "
+                        f"Upgrade to Optimization+ for unlimited history sync."
+                )
+            # One-sync-ever: if last_sync_completed_at is set, they've used their one sync.
+            if cooldown.get('last_sync_completed_at') is not None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Free tier only allows one history sync. "
+                        "Upgrade to Optimization+ to run history syncs repeatedly."
+                )
+        
         if cooldown['on_cooldown']:
             raise HTTPException(
                 status_code=429,
                 detail={
                     "message": "History sync is on cooldown for this server. "
-                               "Another sync can't be started until the cooldown ends.",
+                            "Another sync can't be started until the cooldown ends.",
                     "eligible_at": cooldown['eligible_at'],
                 }
             )
+
 
         if guild_id_int in _active_sync_runs:
             raise HTTPException(

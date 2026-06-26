@@ -24,6 +24,7 @@ import {
   TriangleAlert,
   Info,
   ShieldAlert,
+  Crown,
 } from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
@@ -36,6 +37,9 @@ const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
 // Poll cadence while at least one channel is actively running
 const ACTIVE_POLL_MS = 2500;
 const IDLE_POLL_MS = 15000;
+
+// Free tier max depth (days). Must match FREE_MAX_HISTORY_SYNC_DAYS on backend.
+const FREE_MAX_HISTORY_SYNC_DAYS = 180;
 
 // Time period options for how far back a sync should walk.
 // value is sync_depth_days sent to the backend; null = full history.
@@ -592,6 +596,48 @@ const styles = `
 
   .sync-precaution-note strong { color: #cc99ff; }
 
+  /* ── Optimization+ lock notice (matches Settings dashboard exactly) ── */
+  .optimization-lock {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    background: linear-gradient(135deg, rgba(170, 0, 255, 0.08), rgba(170, 0, 255, 0.02));
+    border: 1px solid rgba(170, 0, 255, 0.35);
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+
+  .optimization-lock-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background-color: rgba(170, 0, 255, 0.15);
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .optimization-lock-text {
+    color: #d8d8d8;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .optimization-lock-link {
+    color: #c266ff;
+    font-weight: 600;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(194, 102, 255, 0.4);
+    transition: all 0.15s ease;
+  }
+
+  .optimization-lock-link:hover {
+    color: #e0aaff;
+    border-bottom-color: #e0aaff;
+  }
+
   /* ── Time period selector ── */
   .sync-depth-row {
     display: flex;
@@ -622,6 +668,14 @@ const styles = `
     border-color: #aa00ff;
     color: #fff;
     box-shadow: 0 0 10px rgba(170, 0, 255, 0.2);
+  }
+
+  .sync-depth-chip.locked {
+    opacity: 0.4;
+    cursor: not-allowed;
+    border-color: #2a2a2a !important;
+    color: #555 !important;
+    background-color: #141414 !important;
   }
 
   /* ── History Sync control panel ── */
@@ -863,8 +917,6 @@ const LoadingSpinner = ({ size = "medium", text = "Loading..." }) => {
   );
 };
 
-// Renders the tooltip into document.body via a portal so it's never clipped
-// by overflow:hidden on any ancestor container.
 const InfoIcon = ({ descriptions }) => {
   const [tooltipPos, setTooltipPos] = useState(null);
   const iconRef = useRef(null);
@@ -874,33 +926,18 @@ const InfoIcon = ({ descriptions }) => {
     if (!iconRef.current) return;
     const rect = iconRef.current.getBoundingClientRect();
     setTooltipPos({
-      // Centre horizontally over the icon; sit above it with 10px gap
       left: rect.left + rect.width / 2,
       bottom: window.innerHeight - rect.top + 10,
     });
   };
 
-  const handleMouseEnter = () => {
-    timeoutRef.current = setTimeout(showTooltip, 300);
-  };
-
-  const handleMouseLeave = () => {
-    clearTimeout(timeoutRef.current);
-    setTooltipPos(null);
-  };
-
+  const handleMouseEnter = () => { timeoutRef.current = setTimeout(showTooltip, 300); };
+  const handleMouseLeave = () => { clearTimeout(timeoutRef.current); setTooltipPos(null); };
   useEffect(() => () => clearTimeout(timeoutRef.current), []);
 
   const tooltip = tooltipPos
     ? ReactDOM.createPortal(
-        <div
-          className="info-tooltip-portal"
-          style={{
-            bottom: tooltipPos.bottom,
-            left: tooltipPos.left,
-            transform: 'translateX(-50%)',
-          }}
-        >
+        <div className="info-tooltip-portal" style={{ bottom: tooltipPos.bottom, left: tooltipPos.left, transform: 'translateX(-50%)' }}>
           {descriptions.map((desc, idx) => (
             <div key={idx} style={{ marginBottom: idx < descriptions.length - 1 ? '8px' : '0' }}>
               <strong style={{ color: '#aa00ff' }}>{desc.level}:</strong> {desc.description}
@@ -913,12 +950,7 @@ const InfoIcon = ({ descriptions }) => {
 
   return (
     <>
-      <span
-        ref={iconRef}
-        className="info-icon"
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
-      >
+      <span ref={iconRef} className="info-icon" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
         <Info size={13} color="#888" />
       </span>
       {tooltip}
@@ -926,8 +958,41 @@ const InfoIcon = ({ descriptions }) => {
   );
 };
 
-const SettingsCard = ({ title, icon, children, description, infoDescriptions = [], fullWidth = false, accentBg = false }) => (
-  <div className={`settings-card${accentBg ? ' settings-card-accent' : ''}`} style={fullWidth ? {} : {}}>
+// ─────────────────────────────────────────────────────────────
+// Optimization+ lock notice — matches Settings dashboard exactly
+// ─────────────────────────────────────────────────────────────
+
+const renderWithOptimizationLink = (text) => {
+  if (!text || !text.includes('Optimization+')) {
+    return (
+      <>
+        This needs the <a href="/Premium/" className="optimization-lock-link">Optimization+</a> module.
+      </>
+    );
+  }
+  const [before, after] = text.split('Optimization+');
+  return (
+    <>
+      {before}
+      <a href="/Premium/" className="optimization-lock-link">Optimization+</a>
+      {after}
+    </>
+  );
+};
+
+const OptimizationLockNotice = ({ message }) => (
+  <div className="optimization-lock">
+    <div className="optimization-lock-icon">
+      <Crown size={16} color={ACCENT} />
+    </div>
+    <div className="optimization-lock-text">
+      {renderWithOptimizationLink(message)}
+    </div>
+  </div>
+);
+
+const SettingsCard = ({ title, icon, children, description, infoDescriptions = [], accentBg = false }) => (
+  <div className={`settings-card${accentBg ? ' settings-card-accent' : ''}`}>
     <div className="settings-card-header">
       <div className="settings-card-title-section">
         <span className="settings-card-icon">{icon}</span>
@@ -988,11 +1053,9 @@ const formatCooldownRemaining = (eligibleAtIso) => {
   const now = Date.now();
   const diffMs = eligibleAt - now;
   if (diffMs <= 0) return null;
-
   const totalDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
   const months = Math.floor(totalDays / 30);
   const days = totalDays % 30;
-
   if (months > 0 && days > 0) return `${months} month${months !== 1 ? 's' : ''}, ${days} day${days !== 1 ? 's' : ''}`;
   if (months > 0) return `${months} month${months !== 1 ? 's' : ''}`;
   return `${totalDays} day${totalDays !== 1 ? 's' : ''}`;
@@ -1008,19 +1071,17 @@ const formatDate = (iso) => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// Live Monitor — the top section
+// Live Monitor
 // ─────────────────────────────────────────────────────────────
 
 const LiveMonitor = ({ channels, loading, channelNames }) => {
   const running = channels.filter(c => c.status === 'in_progress' || c.status === 'paused' || c.status === 'failed');
-
   const totals = channels.reduce((acc, c) => {
     acc.messages += c.messages_processed || 0;
     acc.mentions += c.mentions_processed || 0;
     acc.emoji    += c.emoji_processed || 0;
     return acc;
   }, { messages: 0, mentions: 0, emoji: 0 });
-
   const activeCount = channels.filter(c => c.status === 'in_progress').length;
 
   return (
@@ -1035,27 +1096,19 @@ const LiveMonitor = ({ channels, loading, channelNames }) => {
 
       <div className="hsync-totals-row">
         <div className="hsync-total-card">
-          <div className="hsync-total-label">
-            <MessageCircle size={14} color={ACCENT} /> Messages collected
-          </div>
+          <div className="hsync-total-label"><MessageCircle size={14} color={ACCENT} /> Messages collected</div>
           <div className="hsync-total-value accent-purple">{formatNumber(totals.messages)}</div>
         </div>
         <div className="hsync-total-card">
-          <div className="hsync-total-label">
-            <AtSign size={14} color={ACCENT} /> Mentions collected
-          </div>
+          <div className="hsync-total-label"><AtSign size={14} color={ACCENT} /> Mentions collected</div>
           <div className="hsync-total-value">{formatNumber(totals.mentions)}</div>
         </div>
         <div className="hsync-total-card">
-          <div className="hsync-total-label">
-            <Smile size={14} color={ACCENT} /> Emoji uses collected
-          </div>
+          <div className="hsync-total-label"><Smile size={14} color={ACCENT} /> Emoji uses collected</div>
           <div className="hsync-total-value accent-gold">{formatNumber(totals.emoji)}</div>
         </div>
         <div className="hsync-total-card">
-          <div className="hsync-total-label">
-            <CircleCheck size={14} color="#38d9a9" /> Channels caught up
-          </div>
+          <div className="hsync-total-label"><CircleCheck size={14} color="#38d9a9" /> Channels caught up</div>
           <div className="hsync-total-value accent-green">
             {channels.filter(c => c.status === 'caught_up').length} / {channels.length || 0}
           </div>
@@ -1079,7 +1132,6 @@ const LiveMonitor = ({ channels, loading, channelNames }) => {
                   <div className="hsync-run-channel"><span>#</span>{chName}</div>
                   <div className="hsync-run-elapsed">{formatElapsed(ch.started_at)}</div>
                 </div>
-
                 <div className="hsync-run-stats">
                   <div className="hsync-run-stat">
                     <span className="hsync-run-stat-icon"><MessageCircle size={16} color={ACCENT} /></span>
@@ -1097,11 +1149,9 @@ const LiveMonitor = ({ channels, loading, channelNames }) => {
                     <div className="hsync-run-stat-label">Emoji</div>
                   </div>
                 </div>
-
                 <div className="hsync-run-track">
                   <div className={`hsync-run-track-fill ${ch.status === 'paused' ? 'paused' : ''}`} />
                 </div>
-
                 <div className="hsync-run-card-foot">
                   <span className={`hsync-run-status-pill ${ch.status}`}>{statusLabel(ch.status)}</span>
                   {ch.error_message && ch.status === 'failed' && (
@@ -1120,10 +1170,10 @@ const LiveMonitor = ({ channels, loading, channelNames }) => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// Cooldown banner — shown when the guild can't start a new sync
+// Cooldown banner
 // ─────────────────────────────────────────────────────────────
 
-const CooldownBanner = ({ cooldown }) => {
+const CooldownBanner = ({ cooldown, hasOptimization }) => {
   if (!cooldown || !cooldown.on_cooldown) return null;
   const remaining = formatCooldownRemaining(cooldown.eligible_at);
 
@@ -1135,9 +1185,12 @@ const CooldownBanner = ({ cooldown }) => {
       <div>
         <div className="hsync-cooldown-banner-title">History sync is on cooldown</div>
         <div className="hsync-cooldown-banner-text">
-          A sync already completed for this server on <strong>{formatDate(cooldown.last_sync_completed_at)}</strong>.
-          You can only run one successful sync every 3 months.
-          {remaining && <> Next one's available in <strong>{remaining}</strong> (around {formatDate(cooldown.eligible_at)}).</>}
+          A sync already completed for this server on <strong>{formatDate(cooldown.last_sync_completed_at)}</strong>.{' '}
+          {hasOptimization
+            ? <>You can run another sync after the 3-month cooldown ends.</>
+            : <>Free servers can only run one sync — upgrade to <strong>Optimization+</strong> to sync again after the cooldown.</>
+          }
+          {remaining && <> Next sync available in <strong>{remaining}</strong> (around {formatDate(cooldown.eligible_at)}).</>}
         </div>
       </div>
     </div>
@@ -1145,18 +1198,47 @@ const CooldownBanner = ({ cooldown }) => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// Always-visible heads-up about the 3-month limit
+// Free-tier used-sync banner (cooldown elapsed but still blocked)
 // ─────────────────────────────────────────────────────────────
 
-const SyncPrecautionNote = () => (
-  <div className="sync-precaution-note">
-    <Info size={14} color="#cc99ff" style={{ flexShrink: 0, marginTop: '1px' }} />
-    <span>
-      Heads up — once a sync finishes successfully, you won't be able to start another one for{' '}
-      <strong>3 months</strong>. Double-check your stat types and time period before hitting Sync All.
-    </span>
-  </div>
-);
+const FreeTierUsedBanner = ({ cooldown, hasOptimization }) => {
+  // Show when: no Optimization+, not currently on cooldown, but has completed a sync before
+  if (hasOptimization) return null;
+  if (!cooldown || cooldown.on_cooldown) return null;
+  if (!cooldown.last_sync_completed_at) return null;
+
+  return (
+    <div style={{ marginBottom: '20px' }}>
+      <OptimizationLockNotice
+        message={`You've already used your free history sync (completed ${formatDate(cooldown.last_sync_completed_at)}). Upgrade to Optimization+ to run syncs again after the 3-month cooldown.`}
+      />
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// Always-visible heads-up (premium only, since free gets one shot)
+// ─────────────────────────────────────────────────────────────
+
+const SyncPrecautionNote = ({ hasOptimization }) => {
+  if (!hasOptimization) return (
+    <div className="sync-precaution-note">
+      <Info size={14} color="#cc99ff" style={{ flexShrink: 0, marginTop: '1px' }} />
+      <span>
+        Free tier allows <strong>one sync, ever</strong>. Choose your stat type and time period carefully before hitting Sync All — you won't be able to redo it.
+      </span>
+    </div>
+  );
+
+  return (
+    <div className="sync-precaution-note">
+      <Info size={14} color="#cc99ff" style={{ flexShrink: 0, marginTop: '1px' }} />
+      <span>
+        Once a sync finishes successfully, there's a <strong>3-month cooldown</strong> before you can run another. Double-check your settings before hitting Sync All.
+      </span>
+    </div>
+  );
+};
 
 // ─────────────────────────────────────────────────────────────
 // Reset confirmation modal
@@ -1170,15 +1252,10 @@ const ResetModal = ({ target, onConfirm, onClose, isCancelReset }) => {
   );
   const isAll = target.channelId === '__ALL__';
   const targetLabel = isAll ? 'all channels' : `#${target.channelName}`;
+
   return (
-    <div style={{
-      position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000
-    }}>
-      <div style={{
-        background: '#111', border: '1px solid #3a1a5a', borderRadius: '16px',
-        padding: '28px', maxWidth: '400px', width: '90%'
-      }}>
+    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}>
+      <div style={{ background: '#111', border: '1px solid #3a1a5a', borderRadius: '16px', padding: '28px', maxWidth: '400px', width: '90%' }}>
         <h3 style={{ color: '#fff', marginBottom: '8px', fontSize: '18px' }}>
           {isCancelReset ? 'Cancel & Reset Channel' : isAll ? 'Reset All Channels' : 'Reset Channel Progress'}
         </h3>
@@ -1191,42 +1268,19 @@ const ResetModal = ({ target, onConfirm, onClose, isCancelReset }) => {
           {STAT_OPTIONS.map(s => {
             const Icon = s.icon;
             return (
-              <div key={s.key}
-                onClick={() => toggleStat(s.key)}
-                style={{
-                  flex: 1, padding: '10px 6px', borderRadius: '10px', cursor: 'pointer',
-                  textAlign: 'center', fontSize: '12px', fontWeight: 600,
-                  background: resetStats.includes(s.key) ? '#1e0033' : '#1a1a1a',
-                  border: `2px solid ${resetStats.includes(s.key) ? '#aa00ff' : '#2a2a2a'}`,
-                  color: resetStats.includes(s.key) ? '#fff' : '#888',
-                  userSelect: 'none'
-                }}>
-                <span style={{ display: 'flex', justifyContent: 'center', marginBottom: '4px' }}>
-                  <Icon size={20} color={ACCENT} />
-                </span>
+              <div key={s.key} onClick={() => toggleStat(s.key)} style={{ flex: 1, padding: '10px 6px', borderRadius: '10px', cursor: 'pointer', textAlign: 'center', fontSize: '12px', fontWeight: 600, background: resetStats.includes(s.key) ? '#1e0033' : '#1a1a1a', border: `2px solid ${resetStats.includes(s.key) ? '#aa00ff' : '#2a2a2a'}`, color: resetStats.includes(s.key) ? '#fff' : '#888', userSelect: 'none' }}>
+                <span style={{ display: 'flex', justifyContent: 'center', marginBottom: '4px' }}><Icon size={20} color={ACCENT} /></span>
                 {s.label}
               </div>
             );
           })}
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>
-          <button
-            disabled={resetStats.length === 0}
-            onClick={() => onConfirm(target.channelId, resetStats)}
-            style={{
-              flex: 1, padding: '10px', borderRadius: '8px', border: 'none',
-              background: resetStats.length ? (isCancelReset ? '#8b0000' : '#6b00cc') : '#333',
-              color: '#fff', fontWeight: 600, cursor: resetStats.length ? 'pointer' : 'not-allowed'
-            }}>
+          <button disabled={resetStats.length === 0} onClick={() => onConfirm(target.channelId, resetStats)}
+            style={{ flex: 1, padding: '10px', borderRadius: '8px', border: 'none', background: resetStats.length ? (isCancelReset ? '#8b0000' : '#6b00cc') : '#333', color: '#fff', fontWeight: 600, cursor: resetStats.length ? 'pointer' : 'not-allowed' }}>
             {isCancelReset ? 'Cancel & Reset' : isAll ? 'Reset All' : 'Reset Selected'}
           </button>
-          <button
-            onClick={onClose}
-            style={{
-              flex: 1, padding: '10px', borderRadius: '8px',
-              border: '1px solid #2a2a2a', background: '#1a1a1a',
-              color: '#fff', fontWeight: 600, cursor: 'pointer'
-            }}>
+          <button onClick={onClose} style={{ flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid #2a2a2a', background: '#1a1a1a', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
             Back
           </button>
         </div>
@@ -1239,7 +1293,7 @@ const ResetModal = ({ target, onConfirm, onClose, isCancelReset }) => {
 // Custom time period modal
 // ─────────────────────────────────────────────────────────────
 
-const CustomDepthModal = ({ open, initialValue, onConfirm, onClose }) => {
+const CustomDepthModal = ({ open, initialValue, onConfirm, onClose, hasOptimization }) => {
   const [days, setDays] = useState(initialValue ? String(initialValue) : '');
 
   useEffect(() => {
@@ -1250,57 +1304,37 @@ const CustomDepthModal = ({ open, initialValue, onConfirm, onClose }) => {
 
   const parsed = parseInt(days, 10);
   const isValid = Number.isInteger(parsed) && parsed > 0 && String(parsed) === days.trim();
+  const exceedsFreeTier = !hasOptimization && isValid && parsed > FREE_MAX_HISTORY_SYNC_DAYS;
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000
-    }}>
-      <div style={{
-        background: '#111', border: '1px solid #3a1a5a', borderRadius: '16px',
-        padding: '28px', maxWidth: '360px', width: '90%'
-      }}>
+    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}>
+      <div style={{ background: '#111', border: '1px solid #3a1a5a', borderRadius: '16px', padding: '28px', maxWidth: '360px', width: '90%' }}>
         <h3 style={{ color: '#fff', marginBottom: '8px', fontSize: '18px' }}>Custom Time Period</h3>
         <p style={{ color: '#888', fontSize: '13px', marginBottom: '16px' }}>
           How many days back should the sync go?
+          {!hasOptimization && <span style={{ color: '#b08a00', display: 'block', marginTop: '4px' }}>Free tier limit: {FREE_MAX_HISTORY_SYNC_DAYS} days (6 months).</span>}
         </p>
         <input
-          type="number"
-          min="1"
-          value={days}
-          onChange={(e) => setDays(e.target.value)}
-          placeholder="e.g. 45"
-          autoFocus
-          style={{
-            width: '100%', padding: '10px 12px', borderRadius: '8px',
-            border: `2px solid ${isValid || days === '' ? '#2a2a2a' : '#ff6b6b'}`,
-            background: '#1a1a1a', color: '#fff', fontSize: '14px',
-            marginBottom: '8px', outline: 'none'
-          }}
+          type="number" min="1" value={days} onChange={(e) => setDays(e.target.value)}
+          placeholder="e.g. 45" autoFocus
+          style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: `2px solid ${exceedsFreeTier ? '#ff6b6b' : (isValid || days === '') ? '#2a2a2a' : '#ff6b6b'}`, background: '#1a1a1a', color: '#fff', fontSize: '14px', marginBottom: '8px', outline: 'none' }}
         />
         {days !== '' && !isValid && (
-          <p style={{ color: '#ff6b6b', fontSize: '11px', marginBottom: '8px' }}>
-            Enter a whole number of days, greater than 0.
-          </p>
+          <p style={{ color: '#ff6b6b', fontSize: '11px', marginBottom: '8px' }}>Enter a whole number of days, greater than 0.</p>
+        )}
+        {exceedsFreeTier && (
+          <div style={{ marginBottom: '12px' }}>
+            <OptimizationLockNotice message={`Free tier can only sync up to ${FREE_MAX_HISTORY_SYNC_DAYS} days of history. Upgrade to Optimization+ for unlimited history sync.`} />
+          </div>
         )}
         <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
           <button
-            disabled={!isValid}
+            disabled={!isValid || exceedsFreeTier}
             onClick={() => onConfirm(parsed)}
-            style={{
-              flex: 1, padding: '10px', borderRadius: '8px', border: 'none',
-              background: isValid ? '#6b00cc' : '#333',
-              color: '#fff', fontWeight: 600, cursor: isValid ? 'pointer' : 'not-allowed'
-            }}>
+            style={{ flex: 1, padding: '10px', borderRadius: '8px', border: 'none', background: (isValid && !exceedsFreeTier) ? '#6b00cc' : '#333', color: '#fff', fontWeight: 600, cursor: (isValid && !exceedsFreeTier) ? 'pointer' : 'not-allowed' }}>
             {isValid ? `Use ${parsed} day${parsed !== 1 ? 's' : ''}` : 'Use'}
           </button>
-          <button
-            onClick={onClose}
-            style={{
-              flex: 1, padding: '10px', borderRadius: '8px',
-              border: '1px solid #2a2a2a', background: '#1a1a1a',
-              color: '#fff', fontWeight: 600, cursor: 'pointer'
-            }}>
+          <button onClick={onClose} style={{ flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid #2a2a2a', background: '#1a1a1a', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
             Cancel
           </button>
         </div>
@@ -1313,9 +1347,9 @@ const CustomDepthModal = ({ open, initialValue, onConfirm, onClose }) => {
 // History Sync control panel
 // ─────────────────────────────────────────────────────────────
 
-const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, showToast, channelNames, cooldown }) => {
-  const [selectedStats, setSelectedStats] = useState({ messages: true, mentions: true, emoji: true });
-  const [syncDepthDays, setSyncDepthDays] = useState(null); // null = all time
+const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, showToast, channelNames, cooldown, hasOptimization }) => {
+  const [selectedStats, setSelectedStats] = useState({ messages: true, mentions: false, emoji: false });
+  const [syncDepthDays, setSyncDepthDays] = useState(180); // free default: 6 months
   const [showCustomDepthModal, setShowCustomDepthModal] = useState(false);
   const [actionLoading, setActionLoading] = useState({});
   const [globalLoading, setGlobalLoading] = useState(false);
@@ -1323,13 +1357,50 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
   const [cancelResetTarget, setCancelResetTarget] = useState(null);
   const [resetAllTarget, setResetAllTarget] = useState(false);
 
+  // Inline lock error shown in the controls panel
+  const [lockError, setLockError] = useState(null);
+
   const onCooldown = !!cooldown?.on_cooldown;
+  // Free tier blocked from syncing if they've already completed one
+  const freeTierUsed = !hasOptimization && !!cooldown?.last_sync_completed_at && !onCooldown;
+  // Fully blocked from starting any sync
+  const syncBlocked = onCooldown || freeTierUsed;
 
   const presetDepthValues = DEPTH_OPTIONS.map(o => o.value);
   const isCustomDepth = !presetDepthValues.includes(syncDepthDays);
 
   const setChannelLoading = (channelId, val) =>
     setActionLoading(prev => ({ ...prev, [channelId]: val }));
+
+  const selectedStatCount = Object.values(selectedStats).filter(Boolean).length;
+  const atLeastOneStat = selectedStatCount > 0;
+
+  // Handle stat toggle with free-tier enforcement
+  const handleStatToggle = (key) => {
+    setLockError(null);
+    const next = { ...selectedStats, [key]: !selectedStats[key] };
+    const nextCount = Object.values(next).filter(Boolean).length;
+
+    if (!hasOptimization && nextCount > 1) {
+      setLockError('Free tier can only sync one stat type at a time. Upgrade to Optimization+ to sync messages, mentions, and emoji together.');
+      return;
+    }
+    setSelectedStats(next);
+  };
+
+  // Handle depth chip selection with free-tier enforcement
+  const handleDepthSelect = (value) => {
+    setLockError(null);
+    if (!hasOptimization && value === null) {
+      setLockError(`Free tier can only sync up to ${FREE_MAX_HISTORY_SYNC_DAYS} days of history. Upgrade to Optimization+ for unlimited history sync.`);
+      return;
+    }
+    if (!hasOptimization && value !== null && value > FREE_MAX_HISTORY_SYNC_DAYS) {
+      setLockError(`Free tier can only sync up to ${FREE_MAX_HISTORY_SYNC_DAYS} days of history. Upgrade to Optimization+ for unlimited history sync.`);
+      return;
+    }
+    setSyncDepthDays(value);
+  };
 
   const statPayload = () => ({
     sync_messages: selectedStats.messages,
@@ -1338,15 +1409,23 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
     sync_depth_days: syncDepthDays,
   });
 
-  const atLeastOneStat = Object.values(selectedStats).some(Boolean);
+  // Parse a 403 response and set the inline lock error
+  const handle403 = async (res) => {
+    try {
+      const data = await res.json();
+      const msg = data?.detail || 'Permission denied.';
+      setLockError(typeof msg === 'string' ? msg : 'Permission denied.');
+    } catch {
+      setLockError('Permission denied.');
+    }
+  };
 
   const handleInit = async () => {
+    setLockError(null);
     setGlobalLoading(true);
     try {
       const res = await fetch(`${API_BASE_URL}/api/history-sync/init`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify({ guild_id: String(guildId) }),
       });
       if (res.ok) {
@@ -1366,14 +1445,13 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
   };
 
   const handleSyncAll = async () => {
-    if (onCooldown) { showToast('History sync is on cooldown for this server', 'error'); return; }
+    setLockError(null);
+    if (syncBlocked) { showToast(onCooldown ? 'History sync is on cooldown for this server' : 'Upgrade to Optimization+ to run another sync', 'error'); return; }
     if (!atLeastOneStat) { showToast('Select at least one stat type', 'error'); return; }
     setGlobalLoading(true);
     try {
       const res = await fetch(`${API_BASE_URL}/api/history-sync/sync-all`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify({ guild_id: String(guildId), ...statPayload() }),
       });
       if (res.ok) {
@@ -1383,7 +1461,7 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
         showToast(`Started ${started} channel(s)${skipped ? `, skipped ${skipped} already running` : ''}`, 'success');
         await fetchStatus();
       } else if (res.status === 403) {
-        showToast('Administrator permission required', 'error');
+        await handle403(res);
       } else if (res.status === 429) {
         showToast('History sync is on cooldown for this server', 'error');
         await fetchStatus();
@@ -1400,29 +1478,21 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
   };
 
   const handleChannelSync = async (channelId) => {
-    if (onCooldown) { showToast('History sync is on cooldown for this server', 'error'); return; }
+    setLockError(null);
+    if (syncBlocked) { showToast(onCooldown ? 'History sync is on cooldown for this server' : 'Upgrade to Optimization+ to run another sync', 'error'); return; }
     if (!atLeastOneStat) { showToast('Select at least one stat type', 'error'); return; }
     setChannelLoading(channelId, true);
     try {
       const res = await fetch(`${API_BASE_URL}/api/history-sync/sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          guild_id: String(guildId),
-          channel_id: String(channelId),
-          ...statPayload(),
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ guild_id: String(guildId), channel_id: String(channelId), ...statPayload() }),
       });
       if (res.ok) {
         const data = await res.json();
-        showToast(
-          data.status === 'already_running' ? 'Already running' : 'Sync started',
-          data.status === 'already_running' ? 'info' : 'success'
-        );
+        showToast(data.status === 'already_running' ? 'Already running' : 'Sync started', data.status === 'already_running' ? 'info' : 'success');
         await fetchStatus();
       } else if (res.status === 403) {
-        showToast('Administrator permission required', 'error');
+        await handle403(res);
       } else if (res.status === 429) {
         showToast('History sync is on cooldown for this server', 'error');
         await fetchStatus();
@@ -1442,9 +1512,7 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
     setChannelLoading(channelId, true);
     try {
       const res = await fetch(`${API_BASE_URL}/api/history-sync/pause`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify({ guild_id: String(guildId), channel_id: String(channelId) }),
       });
       if (res.ok) {
@@ -1465,24 +1533,13 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
     setCancelResetTarget(null);
     try {
       const cancelRes = await fetch(`${API_BASE_URL}/api/history-sync/cancel`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify({ guild_id: String(guildId), channel_id: String(channelId) }),
       });
-      if (!cancelRes.ok) {
-        showToast('Failed to cancel sync', 'error');
-        return;
-      }
+      if (!cancelRes.ok) { showToast('Failed to cancel sync', 'error'); return; }
       const resetRes = await fetch(`${API_BASE_URL}/api/history-sync/reset`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          guild_id: String(guildId),
-          channel_id: String(channelId),
-          stats: stats ?? null,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ guild_id: String(guildId), channel_id: String(channelId), stats: stats ?? null }),
       });
       if (resetRes.ok) {
         showToast('Sync cancelled and progress reset', 'success');
@@ -1502,14 +1559,8 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
     setResetTarget(null);
     try {
       const res = await fetch(`${API_BASE_URL}/api/history-sync/reset`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          guild_id: String(guildId),
-          channel_id: String(channelId),
-          stats: stats ?? null,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ guild_id: String(guildId), channel_id: String(channelId), stats: stats ?? null }),
       });
       if (res.ok) {
         showToast('Channel progress reset', 'success');
@@ -1531,14 +1582,8 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
     try {
       const results = await Promise.allSettled(
         targets.map(ch => fetch(`${API_BASE_URL}/api/history-sync/reset`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            guild_id: String(guildId),
-            channel_id: String(ch.channel_id),
-            stats: stats ?? null,
-          }),
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+          body: JSON.stringify({ guild_id: String(guildId), channel_id: String(ch.channel_id), stats: stats ?? null }),
         }))
       );
       const failedCount = results.filter(r => r.status !== 'fulfilled' || !r.value.ok).length;
@@ -1568,19 +1613,21 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
       <ResetModal target={cancelResetTarget} onConfirm={handleChannelCancelAndReset} onClose={() => setCancelResetTarget(null)} isCancelReset />
       <ResetModal
         target={resetAllTarget ? { channelId: '__ALL__', channelName: 'all channels' } : null}
-        onConfirm={handleResetAll}
-        onClose={() => setResetAllTarget(false)}
-        isCancelReset={false}
+        onConfirm={handleResetAll} onClose={() => setResetAllTarget(false)} isCancelReset={false}
       />
       <CustomDepthModal
         open={showCustomDepthModal}
         initialValue={isCustomDepth ? syncDepthDays : ''}
         onConfirm={(value) => { setSyncDepthDays(value); setShowCustomDepthModal(false); }}
         onClose={() => setShowCustomDepthModal(false)}
+        hasOptimization={hasOptimization}
       />
 
       <div className="sync-layout">
+        {/* ── Left: controls ── */}
         <div className="sync-controls-panel">
+
+          {/* Stat type toggles */}
           <div>
             <div className="sync-section-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               Stat types to sync
@@ -1589,14 +1636,22 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
                 { level: 'Mentions', description: 'Who mentioned who, and how often.' },
                 { level: 'Emoji',    description: 'Which emojis were used and how many times.' },
               ]} />
+              {!hasOptimization && (
+                <span style={{ marginLeft: '4px', fontSize: '10px', color: '#7a5a9a', fontStyle: 'italic' }}>
+                  Free: pick one
+                </span>
+              )}
             </div>
             <div className="sync-stat-toggles">
               {STAT_OPTIONS.map(s => {
                 const Icon = s.icon;
+                const isActive = selectedStats[s.key];
+                const wouldExceed = !hasOptimization && !isActive && selectedStatCount >= 1;
                 return (
                   <div key={s.key}
-                    className={`sync-stat-toggle ${selectedStats[s.key] ? 'active' : ''}`}
-                    onClick={() => setSelectedStats(prev => ({ ...prev, [s.key]: !prev[s.key] }))}>
+                    className={`sync-stat-toggle ${isActive ? 'active' : ''}`}
+                    onClick={() => handleStatToggle(s.key)}
+                    style={wouldExceed ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
                     <span className="sync-stat-toggle-icon"><Icon size={20} color={ACCENT} /></span>
                     {s.label}
                   </div>
@@ -1612,41 +1667,25 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
 
           <hr className="sync-divider" />
 
+          {/* Summary chips */}
           {syncStatus && (
             <div className="sync-summary-row">
-              <div className="sync-summary-chip">
-                <NotepadText size={13} color={ACCENT} /> <strong>{totalChannels}</strong> total
-              </div>
-              {runningCount  > 0 && (
-                <div className="sync-summary-chip">
-                  <Zap size={13} color={ACCENT} /> <strong>{runningCount}</strong> running
-                </div>
-              )}
-              {caughtUpCount > 0 && (
-                <div className="sync-summary-chip">
-                  <CircleCheck size={13} color="#38d9a9" /> <strong>{caughtUpCount}</strong> done
-                </div>
-              )}
-              {pendingCount  > 0 && (
-                <div className="sync-summary-chip">
-                  <Hourglass size={13} color="#888" /> <strong>{pendingCount}</strong> pending
-                </div>
-              )}
-              {failedCount   > 0 && (
-                <div className="sync-summary-chip" style={{ borderColor: '#5a1a1a' }}>
-                  <CircleX size={13} color="#ff6b6b" /> <strong style={{ color: '#ff6b6b' }}>{failedCount}</strong> failed
-                </div>
-              )}
+              <div className="sync-summary-chip"><NotepadText size={13} color={ACCENT} /> <strong>{totalChannels}</strong> total</div>
+              {runningCount  > 0 && <div className="sync-summary-chip"><Zap size={13} color={ACCENT} /> <strong>{runningCount}</strong> running</div>}
+              {caughtUpCount > 0 && <div className="sync-summary-chip"><CircleCheck size={13} color="#38d9a9" /> <strong>{caughtUpCount}</strong> done</div>}
+              {pendingCount  > 0 && <div className="sync-summary-chip"><Hourglass size={13} color="#888" /> <strong>{pendingCount}</strong> pending</div>}
+              {failedCount   > 0 && <div className="sync-summary-chip" style={{ borderColor: '#5a1a1a' }}><CircleX size={13} color="#ff6b6b" /> <strong style={{ color: '#ff6b6b' }}>{failedCount}</strong> failed</div>}
             </div>
           )}
 
+          {/* Global action buttons */}
           <div className="sync-action-buttons">
             <div className="sync-section-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               Global actions
               <InfoIcon descriptions={[
                 { level: 'Initialise', description: 'Adds every channel in your server to the list below. Run this first if the list is empty.' },
-                { level: 'Sync all',   description: 'Backfills history for every channel at once, using the stat types and time period you picked. Only counts toward the 3-month limit if every channel finishes successfully.' },
-                { level: 'Reset all',  description: 'Clears synced progress for every channel at once, for the stat types you choose.' },
+                { level: 'Sync all',   description: 'Backfills history for every channel at once.' },
+                { level: 'Reset all',  description: 'Clears synced progress for every channel at once.' },
               ]} />
             </div>
 
@@ -1668,21 +1707,33 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
               Reset all channels
             </button>
 
+            {/* Time period selector */}
             <div>
               <div className="sync-section-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 Time period
                 <InfoIcon descriptions={[
-                  { level: 'Time period', description: 'How far back to pull history from. Shorter periods finish faster. "All time" goes as far back as Discord allows, and "Custom" lets you pick an exact number of days.' },
+                  { level: 'Time period', description: `How far back to pull history from. ${!hasOptimization ? 'Free tier is limited to 6 months max.' : 'Shorter periods finish faster. "All time" goes as far back as Discord allows.'}` },
                 ]} />
+                {!hasOptimization && (
+                  <span style={{ marginLeft: '4px', fontSize: '10px', color: '#7a5a9a', fontStyle: 'italic' }}>
+                    Free: max 6 months
+                  </span>
+                )}
               </div>
               <div className="sync-depth-row">
-                {DEPTH_OPTIONS.map(opt => (
-                  <div key={opt.label}
-                    className={`sync-depth-chip ${!isCustomDepth && syncDepthDays === opt.value ? 'active' : ''}`}
-                    onClick={() => setSyncDepthDays(opt.value)}>
-                    {opt.label}
-                  </div>
-                ))}
+                {DEPTH_OPTIONS.map(opt => {
+                  const isLocked = !hasOptimization && (opt.value === null || opt.value > FREE_MAX_HISTORY_SYNC_DAYS);
+                  const isActive = !isCustomDepth && syncDepthDays === opt.value;
+                  return (
+                    <div key={opt.label}
+                      className={`sync-depth-chip ${isActive ? 'active' : ''} ${isLocked ? 'locked' : ''}`}
+                      onClick={() => !isLocked && handleDepthSelect(opt.value)}
+                      title={isLocked ? 'Requires Optimization+' : undefined}>
+                      {opt.label}
+                      {isLocked && <Lock size={9} style={{ marginLeft: '3px', display: 'inline' }} />}
+                    </div>
+                  );
+                })}
                 <div
                   className={`sync-depth-chip ${isCustomDepth ? 'active' : ''}`}
                   onClick={() => setShowCustomDepthModal(true)}>
@@ -1691,15 +1742,20 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
               </div>
             </div>
 
-            <SyncPrecautionNote />
+            <SyncPrecautionNote hasOptimization={hasOptimization} />
+
+            {/* Inline lock error */}
+            {lockError && (
+              <OptimizationLockNotice message={lockError} />
+            )}
 
             <button
               className="sync-btn sync-btn-primary"
               onClick={handleSyncAll}
-              disabled={globalLoading || loadingStatus || !atLeastOneStat || onCooldown}
-              title={onCooldown ? 'History sync is on cooldown for this server' : undefined}>
+              disabled={globalLoading || loadingStatus || !atLeastOneStat || syncBlocked}
+              title={onCooldown ? 'History sync is on cooldown' : freeTierUsed ? 'Upgrade to Optimization+ to sync again' : undefined}>
               <Play size={16} color="#fff" />
-              {globalLoading ? 'Starting...' : onCooldown ? 'On cooldown' : 'Sync all channels'}
+              {globalLoading ? 'Starting...' : onCooldown ? 'On cooldown' : freeTierUsed ? 'Upgrade to sync again' : 'Sync all channels'}
             </button>
           </div>
 
@@ -1709,13 +1765,14 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
           </p>
         </div>
 
+        {/* ── Right: channel list ── */}
         <div>
           <div className="sync-section-label" style={{ marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
             Channels {loadingStatus && <span style={{ color: '#aa00ff' }}>— refreshing…</span>}
             <InfoIcon descriptions={[
               { level: 'Start / Resume', description: 'Begins syncing this channel, or picks back up where a paused sync left off.' },
-              { level: 'Pause',          description: 'Stops for now without losing progress. Hit Resume later to continue right where it stopped.' },
-              { level: 'Cancel',         description: 'Stops the sync and clears its progress for the stat types you choose, so the next sync starts over.' },
+              { level: 'Pause',          description: 'Stops for now without losing progress. Hit Resume later to continue.' },
+              { level: 'Cancel',         description: 'Stops the sync and clears its progress for the stat types you choose.' },
               { level: 'Reset',          description: 'Clears progress for the stat types you choose, even if nothing is currently running.' },
             ]} />
           </div>
@@ -1735,7 +1792,7 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
                 const isLoading = !!actionLoading[chId];
                 const isRunning = chStatus === 'in_progress';
                 const hasAnyProgress = (ch.messages_processed || ch.mentions_processed || ch.emoji_processed);
-                const startDisabled = isLoading || !atLeastOneStat || (onCooldown && chStatus !== 'paused' && !isRunning);
+                const startDisabled = isLoading || !atLeastOneStat || (syncBlocked && chStatus !== 'in_progress');
 
                 return (
                   <div key={chId} className={`sync-channel-row ${chStatus}`}>
@@ -1750,9 +1807,7 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
                       )}
                     </div>
 
-                    <span className={`sync-status-badge ${chStatus}`}>
-                      {statusLabel(chStatus)}
-                    </span>
+                    <span className={`sync-status-badge ${chStatus}`}>{statusLabel(chStatus)}</span>
 
                     <div className="sync-row-buttons">
                       {!isRunning && (
@@ -1760,50 +1815,27 @@ const HistorySyncControls = ({ syncStatus, loadingStatus, fetchStatus, guildId, 
                           className="sync-row-btn sync-row-btn-start"
                           onClick={() => handleChannelSync(chId)}
                           disabled={startDisabled}
-                          title={onCooldown && startDisabled ? 'History sync is on cooldown for this server' : undefined}>
+                          title={freeTierUsed ? 'Upgrade to Optimization+ to sync again' : onCooldown ? 'Sync is on cooldown' : undefined}>
                           {isLoading ? '…' : (
-                            <>
-                              <Play size={11} color="#cc77ff" />
-                              {chStatus === 'paused' ? 'Resume' : 'Start'}
-                            </>
+                            <><Play size={11} color="#cc77ff" />{chStatus === 'paused' ? 'Resume' : 'Start'}</>
                           )}
                         </button>
                       )}
 
                       {isRunning && (
-                        <button
-                          className="sync-row-btn sync-row-btn-pause"
-                          onClick={() => handleChannelPause(chId)}
-                          disabled={isLoading}>
-                          {isLoading ? '…' : (
-                            <>
-                              <Pause size={11} color="#ffd700" />
-                              Pause
-                            </>
-                          )}
+                        <button className="sync-row-btn sync-row-btn-pause" onClick={() => handleChannelPause(chId)} disabled={isLoading}>
+                          {isLoading ? '…' : <><Pause size={11} color="#ffd700" />Pause</>}
                         </button>
                       )}
 
                       {(isRunning || chStatus === 'paused') && (
-                        <button
-                          className="sync-row-btn sync-row-btn-cancel"
-                          onClick={() => setCancelResetTarget({ channelId: chId, channelName: chName })}
-                          disabled={isLoading}>
-                          {isLoading ? '…' : (
-                            <>
-                              <CircleX size={11} color="#ff6b6b" />
-                              Cancel
-                            </>
-                          )}
+                        <button className="sync-row-btn sync-row-btn-cancel" onClick={() => setCancelResetTarget({ channelId: chId, channelName: chName })} disabled={isLoading}>
+                          {isLoading ? '…' : <><CircleX size={11} color="#ff6b6b" />Cancel</>}
                         </button>
                       )}
 
-                      <button
-                        className="sync-row-btn sync-row-btn-reset"
-                        onClick={() => setResetTarget({ channelId: chId, channelName: chName })}
-                        disabled={isLoading}>
-                        <Trash2 size={11} color="#6b9eff" />
-                        Reset
+                      <button className="sync-row-btn sync-row-btn-reset" onClick={() => setResetTarget({ channelId: chId, channelName: chName })} disabled={isLoading}>
+                        <Trash2 size={11} color="#6b9eff" />Reset
                       </button>
                     </div>
                   </div>
@@ -1840,13 +1872,13 @@ const HistorySyncPage = () => {
   const [loadingServers, setLoadingServers] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [hasAccess, setHasAccess] = useState(null);
+  const [hasOptimization, setHasOptimization] = useState(false);
   const [apiError, setApiError] = useState(null);
   const [toast, setToast] = useState(null);
   const [currentUserId, setCurrentUserId] = useState(null);
 
   const [syncStatus, setSyncStatus] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
-
   const [channelNames, setChannelNames] = useState({});
 
   const pollTimer = useRef(null);
@@ -1868,12 +1900,9 @@ const HistorySyncPage = () => {
     const color = colors[toast.type] || colors.info;
     return (
       <div className="toast-message" style={{ backgroundColor: color.bg }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-          {color.Icon ? <color.Icon size={16} color="#fff" /> : null}
-        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center' }}>{color.Icon ? <color.Icon size={16} color="#fff" /> : null}</span>
         <span>{toast.message}</span>
-        <button onClick={() => setToast(null)}
-          style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', marginLeft: '10px', display: 'inline-flex', alignItems: 'center' }}>
+        <button onClick={() => setToast(null)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', marginLeft: '10px', display: 'inline-flex', alignItems: 'center' }}>
           <CircleX size={16} color="white" />
         </button>
       </div>
@@ -1884,9 +1913,7 @@ const HistorySyncPage = () => {
     if (!guildId) return;
     setLoadingStatus(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/history-sync/status?guild_id=${guildId}`, {
-        credentials: 'include',
-      });
+      const res = await fetch(`${API_BASE_URL}/api/history-sync/status?guild_id=${guildId}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setSyncStatus(data);
@@ -1906,8 +1933,7 @@ const HistorySyncPage = () => {
     if (!guildId) return;
     try {
       const res = await fetch(`${API_BASE_URL}/api/server/real-channels?guild_id=${guildId}`, {
-        credentials: 'include',
-        headers: { 'Accept': 'application/json' },
+        credentials: 'include', headers: { 'Accept': 'application/json' },
       });
       if (res.ok) {
         const data = await res.json();
@@ -1922,34 +1948,44 @@ const HistorySyncPage = () => {
     }
   }, []);
 
+  // Fetch Optimization+ access for the current guild
+  const fetchOptimizationAccess = useCallback(async (guildId) => {
+    if (!guildId) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/guild/module-access?guild_id=${guildId}&module=optimization`, {
+        credentials: 'include', headers: { 'Accept': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setHasOptimization(!!data.has_access);
+      }
+    } catch {
+      // Default to false (free tier restrictions apply).
+    }
+  }, []);
+
   useEffect(() => {
     if (currentServer?.id) {
       fetchChannelNames(currentServer.id);
+      fetchOptimizationAccess(currentServer.id);
     }
-  }, [currentServer, fetchChannelNames]);
+  }, [currentServer, fetchChannelNames, fetchOptimizationAccess]);
 
   useEffect(() => {
     if (!currentServer || hasAccess !== true) return;
 
-    const tick = async () => {
-      await fetchStatus(currentServer.id);
-    };
+    const tick = async () => { await fetchStatus(currentServer.id); };
     tick();
 
     const scheduleNext = () => {
       const channels = syncStatus?.channels ?? [];
       const anyRunning = channels.some(c => c.status === 'in_progress');
       const delay = anyRunning ? ACTIVE_POLL_MS : IDLE_POLL_MS;
-      pollTimer.current = setTimeout(async () => {
-        await tick();
-        scheduleNext();
-      }, delay);
+      pollTimer.current = setTimeout(async () => { await tick(); scheduleNext(); }, delay);
     };
     scheduleNext();
 
-    return () => {
-      if (pollTimer.current) clearTimeout(pollTimer.current);
-    };
+    return () => { if (pollTimer.current) clearTimeout(pollTimer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentServer, hasAccess]);
 
@@ -1968,24 +2004,6 @@ const HistorySyncPage = () => {
         setIsAuthenticated(true);
         setCurrentUserId(authData.user.id);
 
-        if (isPrivilegedUser(authData.user.id)) {
-          const serversResponse = await fetch(`${API_BASE_URL}/api/user/servers`, {
-            credentials: 'include', headers: { 'Accept': 'application/json' },
-          });
-          if (serversResponse.ok) {
-            const servers = await serversResponse.json();
-            if (Array.isArray(servers) && servers.length > 0) {
-              const selected = authData.user.selected_server
-                ? servers.find(s => s.id === authData.user.selected_server) || servers[0]
-                : servers[0];
-              setCurrentServer(selected);
-              setHasAccess(true);
-            }
-          }
-          setLoadingServers(false);
-          return;
-        }
-
         const serversResponse = await fetch(`${API_BASE_URL}/api/user/servers`, {
           credentials: 'include', headers: { 'Accept': 'application/json' },
         });
@@ -1995,14 +2013,17 @@ const HistorySyncPage = () => {
             const selected = authData.user.selected_server
               ? servers.find(s => s.id === authData.user.selected_server) || servers[0]
               : servers[0];
-            if (selected) {
-              setCurrentServer(selected);
+            setCurrentServer(selected);
+
+            if (isPrivilegedUser(authData.user.id)) {
+              setHasAccess(true);
+            } else {
               setHasAccess(!!selected.has_admin);
             }
           }
         }
       }
-    } catch (error) {
+    } catch {
       setApiError('Failed to load servers. Please check your connection.');
     } finally {
       setLoadingServers(false);
@@ -2073,12 +2094,17 @@ const HistorySyncPage = () => {
                   </div>
                 </div>
 
-                <CooldownBanner cooldown={cooldown} />
+                {/* Cooldown banner (active cooldown for anyone) */}
+                <CooldownBanner cooldown={cooldown} hasOptimization={hasOptimization} />
+
+                {/* Free tier — cooldown elapsed but still permanently blocked */}
+                <FreeTierUsedBanner cooldown={cooldown} hasOptimization={hasOptimization} />
 
                 <LiveMonitor channels={channels} loading={loadingStatus && !syncStatus} channelNames={channelNames} />
 
                 <SettingsCard
-                  title="Sync Controls" icon={<FolderSync size={22} color={ACCENT} />}
+                  title="Sync Controls"
+                  icon={<FolderSync size={22} color={ACCENT} />}
                   description="Choose what to sync and how far back, then run it for one channel or all of them."
                   accentBg
                 >
@@ -2090,6 +2116,7 @@ const HistorySyncPage = () => {
                     showToast={showToast}
                     channelNames={channelNames}
                     cooldown={cooldown}
+                    hasOptimization={hasOptimization}
                   />
                 </SettingsCard>
               </>

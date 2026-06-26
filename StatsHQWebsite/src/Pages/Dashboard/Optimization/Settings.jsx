@@ -579,6 +579,49 @@ const styles = `
     font-weight: 500;
   }
 
+  /* ── Optimization+ lock notice ── */
+  .optimization-lock {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    background: linear-gradient(135deg, rgba(170, 0, 255, 0.08), rgba(170, 0, 255, 0.02));
+    border: 1px solid rgba(170, 0, 255, 0.35);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-top: 4px;
+  }
+
+  .optimization-lock-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background-color: rgba(170, 0, 255, 0.15);
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .optimization-lock-text {
+    color: #d8d8d8;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .optimization-lock-link {
+    color: #c266ff;
+    font-weight: 600;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(194, 102, 255, 0.4);
+    transition: all 0.15s ease;
+  }
+
+  .optimization-lock-link:hover {
+    color: #e0aaff;
+    border-bottom-color: #e0aaff;
+  }
+
   @media (max-width: 1024px) {
     .dashboard-main { margin-left: 250px; }
     .dashboard-content { padding: 30px; }
@@ -634,6 +677,44 @@ const InfoIcon = ({ descriptions }) => {
     </>
   );
 };
+
+// ─────────────────────────────────────────────────────────────
+// Optimization+ lock notice
+// ─────────────────────────────────────────────────────────────
+
+// Splits a backend message on the literal substring "Optimization+" so it can
+// be re-rendered with a hyperlink in the middle, e.g.
+// "Free tier allows up to 4 active stat types at once. Upgrade to Optimization+ to enable all 8."
+// If the message doesn't contain that substring (or no message is given at
+// all), falls back to a generic linked sentence.
+const renderWithOptimizationLink = (text) => {
+  if (!text || !text.includes('Optimization+')) {
+    return (
+      <>
+        This needs the <a href="/Premium/" className="optimization-lock-link">Optimization+</a> Module
+      </>
+    );
+  }
+  const [before, after] = text.split('Optimization+');
+  return (
+    <>
+      {before}
+      <a href="/Premium/" className="optimization-lock-link">Optimization+</a>
+      {after}
+    </>
+  );
+};
+
+const OptimizationLockNotice = ({ message }) => (
+  <div className="optimization-lock">
+    <div className="optimization-lock-icon">
+      <Crown size={16} color={ACCENT} />
+    </div>
+    <div className="optimization-lock-text">
+      {renderWithOptimizationLink(message)}
+    </div>
+  </div>
+);
 
 // ─────────────────────────────────────────────────────────────
 // SettingsCard
@@ -880,6 +961,7 @@ const StatTypesSetting = ({ guildId, showToast }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [lockMessage, setLockMessage] = useState(null);
 
   const loadToggles = async () => {
     setLoading(true);
@@ -906,6 +988,7 @@ const StatTypesSetting = ({ guildId, showToast }) => {
 
   const handleSave = async () => {
     setSaving(true);
+    setLockMessage(null);
     try {
       const payload = {};
       STAT_TYPE_OPTIONS.forEach(o => { payload[o.key] = selectedKeys.includes(o.key); });
@@ -919,6 +1002,8 @@ const StatTypesSetting = ({ guildId, showToast }) => {
         setToggles(result.toggles);
         showToast && showToast('Updated stat type toggles', 'success');
         setEditing(false);
+      } else if (res.status === 403) {
+        setLockMessage(result.detail);
       } else {
         showToast && showToast(result.detail || 'Failed to update stat toggles', 'error');
       }
@@ -931,6 +1016,7 @@ const StatTypesSetting = ({ guildId, showToast }) => {
 
   const handleReset = async () => {
     setResetting(true);
+    setLockMessage(null);
     try {
       const res = await fetch(`${API_BASE_URL}/api/settings/stat-toggles/reset`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
@@ -954,6 +1040,7 @@ const StatTypesSetting = ({ guildId, showToast }) => {
 
   const handleCancel = () => {
     if (toggles) setSelectedKeys(STAT_TYPE_OPTIONS.filter(o => toggles[o.key]).map(o => o.key));
+    setLockMessage(null);
     setEditing(false);
   };
 
@@ -1011,6 +1098,13 @@ const StatTypesSetting = ({ guildId, showToast }) => {
           );
         })}
       </div>
+
+      {lockMessage && (
+        <div style={{ marginBottom: '12px' }}>
+          <OptimizationLockNotice message={lockMessage} />
+        </div>
+      )}
+
       <div className="button-group">
         <button className="button-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</button>
         <button className="button-cancel" onClick={handleCancel}>Cancel</button>
@@ -1174,6 +1268,7 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
   const [showFromCal, setShowFromCal] = useState(false);
   const [showToCal, setShowToCal]     = useState(false);
   const [validationError, setValidationError] = useState(null);
+  const [lockMessage, setLockMessage] = useState(null);
 
   const fmtDate = (d) => d ? `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}` : '';
   const parseDate = (s) => { if (!s) return null; const p = s.split('-'); return p.length === 3 ? new Date(p[2], p[1]-1, p[0]) : null; };
@@ -1214,7 +1309,8 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
 
   const handleSave = async () => {
     if (!validate()) return;
-    await onSave({
+    setLockMessage(null);
+    const result = await onSave({
       default_time_mode: timeMode,
       default_days_back: timeMode === 'days_back' ? daysBack : null,
       default_from_date: fromDate ? fromDate.toISOString() : null,
@@ -1222,7 +1318,12 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
       default_rolling_type:  timeMode === 'rolling_window' ? rollingType  : null,
       default_rolling_value: timeMode === 'rolling_window' ? rollingValue : null,
     });
-    setEditing(false);
+
+    if (result?.success) {
+      setEditing(false);
+    } else if (result?.locked) {
+      setLockMessage(result.message);
+    }
   };
 
   const handleCancel = () => {
@@ -1232,7 +1333,9 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
     setToDate(settings.default_to_date     ? new Date(settings.default_to_date)   : null);
     setRollingType(settings.default_rolling_type   || 'weekday');
     setRollingValue(settings.default_rolling_value || 0);
-    setValidationError(null); setEditing(false);
+    setValidationError(null);
+    setLockMessage(null);
+    setEditing(false);
   };
 
   const timeModes = [
@@ -1332,6 +1435,12 @@ const TimePeriodSetting = ({ settings, onSave, saving }) => {
               {validationError && <div style={{ color: '#ff7675', fontSize: '12px', marginTop: '8px' }}>{validationError}</div>}
             </div>
           )}
+        </div>
+      )}
+
+      {lockMessage && (
+        <div style={{ marginBottom: '16px' }}>
+          <OptimizationLockNotice message={lockMessage} />
         </div>
       )}
 
@@ -1482,15 +1591,25 @@ const SettingsDashboard = () => {
   };
 
   const updateTimePeriod = async (data) => {
-    if (!currentServer) return false;
+    if (!currentServer) return { success: false };
     setSaving(prev => ({ ...prev, timePeriod: true }));
     try {
       const res = await fetch(`${API_BASE_URL}/api/settings/time-period/update`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ guild_id: currentServer.id, ...data }) });
       const result = await res.json();
-      if (result.success) { setSettings(prev => ({ ...prev, ...data })); showToast('Updated default time period', 'success'); return true; }
-      else { showToast(result.message || 'Failed to update time period', 'error'); return false; }
-    } catch { showToast('Error updating time period', 'error'); return false; }
-    finally { setSaving(prev => ({ ...prev, timePeriod: false })); }
+      if (result.success) {
+        setSettings(prev => ({ ...prev, ...data }));
+        showToast('Updated default time period', 'success');
+        return { success: true };
+      } else if (res.status === 403) {
+        return { success: false, locked: true, message: result.detail };
+      } else {
+        showToast(result.message || result.detail || 'Failed to update time period', 'error');
+        return { success: false };
+      }
+    } catch {
+      showToast('Error updating time period', 'error');
+      return { success: false };
+    } finally { setSaving(prev => ({ ...prev, timePeriod: false })); }
   };
 
   // ── render guards ─────────────────────────────────────────

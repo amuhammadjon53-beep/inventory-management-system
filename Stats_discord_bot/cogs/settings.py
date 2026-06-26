@@ -122,6 +122,8 @@ STAT_TOGGLE_META = {
     ),
 }
 
+FREE_STAT_TOGGLE_LIMIT = 4
+
 
 # ============================================================
 # SETTINGS COG
@@ -707,7 +709,7 @@ class Settings(commands.Cog):
              "Set minimum account age to detect suspicious invites."),
             ("`Stat Toggles`",
              "Enable or disable specific stat types being tracked on this server."),
-            ("`Time Period`", "Change the default time period that commands on the bot use."),
+            ("`Time Period`", "Change the default time period that commands on the bot use. ⭐ Optimization+"),
         ]
 
         for setting_name, description in settings_list:
@@ -932,8 +934,8 @@ class MainSettingsView(discord.ui.View):
                                  description="Configure suspicious invite detection"),
             discord.SelectOption(label="Stat Toggles", value="stat_toggles",
                                  description="Enable or disable specific stat types"),
-            discord.SelectOption(label="Time Period", value="time_period",
-                                 description="Change the default time period that commands use"),
+            discord.SelectOption(label="Time Period ⭐", value="time_period",
+                                 description="Change the default time period (Optimization+)"),
         ]
     )
     async def settings_select(self, interaction: discord.Interaction, select: discord.ui.Select):
@@ -982,7 +984,7 @@ class MainSettingsView(discord.ui.View):
              "Set minimum account age to detect suspicious invites."),
             ("`Stat Toggles`",
              "Enable or disable specific stat types being tracked on this server."),
-            ("`Time Period`", "Change the default time period that commands on the bot use."),
+            ("`Time Period`", "Change the default time period that commands on the bot use. ⭐ Optimization+"),
         ]
         for setting_name, description in settings_list:
             embed.add_field(name=setting_name, value=description, inline=False)
@@ -1136,8 +1138,15 @@ class MainSettingsView(discord.ui.View):
             await self.send_permission_error(interaction)
             return
         settings = await self.cog.get_guild_settings(self.guild_id)
+        # Fetch premium status so the initial embed reflects the correct cap
+        db_cog = self.cog.bot.get_cog('DatabaseStats')
+        has_premium = (
+            db_cog is not None
+            and await db_cog.guild_has_module_access(self.guild_id, 'optimization')
+        )
         view = StatTogglesView(self.cog, self.guild_id, settings)
-        await interaction.edit_original_response(embed=view.build_embed(), view=view)
+        await interaction.edit_original_response(
+            embed=view.build_embed(has_premium=has_premium), view=view)
 
     async def show_time_period_menu(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
@@ -2186,6 +2195,13 @@ class StatTogglesView(discord.ui.View):
 
         self._rebuild()
 
+    async def _has_premium(self) -> bool:
+        """Check if this guild has an active Optimization+ subscription."""
+        db_cog = self.cog.bot.get_cog('DatabaseStats')
+        if db_cog is None:
+            return False
+        return await db_cog.guild_has_module_access(self.guild_id, 'optimization')
+
     def _rebuild(self):
         self.clear_items()
 
@@ -2232,7 +2248,7 @@ class StatTogglesView(discord.ui.View):
             if count else "Select stat types to track..."
         )
 
-    def build_embed(self) -> discord.Embed:
+    def build_embed(self, has_premium: bool = True) -> discord.Embed:
         enabled = self.selected_toggles
 
         lines = []
@@ -2244,12 +2260,21 @@ class StatTogglesView(discord.ui.View):
             STAT_TOGGLE_META[k][0] for k in enabled
         ) if enabled else 'None'
 
+        if has_premium:
+            premium_note = ""
+        else:
+            premium_note = (
+                f"⭐ **Free servers can enable up to {FREE_STAT_TOGGLE_LIMIT} stat types.** "
+                f"Upgrade to **Optimization+** to unlock all {len(STAT_TOGGLE_META)}.\n\n"
+            )
+
         embed = discord.Embed(
             title="📈 Stat Toggles",
             description=(
                 "Choose which stat types the bot actively tracks on this server. "
                 "Disabling a stat type stops new data being collected for it — "
                 "existing data is not deleted.\n\n"
+                + premium_note
                 + '\n\n'.join(lines)
                 + f"\n\n**Currently enabled:** {currently}\n\n"
                 "Select from the dropdown below, then press **Apply Changes**."
@@ -2287,15 +2312,45 @@ class StatTogglesView(discord.ui.View):
             await self.send_permission_error(interaction)
             return
         await interaction.response.defer()
-        self.selected_toggles = list(self.children[0].values)
+
+        has_premium = await self._has_premium()
+        chosen = list(self.children[0].values)
+
+        # Enforce the free-tier cap at selection time so users get immediate feedback
+        if not has_premium and len(chosen) > FREE_STAT_TOGGLE_LIMIT:
+            chosen = chosen[:FREE_STAT_TOGGLE_LIMIT]
+            await interaction.followup.send(
+                f"⭐ Free servers can enable up to **{FREE_STAT_TOGGLE_LIMIT} stat types**. "
+                f"Only the first {FREE_STAT_TOGGLE_LIMIT} selections have been kept. "
+                f"Upgrade to **Optimization+** to unlock all {len(STAT_TOGGLE_META)}.",
+                ephemeral=True
+            )
+
+        self.selected_toggles = chosen
         self._rebuild()
-        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+        await interaction.edit_original_response(
+            embed=self.build_embed(has_premium=has_premium), view=self)
 
     async def _apply_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
             return
         await interaction.response.defer()
+
+        has_premium = await self._has_premium()
+
+        # Final enforcement of the cap before writing to DB
+        if not has_premium and len(self.selected_toggles) > FREE_STAT_TOGGLE_LIMIT:
+            self.selected_toggles = self.selected_toggles[:FREE_STAT_TOGGLE_LIMIT]
+            self._rebuild()
+            await interaction.followup.send(
+                f"⭐ Free servers can enable up to **{FREE_STAT_TOGGLE_LIMIT} stat types**. "
+                f"Your selection has been trimmed. Upgrade to **Optimization+** to unlock all {len(STAT_TOGGLE_META)}.",
+                ephemeral=True
+            )
+            await interaction.edit_original_response(
+                embed=self.build_embed(has_premium=has_premium), view=self)
+            return
 
         # Build the full dict of all toggle keys -> bool
         toggles = {key: (key in self.selected_toggles)
@@ -2312,7 +2367,8 @@ class StatTogglesView(discord.ui.View):
             await asyncio.sleep(2)
             updated_settings = await self.cog.get_guild_settings(self.guild_id)
             view = StatTogglesView(self.cog, self.guild_id, updated_settings)
-            await interaction.edit_original_response(embed=view.build_embed(), view=view)
+            await interaction.edit_original_response(
+                embed=view.build_embed(has_premium=has_premium), view=view)
         else:
             await interaction.followup.send(
                 "❌ Failed to update stat toggles. Please try again.", ephemeral=True)
@@ -2411,12 +2467,20 @@ class TimePeriodView(discord.ui.View):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    async def _has_premium(self) -> bool:
+        """Check if this guild has an active Optimization+ subscription."""
+        db_cog = self.cog.bot.get_cog('DatabaseStats')
+        if db_cog is None:
+            return False
+        return await db_cog.guild_has_module_access(self.guild_id, 'optimization')
+
     def build_selection_embed(self) -> discord.Embed:
         current = format_time_period_display(self.settings)
         embed = discord.Embed(
             title="Time Period Settings",
             description=(
-                f"**Current Setting:** `{current}`\n\n\n"
+                f"**Current Setting:** `{current}`\n\n"
+                "⭐ **Changing the default time period requires Optimization+.**\n\n\n"
                 "**All Time**\n"
                 "Shows all data with no time filter applied.\n\n"
                 "**Days Back**\n"
@@ -2473,7 +2537,8 @@ class TimePeriodView(discord.ui.View):
             description=(
                 f"**Current Setting:** `{current}`\n"
                 f"**New Setting:** `{pending}`\n\n"
-                "Press **Apply** to save this change, or **Cancel** to go back."
+                "Press **Apply** to save this change, or **Cancel** to go back.\n\n"
+                "⭐ **Saving requires an active Optimization+ subscription.**"
             ),
             color=discord.Color.purple()
         )
@@ -2517,6 +2582,21 @@ class TimePeriodView(discord.ui.View):
             await self.send_permission_error(interaction)
             return
         await interaction.response.defer()
+
+        # Premium gate — Optimization+ required to save time period changes
+        has_premium = await self._has_premium()
+        if not has_premium:
+            embed = discord.Embed(
+                title="⭐ Optimization+ Required",
+                description=(
+                    "Changing the default time period is a premium feature available exclusively "
+                    "to servers with an active **Optimization+** subscription.\n\n"
+                    "You can browse the available options, but saving requires Optimization+."
+                ),
+                color=discord.Color.gold()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
         data = self.pending_data
         success = await self.cog.update_time_period_setting(
