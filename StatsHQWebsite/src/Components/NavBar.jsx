@@ -1,8 +1,33 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import Login from '../Pages/login';
+import {
+  House,
+  LayoutDashboard,
+  Slash,
+  Star,
+  BookOpenText,
+  HandHelping,
+  MessageCircle,
+  Volume2,
+  Gamepad2,
+  ChartColumnIncreasing,
+  Smile,
+  UserPlus,
+  AtSign,
+  ChartNoAxesCombined,
+  Cog,
+  Ban,
+  Trash2,
+  Crown,
+  Bug,
+} from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+
+const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
+
+const ACCENT = '#aa00ff';
 
 const NavBar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -11,12 +36,33 @@ const NavBar = () => {
   const [isSamsung, setIsSamsung] = useState(false);
   const [serverInfo, setServerInfo] = useState(null);
   const [loadingServer, setLoadingServer] = useState(false);
+  const [isPrivileged, setIsPrivileged] = useState(false);
+  const [isMenuClosing, setIsMenuClosing] = useState(false);
   const mobileMenuRef = useRef(null);
   const menuButtonRef = useRef(null);
+  const navRef = useRef(null);
 
   const getDecodedPath = () => {
     const rawPath = window.location.pathname;
     return decodeURIComponent(rawPath);
+  };
+
+  const checkPrivilegedStatus = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/status`, {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }
+      });
+      if (response.ok) {
+        const authData = await response.json();
+        if (authData.authenticated && authData.user) {
+          setIsPrivileged(PRIVILEGED_USERS.includes(authData.user.id));
+        }
+      }
+    } catch (error) {
+      console.error('Error checking privileged status:', error);
+      setIsPrivileged(false);
+    }
   };
 
   const fetchSelectedServer = async () => {
@@ -134,6 +180,7 @@ const NavBar = () => {
     };
 
     determineCurrentPage();
+    checkPrivilegedStatus();
     window.addEventListener('popstate', determineCurrentPage);
     const handleUrlChange = () => { determineCurrentPage(); };
     window.addEventListener('urlchange', handleUrlChange);
@@ -156,8 +203,7 @@ const NavBar = () => {
         !mobileMenuRef.current.contains(event.target) &&
         !menuButtonRef.current.contains(event.target)
       ) {
-        setIsMobileMenuOpen(false);
-        setMenuLevel("main");
+        closeMobileMenu();
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -175,6 +221,16 @@ const NavBar = () => {
       }
     }
   }, [isMobileMenuOpen, currentPage]);
+
+  // Close with a short outro animation instead of an instant unmount
+  const closeMobileMenu = () => {
+    setIsMenuClosing(true);
+    window.setTimeout(() => {
+      setIsMobileMenuOpen(false);
+      setIsMenuClosing(false);
+      setMenuLevel("main");
+    }, 220);
+  };
 
   const handleDashboardClick = (e) => {
     e.preventDefault();
@@ -254,46 +310,57 @@ const NavBar = () => {
       <ServerInfoBox />
       <div className="submenu-category">
         <h3 className="category-title">ANALYTICS</h3>
-        <a href="/Dashboard/Messages/" className={`mobile-nav-link ${isDashboardPageActive('Messages') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">💬</span>Messages
+        <a href="/Dashboard/Messages/" className={`mobile-nav-link ${isDashboardPageActive('Messages') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><MessageCircle size={18} color={ACCENT} /></span>Messages
         </a>
-        <a href="/Dashboard/Voice Activity/" className={`mobile-nav-link ${isDashboardPageActive('Voice Activity') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">🔊</span>Voice Activity
+        <a href="/Dashboard/Voice Activity/" className={`mobile-nav-link ${isDashboardPageActive('Voice Activity') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><Volume2 size={18} color={ACCENT} /></span>Voice Activity
         </a>
-        <a href="/Dashboard/Activity/" className={`mobile-nav-link ${isDashboardPageActive('Activity') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">🎮</span>Status Activity
+        <a href="/Dashboard/Activity/" className={`mobile-nav-link ${isDashboardPageActive('Activity') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><Gamepad2 size={18} color={ACCENT} /></span>Status Activity
         </a>
-        <a href="/Dashboard/Distribution/" className={`mobile-nav-link ${isDashboardPageActive('Distribution') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">📊</span>Distribution
+        <a href="/Dashboard/Distribution/" className={`mobile-nav-link ${isDashboardPageActive('Distribution') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><ChartColumnIncreasing size={18} color={ACCENT} /></span>Distribution
         </a>
-        <a href="/Dashboard/Emoji Tracking/" className={`mobile-nav-link ${isDashboardPageActive('Emoji Tracking') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">😊</span>Emojis
+        <a href="/Dashboard/Emoji Tracking/" className={`mobile-nav-link ${isDashboardPageActive('Emoji Tracking') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><Smile size={18} color={ACCENT} /></span>Emojis
         </a>
-        <a href="/Dashboard/Invite Tracking/" className={`mobile-nav-link ${isDashboardPageActive('Invite Tracking') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">📨</span>Invites
+        <a href="/Dashboard/Invite Tracking/" className={`mobile-nav-link ${isDashboardPageActive('Invite Tracking') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><UserPlus size={18} color={ACCENT} /></span>Invites
         </a>
-        <a href="/Dashboard/Mentions/" className={`mobile-nav-link ${isDashboardPageActive('Mentions') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">🔔</span>Mentions
+        <a href="/Dashboard/Mentions/" className={`mobile-nav-link ${isDashboardPageActive('Mentions') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><AtSign size={18} color={ACCENT} /></span>Mentions
         </a>
-        <a href="/Dashboard/Growth/" className={`mobile-nav-link ${isDashboardPageActive('Growth') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">📈</span>Growth
+        <a href="/Dashboard/Growth/" className={`mobile-nav-link ${isDashboardPageActive('Growth') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><ChartNoAxesCombined size={18} color={ACCENT} /></span>Growth
         </a>
       </div>
       <div className="submenu-category">
         <h3 className="category-title">OPTIMIZATION</h3>
-        <a href="/Dashboard/Settings/" className={`mobile-nav-link ${isDashboardPageActive('Settings') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">⚙️</span>Settings
+        <a href="/Dashboard/Settings/" className={`mobile-nav-link ${isDashboardPageActive('Settings') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><Cog size={18} color={ACCENT} /></span>Settings
         </a>
-        <a href="/Dashboard/Blacklist/" className={`mobile-nav-link ${isDashboardPageActive('Blacklist') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">🚫</span>Blacklist
+        <a href="/Dashboard/Blacklist/" className={`mobile-nav-link ${isDashboardPageActive('Blacklist') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><Ban size={18} color={ACCENT} /></span>Blacklist
         </a>
-        <a href="/Dashboard/Reset/" className={`mobile-nav-link ${isDashboardPageActive('Reset') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">🗑️</span>Reset Stats
+        <a href="/Dashboard/Reset/" className={`mobile-nav-link ${isDashboardPageActive('Reset') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><Trash2 size={18} color={ACCENT} /></span>Reset Stats
         </a>
-        <a href="/Dashboard/Subscriptions/" className={`mobile-nav-link ${isDashboardPageActive('Subscriptions') ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
-          <span className="mobile-nav-icon">💎</span>Subscriptions
+        <a href="/Dashboard/Subscriptions/" className={`mobile-nav-link ${isDashboardPageActive('Subscriptions') ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><Star size={18} color={ACCENT} /></span>Subscriptions
         </a>
+        {isPrivileged && (
+          <a href="/Dashboard/Debug/" className={`mobile-nav-link ${isDashboardPageActive('Debug') ? 'active' : ''}`} onClick={closeMobileMenu}>
+            <span className="mobile-nav-icon"><Bug size={18} color={ACCENT} /></span>Debug
+          </a>
+        )}
       </div>
+      {isPrivileged && (
+        <div className="mobile-privileged-indicator">
+          <Crown size={14} color="#ffd700" />
+          <span className="mobile-privileged-text">Privileged Access</span>
+        </div>
+      )}
     </div>
   );
 
@@ -301,40 +368,40 @@ const NavBar = () => {
     <div className="mobile-submenu">
       <div className="submenu-category">
         <h3 className="category-title">THE BASICS</h3>
-        <a href="/docs/" className={`mobile-nav-link ${currentPage === 'introduction' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/" className={`mobile-nav-link ${currentPage === 'introduction' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Introduction
         </a>
-        <a href="/docs/?page=setup" className={`mobile-nav-link ${currentPage === 'setup' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/?page=setup" className={`mobile-nav-link ${currentPage === 'setup' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Set Up
         </a>
-        <a href="/docs/?page=faq" className={`mobile-nav-link ${currentPage === 'faq' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/?page=faq" className={`mobile-nav-link ${currentPage === 'faq' ? 'active' : ''}`} onClick={closeMobileMenu}>
           FAQ
         </a>
       </div>
       <div className="submenu-category">
         <h3 className="category-title">FEATURES</h3>
-        <a href="/docs/?page=invite-tracking" className={`mobile-nav-link ${currentPage === 'invite-tracking' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/?page=invite-tracking" className={`mobile-nav-link ${currentPage === 'invite-tracking' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Invite Tracking
         </a>
-        <a href="/docs/?page=distribution" className={`mobile-nav-link ${currentPage === 'distribution' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/?page=distribution" className={`mobile-nav-link ${currentPage === 'distribution' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Distribution
         </a>
-        <a href="/docs/?page=ships" className={`mobile-nav-link ${currentPage === 'ships' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/?page=ships" className={`mobile-nav-link ${currentPage === 'ships' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Ships
         </a>
       </div>
       <div className="submenu-category">
         <h3 className="category-title">LEGAL</h3>
-        <a href="/docs/?page=privacy" className={`mobile-nav-link ${currentPage === 'privacy' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/?page=privacy" className={`mobile-nav-link ${currentPage === 'privacy' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Privacy Policy
         </a>
-        <a href="/docs/?page=terms" className={`mobile-nav-link ${currentPage === 'terms' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/?page=terms" className={`mobile-nav-link ${currentPage === 'terms' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Terms of Service
         </a>
-        <a href="/docs/?page=cookies" className={`mobile-nav-link ${currentPage === 'cookies' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/?page=cookies" className={`mobile-nav-link ${currentPage === 'cookies' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Cookie Policy
         </a>
-        <a href="/docs/?page=refund" className={`mobile-nav-link ${currentPage === 'refund' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+        <a href="/docs/?page=refund" className={`mobile-nav-link ${currentPage === 'refund' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Refund Policy
         </a>
       </div>
@@ -342,26 +409,32 @@ const NavBar = () => {
   );
 
   const MainMenu = () => (
-    <>
-      <a href="/" className={`mobile-nav-link ${currentPage === 'home' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+    <div className="main-menu-list">
+      <a href="/" className={`mobile-nav-link ${currentPage === 'home' ? 'active' : ''}`} onClick={closeMobileMenu}>
+        <span className="mobile-nav-icon"><House size={18} color={ACCENT} /></span>
         Home
       </a>
       <a href="#" className={`mobile-nav-link ${currentPage === 'Dashboard' ? 'active' : ''}`} onClick={handleDashboardClick}>
+        <span className="mobile-nav-icon"><LayoutDashboard size={18} color={ACCENT} /></span>
         Dashboard
       </a>
-      <a href="/Commands/" className={`mobile-nav-link ${currentPage === 'commands' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+      <a href="/Commands/" className={`mobile-nav-link ${currentPage === 'commands' ? 'active' : ''}`} onClick={closeMobileMenu}>
+        <span className="mobile-nav-icon"><Slash size={18} color={ACCENT} /></span>
         Commands
       </a>
-      <a href="/Premium/" className={`mobile-nav-link ${currentPage === 'premium' ? 'active' : ''}`} onClick={() => setIsMobileMenuOpen(false)}>
+      <a href="/Premium/" className={`mobile-nav-link ${currentPage === 'premium' ? 'active' : ''}`} onClick={closeMobileMenu}>
+        <span className="mobile-nav-icon"><Star size={18} color={ACCENT} /></span>
         Premium
       </a>
       <a href="#" className={`mobile-nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'refund', 'invite-tracking', 'distribution', 'ships'].includes(currentPage) ? 'active' : ''}`} onClick={handleDocsClick}>
+        <span className="mobile-nav-icon"><BookOpenText size={18} color={ACCENT} /></span>
         Docs
       </a>
-      <a href="https://discord.gg/hreJvck8cK" className="mobile-nav-link" target="_blank" rel="noopener noreferrer" onClick={() => setIsMobileMenuOpen(false)}>
+      <a href="https://discord.gg/hreJvck8cK" className="mobile-nav-link" target="_blank" rel="noopener noreferrer" onClick={closeMobileMenu}>
+        <span className="mobile-nav-icon"><HandHelping size={18} color={ACCENT} /></span>
         Support
       </a>
-    </>
+    </div>
   );
 
   const isDashboardPage = currentPage === "Dashboard";
@@ -374,24 +447,30 @@ const NavBar = () => {
             <img src="/Stats logo.png" alt="Stats Logo" className="logo-image" />
             <span className="logo-text">STATS</span>
           </a>
-          <nav className="desktop-nav">
+          <nav className="desktop-nav" ref={navRef}>
             <a href="/" className={`nav-link ${currentPage === 'home' ? 'active' : ''}`}>
-              Home
+              <span className="nav-icon"><House size={16} color={ACCENT} /></span>
+              <span className="nav-label">Home</span>
             </a>
             <a href="/Dashboard/Messages/" className={`nav-link ${currentPage === 'Dashboard' ? 'active' : ''}`}>
-              Dashboard
+              <span className="nav-icon"><LayoutDashboard size={16} color={ACCENT} /></span>
+              <span className="nav-label">Dashboard</span>
             </a>
             <a href="/Commands/" className={`nav-link ${currentPage === 'commands' ? 'active' : ''}`}>
-              Commands
+              <span className="nav-icon"><Slash size={16} color={ACCENT} /></span>
+              <span className="nav-label">Commands</span>
             </a>
             <a href="/Premium/" className={`nav-link ${currentPage === 'premium' ? 'active' : ''}`}>
-              Premium
+              <span className="nav-icon"><Star size={16} color={ACCENT} /></span>
+              <span className="nav-label">Premium</span>
             </a>
             <a href="/docs/" className={`nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'refund'].includes(currentPage) ? 'active' : ''}`}>
-              Docs
+              <span className="nav-icon"><BookOpenText size={16} color={ACCENT} /></span>
+              <span className="nav-label">Docs</span>
             </a>
             <a href="https://discord.gg/hreJvck8cK" className="nav-link" target="_blank" rel="noopener noreferrer">
-              Support
+              <span className="nav-icon"><HandHelping size={16} color={ACCENT} /></span>
+              <span className="nav-label">Support</span>
             </a>
           </nav>
         </div>
@@ -403,11 +482,17 @@ const NavBar = () => {
       <header className="mobile-header">
         <button 
           ref={menuButtonRef}
-          className="menu-button" 
-          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          className={`menu-button ${isMobileMenuOpen ? 'is-open' : ''}`}
+          onClick={() => (isMobileMenuOpen ? closeMobileMenu() : setIsMobileMenuOpen(true))}
+          aria-label="Toggle navigation menu"
+          aria-expanded={isMobileMenuOpen}
           style={{ outline: 'none', WebkitTapHighlightColor: 'transparent' }}
         >
-          <span className="menu-icon">☰</span>
+          <span className="burger">
+            <span className="burger-bar" />
+            <span className="burger-bar" />
+            <span className="burger-bar" />
+          </span>
         </button>
         <div 
           className={`mobile-logo-container ${isSamsung ? 'samsung-only' : ''}`} 
@@ -429,8 +514,14 @@ const NavBar = () => {
 
       {isMobileMenuOpen && (
         <>
-          <div className="mobile-menu-overlay" onClick={() => { setIsMobileMenuOpen(false); setMenuLevel("main"); }} />
-          <div ref={mobileMenuRef} className="mobile-menu">
+          <div
+            className={`mobile-menu-overlay ${isMenuClosing ? 'closing' : ''}`}
+            onClick={closeMobileMenu}
+          />
+          <div
+            ref={mobileMenuRef}
+            className={`mobile-menu ${isMenuClosing ? 'closing' : ''}`}
+          >
             <div className="mobile-menu-header">
               {menuLevel !== "main" ? (
                 <button className="back-button" onClick={handleBackClick}>
@@ -441,7 +532,7 @@ const NavBar = () => {
                   </div>
                 </button>
               ) : (
-                <button className="close-menu" onClick={() => { setIsMobileMenuOpen(false); setMenuLevel("main"); }}>
+                <button className="close-menu" onClick={closeMobileMenu}>
                   <svg className="close-icon" viewBox="0 0 24 24" width="20" height="20">
                     <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor"/>
                   </svg>
@@ -451,7 +542,7 @@ const NavBar = () => {
                 {menuLevel === "Dashboard" ? "DASHBOARD" : menuLevel === "docs" ? "DOCS" : "MENU"}
               </h2>
             </div>
-            <div className="mobile-menu-content">
+            <div className="mobile-menu-content" key={menuLevel}>
               {menuLevel === "Dashboard" ? <DashboardMenu /> : menuLevel === "docs" ? <DocsMenu /> : <MainMenu />}
             </div>
           </div>
@@ -490,7 +581,7 @@ const NavBar = () => {
         .header-left {
           display: flex;
           align-items: center;
-          gap: 48px;
+          gap: 44px;
           flex-shrink: 0;
         }
 
@@ -520,24 +611,102 @@ const NavBar = () => {
           object-fit: contain;
         }
 
+        /* ---------- Desktop nav: icon + label, sliding active indicator ---------- */
+
         .desktop-nav {
           display: flex;
-          gap: 32px;
+          align-items: center;
+          gap: 4px;
         }
 
         .nav-link {
-          color: #ffffff;
+          position: relative;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #c7c9d4;
           text-decoration: none;
-          font-size: 16px;
+          font-size: 15px;
           font-weight: 500;
-          transition: all 0.2s ease;
           white-space: nowrap;
+          padding: 9px 16px;
+          border-radius: 10px;
+          isolation: isolate;
+          transition: color 0.25s ease;
         }
 
-        .nav-link:hover,
+        .nav-icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          opacity: 0.75;
+          transform: translateY(0);
+          transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .nav-label {
+          position: relative;
+        }
+
+        /* hover/active background wash, drawn behind content via ::before so it
+           can animate independently without affecting layout */
+        .nav-link::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: 10px;
+          background: rgba(170, 0, 255, 0.10);
+          opacity: 0;
+          transform: scale(0.92);
+          transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+          z-index: -1;
+        }
+
+        /* underline indicator that grows from center */
+        .nav-link::after {
+          content: '';
+          position: absolute;
+          left: 16px;
+          right: 16px;
+          bottom: 4px;
+          height: 2px;
+          border-radius: 2px;
+          background: #aa00ff;
+          box-shadow: 0 0 8px #aa00ff;
+          transform: scaleX(0);
+          transform-origin: center;
+          transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+
+        .nav-link:hover {
+          color: #ffffff;
+        }
+
+        .nav-link:hover::before {
+          opacity: 1;
+          transform: scale(1);
+        }
+
+        .nav-link:hover .nav-icon {
+          opacity: 1;
+          transform: translateY(-1px);
+        }
+
         .nav-link.active {
-          color: #aa00ff;
-          text-shadow: 0 0 15px #aa00ff;
+          color: #ffffff;
+          text-shadow: 0 0 15px rgba(170, 0, 255, 0.6);
+        }
+
+        .nav-link.active .nav-icon {
+          opacity: 1;
+        }
+
+        .nav-link.active::after {
+          transform: scaleX(1);
+        }
+
+        .nav-link:active {
+          transform: translateY(1px);
         }
 
         .login-container {
@@ -598,18 +767,65 @@ const NavBar = () => {
           width: 100%;
         }
 
+        /* ---------- Animated burger button ---------- */
+
         .menu-button {
           background: none;
           border: none;
           cursor: pointer;
-          padding: 8px;
+          padding: 10px;
           color: #ffffff;
           display: flex;
           align-items: center;
           justify-content: center;
+          border-radius: 10px;
+          transition: background 0.25s ease;
         }
 
-        .menu-icon { font-size: 28px; }
+        .menu-button:hover {
+          background: rgba(170, 0, 255, 0.10);
+        }
+
+        .burger {
+          width: 22px;
+          height: 16px;
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+        }
+
+        .burger-bar {
+          display: block;
+          height: 2px;
+          width: 100%;
+          border-radius: 2px;
+          background: #ffffff;
+          transition: transform 0.32s cubic-bezier(0.65, 0, 0.35, 1),
+                      opacity 0.25s ease,
+                      background-color 0.25s ease;
+          transform-origin: center;
+        }
+
+        .menu-button:hover .burger-bar {
+          background: #aa00ff;
+        }
+
+        .menu-button.is-open .burger-bar:nth-child(1) {
+          transform: translateY(7px) rotate(45deg);
+        }
+
+        .menu-button.is-open .burger-bar:nth-child(2) {
+          opacity: 0;
+        }
+
+        .menu-button.is-open .burger-bar:nth-child(3) {
+          transform: translateY(-7px) rotate(-45deg);
+        }
+
+        .menu-button.is-open .burger-bar {
+          background: #aa00ff;
+        }
 
         .mobile-logo-container {
           display: flex;
@@ -661,8 +877,6 @@ const NavBar = () => {
           pointer-events: none;
         }
 
-        .menu-button:hover { color: #aa00ff; }
-
         .login-container.mobile {
           position: relative;
           z-index: 1001;
@@ -683,6 +897,8 @@ const NavBar = () => {
           overflow: visible !important;
         }
 
+        /* ---------- Mobile slide-out menu ---------- */
+
         .mobile-menu-overlay {
           position: fixed;
           top: 0;
@@ -691,6 +907,21 @@ const NavBar = () => {
           bottom: 0;
           background-color: rgba(0, 0, 0, 0.7);
           z-index: 1001;
+          animation: fadeIn 0.22s ease forwards;
+        }
+
+        .mobile-menu-overlay.closing {
+          animation: fadeOut 0.22s ease forwards;
+        }
+
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+
+        @keyframes fadeOut {
+          from { opacity: 1; }
+          to { opacity: 0; }
         }
 
         .mobile-menu {
@@ -703,13 +934,23 @@ const NavBar = () => {
           background-color: #0a0b12;
           z-index: 1002;
           overflow-y: auto;
-          animation: slideIn 0.3s ease;
+          animation: slideIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
           border-right: 1px solid #2c2f3a;
+          box-shadow: 24px 0 60px rgba(0, 0, 0, 0.45);
+        }
+
+        .mobile-menu.closing {
+          animation: slideOut 0.22s cubic-bezier(0.5, 0, 0.75, 0) forwards;
         }
 
         @keyframes slideIn {
           from { transform: translateX(-100%); }
           to { transform: translateX(0); }
+        }
+
+        @keyframes slideOut {
+          from { transform: translateX(0); }
+          to { transform: translateX(-100%); }
         }
 
         .mobile-menu-header {
@@ -819,30 +1060,71 @@ const NavBar = () => {
 
         .mobile-menu-content { padding: 20px; }
 
+        /* staggered entrance for menu rows */
+        .mobile-menu-content {
+          animation: contentIn 0.3s ease both;
+        }
+
+        @keyframes contentIn {
+          from { opacity: 0; transform: translateX(-8px); }
+          to { opacity: 1; transform: translateX(0); }
+        }
+
         .mobile-nav-link {
           display: flex;
           align-items: center;
           gap: 12px;
           color: #ffffff;
           text-decoration: none;
-          padding: 16px 0;
+          padding: 16px 4px;
           font-size: 18px;
           border-bottom: 1px solid #2c2f3a;
-          transition: all 0.2s ease;
+          border-radius: 8px;
+          transition: color 0.2s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s ease, padding-left 0.2s ease;
+          opacity: 0;
+          animation: rowIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+
+        .main-menu-list .mobile-nav-link:nth-child(1) { animation-delay: 0.04s; }
+        .main-menu-list .mobile-nav-link:nth-child(2) { animation-delay: 0.08s; }
+        .main-menu-list .mobile-nav-link:nth-child(3) { animation-delay: 0.12s; }
+        .main-menu-list .mobile-nav-link:nth-child(4) { animation-delay: 0.16s; }
+        .main-menu-list .mobile-nav-link:nth-child(5) { animation-delay: 0.20s; }
+        .main-menu-list .mobile-nav-link:nth-child(6) { animation-delay: 0.24s; }
+
+        @keyframes rowIn {
+          from { opacity: 0; transform: translateX(-10px); }
+          to { opacity: 1; transform: translateX(0); }
         }
 
         .mobile-nav-icon {
-          font-size: 20px;
-          min-width: 28px;
-          transition: transform 0.2s ease;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 24px;
+          transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
 
-        .mobile-nav-link:hover .mobile-nav-icon { transform: scale(1.1); }
+        .mobile-nav-link:hover {
+          background: rgba(170, 0, 255, 0.08);
+          padding-left: 12px;
+        }
+
+        .mobile-nav-link:hover .mobile-nav-icon { transform: scale(1.15) rotate(-4deg); }
+
+        .mobile-nav-link:active {
+          transform: scale(0.98);
+        }
 
         .mobile-nav-link:hover,
         .mobile-nav-link.active {
           color: #aa00ff;
-          transform: translateX(5px);
+        }
+
+        .mobile-nav-link.active {
+          background: rgba(170, 0, 255, 0.10);
+          padding-left: 12px;
+          box-shadow: inset 3px 0 0 #aa00ff;
         }
 
         .mobile-submenu { margin-top: 0; }
@@ -860,16 +1142,29 @@ const NavBar = () => {
         }
 
         .submenu-category .mobile-nav-link {
-          padding: 12px 0 12px 16px;
+          padding: 12px 4px 12px 16px;
           font-size: 16px;
           border-bottom: none;
           gap: 12px;
         }
 
+        .submenu-category .mobile-nav-link:hover,
+        .submenu-category .mobile-nav-link.active {
+          padding-left: 20px;
+        }
+
         .submenu-category .mobile-nav-link .mobile-nav-icon {
-          font-size: 18px;
           min-width: 24px;
         }
+
+        .submenu-category .mobile-nav-link:nth-child(2) { animation-delay: 0.03s; }
+        .submenu-category .mobile-nav-link:nth-child(3) { animation-delay: 0.06s; }
+        .submenu-category .mobile-nav-link:nth-child(4) { animation-delay: 0.09s; }
+        .submenu-category .mobile-nav-link:nth-child(5) { animation-delay: 0.12s; }
+        .submenu-category .mobile-nav-link:nth-child(6) { animation-delay: 0.15s; }
+        .submenu-category .mobile-nav-link:nth-child(7) { animation-delay: 0.18s; }
+        .submenu-category .mobile-nav-link:nth-child(8) { animation-delay: 0.21s; }
+        .submenu-category .mobile-nav-link:nth-child(9) { animation-delay: 0.24s; }
 
         .mobile-server-info {
           margin-bottom: 24px;
@@ -886,6 +1181,11 @@ const NavBar = () => {
           border-radius: 12px;
           border: 1px solid #2c2f3a;
           transition: all 0.2s ease;
+        }
+
+        .mobile-server-details:hover {
+          border-color: rgba(170, 0, 255, 0.4);
+          box-shadow: 0 0 16px rgba(170, 0, 255, 0.12);
         }
 
         .mobile-server-avatar {
@@ -973,12 +1273,34 @@ const NavBar = () => {
           border: 1px solid #2c2f3a;
         }
 
+        .mobile-privileged-indicator {
+          margin-top: 8px;
+          padding: 10px 12px;
+          background: linear-gradient(135deg, rgba(255, 215, 0, 0.15), rgba(255, 215, 0, 0.05));
+          border: 1px solid rgba(255, 215, 0, 0.3);
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          font-size: 12px;
+          font-weight: 600;
+          color: #ffd700;
+          text-shadow: 0 0 5px rgba(255, 215, 0, 0.3);
+          opacity: 0;
+          animation: rowIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+          animation-delay: 0.28s;
+        }
+
+        .mobile-privileged-text { letter-spacing: 0.5px; }
+
         .menu-button,
         .mobile-logo-container,
         .back-button,
         .close-menu,
         .mobile-nav-link,
-        .mobile-edit-link {
+        .mobile-edit-link,
+        .nav-link {
           outline: none !important;
           -webkit-tap-highlight-color: transparent !important;
         }
@@ -988,8 +1310,27 @@ const NavBar = () => {
         .back-button:focus,
         .close-menu:focus,
         .mobile-nav-link:focus,
-        .mobile-edit-link:focus {
+        .mobile-edit-link:focus,
+        .nav-link:focus {
           outline: none !important;
+        }
+
+        .nav-link:focus-visible,
+        .mobile-nav-link:focus-visible,
+        .menu-button:focus-visible,
+        .close-menu:focus-visible,
+        .back-button:focus-visible {
+          outline: 2px solid rgba(170, 0, 255, 0.6) !important;
+          outline-offset: 2px;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .nav-link, .nav-link::before, .nav-link::after, .nav-icon,
+          .mobile-nav-link, .mobile-nav-icon, .mobile-menu, .mobile-menu-overlay,
+          .mobile-menu-content, .burger-bar, .menu-button {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+          }
         }
 
         @media (max-width: 768px) {
@@ -1031,10 +1372,8 @@ const NavBar = () => {
           }
 
           .mobile-server-name { font-size: 14px; }
-          .mobile-nav-link { padding: 14px 0; font-size: 16px; }
-          .mobile-nav-icon { font-size: 18px; min-width: 24px; }
-          .submenu-category .mobile-nav-link { padding: 10px 0 10px 12px; font-size: 14px; }
-          .submenu-category .mobile-nav-link .mobile-nav-icon { font-size: 16px; min-width: 22px; }
+          .mobile-nav-link { padding: 14px 4px; font-size: 16px; }
+          .submenu-category .mobile-nav-link { padding: 10px 4px 10px 12px; font-size: 14px; }
         }
       `}</style>
     </>
