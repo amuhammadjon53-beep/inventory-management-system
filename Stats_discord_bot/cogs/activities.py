@@ -2317,7 +2317,7 @@ class CategorySelect(discord.ui.Select):
         await view.update_message(interaction)
 
 
-class RoleInputModal(discord.ui.Modal, title='Input Role ID'):
+class RoleInputModal(discord.ui.Modal, title='Filter By Role'):
     role_id = discord.ui.TextInput(
         label='Enter Role ID or "none"',
         placeholder='e.g., 123456789012345678 or type "none"',
@@ -2392,7 +2392,7 @@ class TimeModal(discord.ui.Modal, title='Custom Time Period'):
 class PrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⬅️", custom_id="leaderboard_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="leaderboard_prev")
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
@@ -2406,7 +2406,7 @@ class PrevButton(discord.ui.Button):
 class NextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="➡️", custom_id="leaderboard_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="leaderboard_next")
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
@@ -2493,7 +2493,7 @@ class ActivityView(discord.ui.View):
         if self.command_type in ("server", "leaderboard", "streak"):
             role_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary,
-                label="Input Role Id",
+                label="Filter By Role",
                 custom_id="input_role_id"
             )
             role_button.callback = self.role_button_callback
@@ -2502,7 +2502,7 @@ class ActivityView(discord.ui.View):
         # Refresh button: always
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="refresh"
         )
         refresh_button.callback = self.refresh_callback
@@ -2512,7 +2512,8 @@ class ActivityView(discord.ui.View):
         if self.command_type not in ("streak", "user_streak"):
             time_settings_button = discord.ui.Button(
                 style=discord.ButtonStyle.secondary,
-                label="⏰ Time Settings",
+                emoji=discord.PartialEmoji(
+                    name="clockk", id=1518249803069259867),
                 custom_id="time_settings"
             )
             time_settings_button.callback = self.time_settings_callback
@@ -2733,7 +2734,7 @@ class WhosView(discord.ui.View):
 
         role_button = discord.ui.Button(
             style=discord.ButtonStyle.primary,
-            label="Input Role Id",
+            label="Filter By Role",
             custom_id="whos_input_role_id"
         )
         role_button.callback = self.role_button_callback
@@ -2741,7 +2742,7 @@ class WhosView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="whos_refresh"
         )
         refresh_button.callback = self.refresh_callback

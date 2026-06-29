@@ -93,7 +93,7 @@ class TimePeriodSelect(discord.ui.Select):
 
 # ROLE MODAL
 
-class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
+class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, cog_instance, start_time: datetime, end_time: datetime, days_back_equiv: int, display_text: str, selected_period: str = "day", view=None):
         super().__init__(timeout=300)
         self.cog = cog_instance
@@ -308,21 +308,21 @@ class AverageServerStatsView(discord.ui.View):
 
         role_button = discord.ui.Button(
             style=discord.ButtonStyle.primary,
-            label="Input Role Id",
+            label="Filter By Role",
             custom_id="average_input_role_id"
         )
         role_button.callback = self.role_id_callback
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="average_refresh"
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="average_time_settings"
         )
         time_settings_button.callback = self.time_settings_callback
@@ -500,14 +500,14 @@ class AverageUserStatsView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="average_refresh"
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="average_time_settings"
         )
         time_settings_button.callback = self.time_settings_callback

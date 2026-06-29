@@ -649,7 +649,7 @@ class MentionsTimeModal(discord.ui.Modal, title='Custom Time Period'):
 class MentionsPrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⬅️", custom_id="mentions_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="mentions_prev")
 
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
@@ -666,7 +666,7 @@ class MentionsPrevButton(discord.ui.Button):
 class MentionsNextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="➡️", custom_id="mentions_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="mentions_next")
 
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
@@ -747,7 +747,7 @@ class MentionsRatioOrderSelect(discord.ui.Select):
         await view.update_message(interaction)
 
 
-class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
+class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, cog_instance, original_message_id, guild):
         super().__init__(timeout=300)
         self.cog = cog_instance
@@ -803,7 +803,7 @@ class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
 class RoleIdButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
-                         label="Input Role ID", custom_id="mentions_role_filter")
+                         label="Filter By Role", custom_id="mentions_role_filter")
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
@@ -851,10 +851,14 @@ class MentionsLeaderboardView(discord.ui.View):
         self.add_item(RoleIdButton())
 
         refresh_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="🔄 Refresh", custom_id="mentions_refresh", row=3)
+            style=discord.ButtonStyle.secondary,
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
+            custom_id="mentions_refresh", row=3)
         refresh_button.callback = self.refresh_callback
         time_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="⏰ Time Settings", custom_id="mentions_time", row=3)
+            style=discord.ButtonStyle.secondary,
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
+            custom_id="mentions_time", row=3)
         time_button.callback = self.time_settings_callback
         self.add_item(refresh_button)
         self.add_item(time_button)
@@ -1124,10 +1128,14 @@ class MentionsRatioLeaderboardView(discord.ui.View):
         self.add_item(RoleIdButton())
 
         refresh = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="🔄 Refresh", custom_id="ratio_refresh", row=3)
+            style=discord.ButtonStyle.secondary,
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
+            custom_id="ratio_refresh", row=3)
         refresh.callback = self.refresh_callback
         time_btn = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="⏰ Time Settings", custom_id="ratio_time", row=3)
+            style=discord.ButtonStyle.secondary,
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
+            custom_id="ratio_time", row=3)
         time_btn.callback = self.time_settings_callback
         self.add_item(refresh)
         self.add_item(time_btn)
@@ -1350,10 +1358,14 @@ class MentionsRatioEmbedView(discord.ui.View):
         self.clear_items()
 
         refresh_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="🔄 Refresh", custom_id="ratio_embed_refresh")
+            style=discord.ButtonStyle.secondary,
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
+            custom_id="ratio_embed_refresh")
         refresh_button.callback = self.refresh_callback
         time_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="⏰ Time Settings", custom_id="ratio_embed_time")
+            style=discord.ButtonStyle.secondary,
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
+            custom_id="ratio_embed_time")
         time_button.callback = self.time_settings_callback
         self.add_item(refresh_button)
         self.add_item(time_button)

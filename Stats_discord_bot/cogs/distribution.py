@@ -721,7 +721,7 @@ class TimezoneDistribution(commands.Cog):
                 print(f"Error in timezone modal: {e}")
                 await interaction.followup.send("❌ An error occurred.", ephemeral=True)
 
-    class RoleFilterModal(discord.ui.Modal, title='Input Role ID'):
+    class RoleFilterModal(discord.ui.Modal, title='Filter By Role'):
         def __init__(self, cog_instance, guild, view):
             super().__init__(timeout=300)
             self.cog = cog_instance
@@ -848,19 +848,21 @@ class TimezoneDistribution(commands.Cog):
             # Button order: Input Role Id → Refresh → Time Settings
             if self.scope != "user":
                 btn_role = discord.ui.Button(
-                    style=discord.ButtonStyle.primary, label="Input Role Id",
+                    style=discord.ButtonStyle.primary, label="Filter By Role",
                     custom_id="dist_role_filter")
                 btn_role.callback = self._role_filter_cb
                 self.add_item(btn_role)
 
             btn_refresh = discord.ui.Button(
-                style=discord.ButtonStyle.secondary, label="🔄",
+                style=discord.ButtonStyle.secondary, emoji=discord.PartialEmoji(
+                    name="refresh", id=1518249841505861743),
                 custom_id="dist_refresh")
             btn_refresh.callback = self._refresh_cb
             self.add_item(btn_refresh)
 
             btn_time = discord.ui.Button(
-                style=discord.ButtonStyle.secondary, label="⏰ Time Settings",
+                style=discord.ButtonStyle.secondary, emoji=discord.PartialEmoji(
+                    name="clockk", id=1518249803069259867),
                 custom_id="dist_time_settings")
             btn_time.callback = self._time_settings_cb
             self.add_item(btn_time)

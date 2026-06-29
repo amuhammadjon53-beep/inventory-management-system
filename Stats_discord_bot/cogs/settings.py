@@ -709,7 +709,7 @@ class Settings(commands.Cog):
              "Set minimum account age to detect suspicious invites."),
             ("`Stat Toggles`",
              "Enable or disable specific stat types being tracked on this server."),
-            ("`Time Period`", "Change the default time period that commands on the bot use. ⭐ Optimization+"),
+            ("`Time Period`", "Change the default time period that commands on the bot use."),
         ]
 
         for setting_name, description in settings_list:
@@ -984,7 +984,7 @@ class MainSettingsView(discord.ui.View):
              "Set minimum account age to detect suspicious invites."),
             ("`Stat Toggles`",
              "Enable or disable specific stat types being tracked on this server."),
-            ("`Time Period`", "Change the default time period that commands on the bot use. ⭐ Optimization+"),
+            ("`Time Period`", "Change the default time period that commands on the bot use."),
         ]
         for setting_name, description in settings_list:
             embed.add_field(name=setting_name, value=description, inline=False)

@@ -2156,7 +2156,7 @@ class ServerStatsView(discord.ui.View):
 
         role_button = discord.ui.Button(
             style=discord.ButtonStyle.primary,
-            label="Input Role Id",
+            label="Filter By Role",
             custom_id="server_input_role",
             row=1
         )
@@ -2165,7 +2165,7 @@ class ServerStatsView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="server_refresh",
             row=1
         )
@@ -2174,9 +2174,9 @@ class ServerStatsView(discord.ui.View):
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings" if not self.show_time_buttons else "⏰ Hide Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="server_time_settings",
-            row=2
+            row=1
         )
         time_settings_button.callback = self.time_settings_callback
         self.add_item(time_settings_button)
@@ -2186,7 +2186,7 @@ class ServerStatsView(discord.ui.View):
                 style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
                 custom_id="server_all_time",
-                row=3
+                row=2
             )
             all_time_button.callback = self.all_time_callback
             self.add_item(all_time_button)
@@ -2195,7 +2195,7 @@ class ServerStatsView(discord.ui.View):
                 style=discord.ButtonStyle.primary if self.current_days_back_equiv == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
                 custom_id="server_days_7",
-                row=3
+                row=2
             )
             days_7_button.callback = self.days_7_callback
             self.add_item(days_7_button)
@@ -2204,7 +2204,7 @@ class ServerStatsView(discord.ui.View):
                 style=discord.ButtonStyle.primary if self.current_days_back_equiv == 14 else discord.ButtonStyle.secondary,
                 label="14 Days",
                 custom_id="server_days_14",
-                row=3
+                row=2
             )
             days_14_button.callback = self.days_14_callback
             self.add_item(days_14_button)
@@ -2213,7 +2213,7 @@ class ServerStatsView(discord.ui.View):
                 style=discord.ButtonStyle.primary if self.current_days_back_equiv == 30 else discord.ButtonStyle.secondary,
                 label="30 Days",
                 custom_id="server_days_30",
-                row=3
+                row=2
             )
             days_30_button.callback = self.days_30_callback
             self.add_item(days_30_button)
@@ -2227,7 +2227,7 @@ class ServerStatsView(discord.ui.View):
                 style=discord.ButtonStyle.success,
                 label=custom_label,
                 custom_id="server_custom_days",
-                row=3
+                row=2
             )
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)

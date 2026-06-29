@@ -1003,7 +1003,7 @@ class RoleInputButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
             style=discord.ButtonStyle.primary,
-            label="Input Role ID",
+            label="Filter By Role",
             custom_id="role_input_button"
         )
 
@@ -1075,7 +1075,7 @@ class RoleInputModal(discord.ui.Modal, title="Enter Role ID"):
 class EmojiPrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⬅️", custom_id="emoji_leaderboard_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="emoji_leaderboard_prev")
 
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
@@ -1094,7 +1094,7 @@ class EmojiPrevButton(discord.ui.Button):
 class EmojiNextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="➡️", custom_id="emoji_leaderboard_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="emoji_leaderboard_next")
 
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
@@ -1152,7 +1152,7 @@ class EmojiPageIndicator(discord.ui.Button):
 class RefreshButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="🔄", custom_id="emoji_stats_refresh")
+                         emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743), custom_id="emoji_stats_refresh")
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -1162,7 +1162,7 @@ class RefreshButton(discord.ui.Button):
 class TimeSettingsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⏰ Time Settings", custom_id="emoji_stats_time_settings")
+                         emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867), custom_id="emoji_stats_time_settings")
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()

@@ -107,7 +107,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Interval'):
 
 # ROLE INPUT MODAL
 
-class RoleInputModal(discord.ui.Modal, title='Input Role ID'):
+class RoleInputModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
@@ -311,7 +311,7 @@ class ChartView(discord.ui.View):
         if self.chart_type != "user":
             role_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary,
-                label="Input Role Id",
+                label="Filter By Role",
                 custom_id="chart_role_input",
                 row=1
             )
@@ -320,18 +320,18 @@ class ChartView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="chart_refresh",
-            row=2
+            row=1
         )
         refresh_button.callback = self.refresh_callback
         self.add_item(refresh_button)
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="chart_time_settings",
-            row=2
+            row=1
         )
         time_settings_button.callback = self.time_settings_callback
         self.add_item(time_settings_button)

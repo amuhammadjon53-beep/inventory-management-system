@@ -821,7 +821,7 @@ class InviteLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
             await interaction.followup.send("❌ An error occurred while updating the leaderboard.", ephemeral=True)
 
 
-class InviteRoleInputModal(discord.ui.Modal, title='Input Role ID'):
+class InviteRoleInputModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, cog_instance, current_view):
         super().__init__(timeout=300)
         self.cog = cog_instance
@@ -928,7 +928,7 @@ class InviteTypeFilterSelect(discord.ui.Select):
 class InvitePrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⬅️", custom_id="invite_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="invite_prev")
 
     async def callback(self, interaction: discord.Interaction):
 
@@ -948,7 +948,7 @@ class InvitePrevButton(discord.ui.Button):
 class InviteNextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="➡️", custom_id="invite_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="invite_next")
 
     async def callback(self, interaction: discord.Interaction):
 
@@ -986,7 +986,7 @@ class InvitePageIndicator(discord.ui.Button):
 
 class InviteRoleInputButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(style=discord.ButtonStyle.primary, label="Input Role Id",
+        super().__init__(style=discord.ButtonStyle.primary, label="Filter By Role",
                          custom_id="invite_role_input", row=3)
 
     async def callback(self, interaction: discord.Interaction):
@@ -1029,7 +1029,7 @@ class InviteLeaderboardView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="invite_refresh",
             row=3
         )
@@ -1037,7 +1037,7 @@ class InviteLeaderboardView(discord.ui.View):
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="invite_time_settings",
             row=3
         )

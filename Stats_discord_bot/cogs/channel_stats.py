@@ -891,7 +891,7 @@ class StatsTypeSelectMenu(discord.ui.Select):
 
 # ROLE ID MODAL
 
-class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
+class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, cog_instance, original_message_id, guild, channel, stats_type, view):
         super().__init__(timeout=300)
         self.cog = cog_instance
@@ -1092,17 +1092,17 @@ class ChannelStatsView(discord.ui.View):
         self.add_item(stats_type_select)
 
         role_button = discord.ui.Button(style=discord.ButtonStyle.primary,
-                                        label="Input Role ID" if not self.selected_role_id else f"Role: {self.selected_role_id[:10]}...", custom_id="role_id_button", row=1)
+                                        label="Filter By Role" if not self.selected_role_id else f"Role: {self.selected_role_id[:10]}...", custom_id="role_id_button", row=1)
         role_button.callback = self.role_id_callback
         self.add_item(role_button)
 
         refresh_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="🔄 Refresh", custom_id="channel_refresh", row=1)
+            style=discord.ButtonStyle.secondary, emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743), custom_id="channel_refresh", row=1)
         refresh_button.callback = self.refresh_callback
         self.add_item(refresh_button)
 
         time_settings_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="⏰ Time Settings", custom_id="channel_time_settings", row=1)
+            style=discord.ButtonStyle.secondary, emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867), custom_id="channel_time_settings", row=1)
         time_settings_button.callback = self.time_settings_callback
         self.add_item(time_settings_button)
 

@@ -830,7 +830,7 @@ class StatsTypeSelectMenu(discord.ui.Select):
 
 # ROLE ID MODAL
 
-class CategoryRoleIDModal(discord.ui.Modal, title='Input Role ID'):
+class CategoryRoleIDModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, cog_instance, original_message_id, guild, category, stats_type, view):
         super().__init__(timeout=300)
         self.cog = cog_instance
@@ -1075,19 +1075,19 @@ class CategoryStatsView(discord.ui.View):
 
         input_role_button = discord.ui.Button(
             style=discord.ButtonStyle.primary,
-            label="Input Role ID",
+            label="Filter By Role",
             custom_id=f"category_input_role",
             row=1
         )
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id=f"category_stats_refresh",
             row=1
         )
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id=f"category_stats_time_settings",
             row=1
         )

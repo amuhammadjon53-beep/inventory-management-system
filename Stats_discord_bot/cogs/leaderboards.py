@@ -1560,7 +1560,7 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
             await interaction.followup.send("❌ An error occurred while updating the leaderboard.", ephemeral=True)
 
 
-class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
+class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, cog_instance, original_message_id, guild):
         super().__init__(timeout=300)
         self.cog = cog_instance
@@ -1628,7 +1628,7 @@ class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
 class RoleIdButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
-                         label="Input Role ID", custom_id="input_role_id")
+                         label="Filter By Role", custom_id="input_role_id")
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
@@ -1640,7 +1640,7 @@ class RoleIdButton(discord.ui.Button):
 class PrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⬅️", custom_id="leaderboard_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="leaderboard_prev")
 
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
@@ -1659,7 +1659,7 @@ class PrevButton(discord.ui.Button):
 class NextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="➡️", custom_id="leaderboard_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="leaderboard_next")
 
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
@@ -1883,17 +1883,17 @@ class ChannelLeaderboardView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="channel_refresh",
-            row=3
+            row=4
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="channel_time_settings",
-            row=3
+            row=4
         )
         time_settings_button.callback = self.time_settings_callback
 
@@ -1901,7 +1901,7 @@ class ChannelLeaderboardView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
-            row = 4
+            row = 5
             all_time_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
@@ -2175,17 +2175,17 @@ class ServerLeaderboardView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="server_refresh",
-            row=3
+            row=4
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="server_time_settings",
-            row=3
+            row=4
         )
         time_settings_button.callback = self.time_settings_callback
 
@@ -2193,7 +2193,7 @@ class ServerLeaderboardView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
-            row = 4
+            row = 5
             all_time_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
@@ -2468,17 +2468,17 @@ class CategoryLeaderboardView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="category_refresh",
-            row=3
+            row=4
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="category_time_settings",
-            row=3
+            row=4
         )
         time_settings_button.callback = self.time_settings_callback
 
@@ -2486,7 +2486,7 @@ class CategoryLeaderboardView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
-            row = 4
+            row = 5
             all_time_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
@@ -2747,17 +2747,17 @@ class RoleLeaderboardView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="role_refresh",
-            row=3
+            row=4
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="role_time_settings",
-            row=3
+            row=4
         )
         time_settings_button.callback = self.time_settings_callback
 
@@ -2765,7 +2765,7 @@ class RoleLeaderboardView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
-            row = 4
+            row = 5
             all_time_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",

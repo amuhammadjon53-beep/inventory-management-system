@@ -119,7 +119,7 @@ class ShipLeaderboardView(discord.ui.View):
 
         role_button = discord.ui.Button(
             style=discord.ButtonStyle.primary,
-            label="Input Role Id",
+            label="Filter By Role",
             custom_id="ship_input_role",
             row=2
         )
@@ -128,7 +128,7 @@ class ShipLeaderboardView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="ship_refresh",
             row=2
         )
@@ -136,7 +136,7 @@ class ShipLeaderboardView(discord.ui.View):
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="ship_time_settings",
             row=2
         )
@@ -423,7 +423,7 @@ class ShipRoleInputModal(discord.ui.Modal, title='Filter by Role'):
 class PrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⬅️", custom_id="ship_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="ship_prev")
 
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
@@ -442,7 +442,7 @@ class PrevButton(discord.ui.Button):
 class NextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="➡️", custom_id="ship_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="ship_next")
 
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:

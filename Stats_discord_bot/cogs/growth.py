@@ -386,7 +386,7 @@ class GrowthSelectMenu(discord.ui.Select):
                     default=(current_selection == "joins_leaves")
                 ),
                 discord.SelectOption(
-                    label="Forecast & Analytics",
+                    label="Projected Growth",
                     value="forecast",
                     description="Advanced forecasting with trend analysis",
                     emoji="🔮",
@@ -460,7 +460,7 @@ class GrowthView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="growth_refresh",
             row=1
         )
@@ -469,7 +469,7 @@ class GrowthView(discord.ui.View):
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="growth_time_settings",
             row=1
         )
