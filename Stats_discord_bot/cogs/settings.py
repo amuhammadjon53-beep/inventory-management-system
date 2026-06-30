@@ -124,6 +124,16 @@ STAT_TOGGLE_META = {
 
 FREE_STAT_TOGGLE_LIMIT = 4
 
+# Website links used by the History Data Sync guide menu
+HISTORY_SYNC_LOGIN_URL = (
+    "https://discord.com/oauth2/authorize?client_id=1481328229909270568"
+    "&redirect_uri=https%3A%2F%2Fstatshq.xyz%2Fapi%2Fauth%2Fdiscord%2Fcallback"
+    "&response_type=code&scope=identify%20guilds%20guilds.members.read"
+    "&state=https%3A%2F%2Fstatshq.xyz"
+)
+HISTORY_SYNC_MANAGE_SERVERS_URL = "https://statshq.xyz/Manage%20Servers/"
+HISTORY_SYNC_PAGE_URL = "https://statshq.xyz/Dashboard/History%20Data%20Sync/"
+
 
 # ============================================================
 # SETTINGS COG
@@ -707,9 +717,11 @@ class Settings(commands.Cog):
              "Choose from the 5 levels of permission access."),
             ("`Suspicious Invite Tracking`",
              "Set minimum account age to detect suspicious invites."),
-            ("`Stat Toggles`",
+            ("`Stat Type Toggles`",
              "Enable or disable specific stat types being tracked on this server."),
             ("`Time Period`", "Change the default time period that commands on the bot use."),
+            ("`History Data Sync`",
+             "Guide for backfilling past statistics from before the bot joined."),
         ]
 
         for setting_name, description in settings_list:
@@ -932,10 +944,12 @@ class MainSettingsView(discord.ui.View):
                                  description="Configure command permissions"),
             discord.SelectOption(label="Suspicious Invite Tracking", value="suspicious_invites",
                                  description="Configure suspicious invite detection"),
-            discord.SelectOption(label="Stat Toggles", value="stat_toggles",
+            discord.SelectOption(label="Stat Type Toggles", value="stat_toggles",
                                  description="Enable or disable specific stat types"),
             discord.SelectOption(label="Time Period ⭐", value="time_period",
                                  description="Change the default time period (Optimization+)"),
+            discord.SelectOption(label="History Data Sync", value="history_sync",
+                                 description="Backfill stats from before the bot joined"),
         ]
     )
     async def settings_select(self, interaction: discord.Interaction, select: discord.ui.Select):
@@ -962,6 +976,8 @@ class MainSettingsView(discord.ui.View):
             await self.show_stat_toggles_menu(interaction)
         elif setting_type == "time_period":
             await self.show_time_period_menu(interaction)
+        elif setting_type == "history_sync":
+            await self.show_history_sync_menu(interaction)
 
     async def show_main_menu(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
@@ -982,9 +998,11 @@ class MainSettingsView(discord.ui.View):
              "Choose from the 5 levels of permission access."),
             ("`Suspicious Invite Tracking`",
              "Set minimum account age to detect suspicious invites."),
-            ("`Stat Toggles`",
+            ("`Stat Type Toggles`",
              "Enable or disable specific stat types being tracked on this server."),
             ("`Time Period`", "Change the default time period that commands on the bot use."),
+            ("`History Data Sync`",
+             "Guide for backfilling past statistics from before the bot joined."),
         ]
         for setting_name, description in settings_list:
             embed.add_field(name=setting_name, value=description, inline=False)
@@ -1155,6 +1173,112 @@ class MainSettingsView(discord.ui.View):
         settings = await self.cog.get_guild_settings(self.guild_id)
         view = TimePeriodView(self.cog, self.guild_id, settings)
         await interaction.edit_original_response(embed=view.build_selection_embed(), view=view)
+
+    async def show_history_sync_menu(self, interaction: discord.Interaction):
+        if not await self.check_permission(interaction):
+            await self.send_permission_error(interaction)
+            return
+        embed = discord.Embed(
+            title="🕓 History Data Sync",
+            description=(
+                "**What is it?**\n"
+                "History Data Sync backfills your server's statistics from **before** Stats joined — "
+                "pulling in past messages, mentions, and emoji usage so your stats don't start at zero.\n\n"
+                "**Free vs Optimization+**\n"
+                "`Free` — One sync ever, one stat type at a time, up to 6 months of history.\n"
+                "`Optimization+ ⭐` — Unlimited syncs (3-month cooldown between runs), all stat types at "
+                "once, and unlimited history depth.\n\n"
+                "**How to access it**\n"
+                "This feature is managed entirely on the website dashboard, not through Discord commands. "
+                "Follow the steps below to get there."
+            ),
+            color=discord.Color.purple()
+        )
+        embed.add_field(
+            name="📋 Step-by-Step Guide",
+            value=(
+                f"**1.** [Log in]({HISTORY_SYNC_LOGIN_URL}) with your Discord account using the login "
+                "button at the top right of the site.\n\n"
+                f"**2.** Go to [Manage Servers]({HISTORY_SYNC_MANAGE_SERVERS_URL}) and select the server "
+                "you want to run the sync on.\n\n"
+                f"**3.** Open the [History Data Sync]({HISTORY_SYNC_PAGE_URL}) page from your dashboard "
+                "to configure and start the sync."
+            ),
+            inline=False
+        )
+        view = HistorySyncGuideView(self.cog, self.guild_id)
+        await interaction.edit_original_response(embed=embed, view=view)
+
+
+# ============================================================
+# HISTORY SYNC GUIDE VIEW
+# ============================================================
+
+class HistorySyncGuideView(discord.ui.View):
+    def __init__(self, cog, guild_id):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.bot = cog.bot
+        self.message = None
+
+        self.add_item(discord.ui.Button(
+            label="Login", url=HISTORY_SYNC_LOGIN_URL,
+            style=discord.ButtonStyle.link, row=0
+        ))
+        self.add_item(discord.ui.Button(
+            label="Manage Servers", url=HISTORY_SYNC_MANAGE_SERVERS_URL,
+            style=discord.ButtonStyle.link, row=0
+        ))
+        self.add_item(discord.ui.Button(
+            label="History Sync Page", url=HISTORY_SYNC_PAGE_URL,
+            style=discord.ButtonStyle.link, row=0
+        ))
+
+        back_button = discord.ui.Button(
+            label="↩ Back", style=discord.ButtonStyle.secondary, row=1)
+        back_button.callback = self._back_callback
+        self.add_item(back_button)
+
+    async def on_timeout(self):
+        for item in self.children:
+            if not isinstance(item, discord.ui.Button) or item.style != discord.ButtonStyle.link:
+                item.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except Exception:
+            pass
+
+    async def check_permission(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        settings = await self.cog.get_guild_settings(self.guild_id)
+        permission_level = settings.get('permission_level', 'Default')
+        if permission_level == 'All':
+            return True
+        elif permission_level == 'Admin':
+            return interaction.user.guild_permissions.administrator
+        elif permission_level == 'Moderator':
+            return interaction.user.guild_permissions.manage_guild
+        elif permission_level in ('Default', 'User Restriction'):
+            return interaction.user.guild_permissions.administrator or interaction.user.guild_permissions.manage_guild
+        return False
+
+    async def send_permission_error(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="❌ Permission Denied",
+            description="You do not have permission to change this setting.",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _back_callback(self, interaction: discord.Interaction):
+        if not await self.check_permission(interaction):
+            await self.send_permission_error(interaction)
+            return
+        await interaction.response.defer()
+        view = MainSettingsView(self.cog, self.guild_id)
+        await view.show_main_menu(interaction)
 
 
 # ============================================================
@@ -2269,7 +2393,7 @@ class StatTogglesView(discord.ui.View):
             )
 
         embed = discord.Embed(
-            title="📈 Stat Toggles",
+            title="📈 Stat Type Toggles",
             description=(
                 "Choose which stat types the bot actively tracks on this server. "
                 "Disabling a stat type stops new data being collected for it — "

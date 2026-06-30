@@ -22271,7 +22271,7 @@ class DatabaseStats(commands.Cog):
                         # Set Up section
                         embed.add_field(
                             name="🔧 **Set Up**",
-                            value="Stats requires ZERO setup. All tracking immediately starts upon the bot's join as long as it has the correct permissions, you can view the required permissions [here](https://statshq.xyz/docs/?page=setup). Stats does NOT have access to ANY data from before its join date.",
+                            value="Stats requires almost ZERO setup. By default: tracking for messages, voice activity and emojis is automatically set up and should work as long as it has the right [permissions](https://statshq.xyz/docs/?page=bot-setup&section=permissions).",
                             inline=False
                         )
 
@@ -22286,6 +22286,20 @@ class DatabaseStats(commands.Cog):
                         embed.add_field(
                             name="📊 **Dashboard**",
                             value="Use our simple yet powerful dashboard to view all your statistics in one place at the same time [here](https://statshq.xyz/Dashboard/Messages/)",
+                            inline=False
+                        )
+
+                        # Advanced Tracking section
+                        embed.add_field(
+                            name="⚙️ **Advanced Tracking**",
+                            value="Need to track other statistics in your server like status activity, invites, mentions, or role/member growth? Follow the advanced tracking setup guide [here](https://statshq.xyz/docs/?page=bot-setup&section=advanced-tracking).",
+                            inline=False
+                        )
+
+                        # Historical Data section
+                        embed.add_field(
+                            name="🕓 **Historical Data**",
+                            value="Need past data before the bot was added? Use the free history data sync feature and get old messages, emojis or mention statistics following this setup guide [here](https://statshq.xyz/Dashboard/History%20Data%20Sync/).",
                             inline=False
                         )
 

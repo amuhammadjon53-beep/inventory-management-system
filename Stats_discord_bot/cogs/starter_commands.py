@@ -13,20 +13,27 @@ class HelpView(View):
     def __init__(self):
         super().__init__(timeout=60)
 
-        # Row 1 (default row=0)
+        # Row 1
+        invite_button = Button(
+            label="Invite Bot",
+            url="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863601&integration_type=0&scope=bot+applications.commands",
+            style=discord.ButtonStyle.link
+        )
+        self.add_item(invite_button)
+
         setup_button = Button(
-            label="Setup Guide",
-            url="https://statshq.xyz/docs/?page=setup",
+            label="Bot Setup Guide",
+            url="https://statshq.xyz/docs/?page=bot-setup",
             style=discord.ButtonStyle.link
         )
         self.add_item(setup_button)
 
-        commands_button = Button(
-            label="Commands",
-            url="https://statshq.xyz/Commands/",
+        dashboard_setup_button = Button(
+            label="Dashboard Setup Guide",
+            url="https://statshq.xyz/docs/?page=dashboard-setup",
             style=discord.ButtonStyle.link
         )
-        self.add_item(commands_button)
+        self.add_item(dashboard_setup_button)
 
         docs_button = Button(
             label="Documentation",
@@ -35,29 +42,55 @@ class HelpView(View):
         )
         self.add_item(docs_button)
 
+        # Row 2 (explicitly set row=1)
         dashboard_button = Button(
             label="Dashboard",
             url="https://statshq.xyz/Dashboard/Messages/",
-            style=discord.ButtonStyle.link
+            style=discord.ButtonStyle.link,
+            row=1
         )
         self.add_item(dashboard_button)
 
-        # Row 2 (explicitly set row=1)
+        commands_button = Button(
+            label="Commands",
+            url="https://statshq.xyz/Commands/",
+            style=discord.ButtonStyle.link,
+            row=1
+        )
+        self.add_item(commands_button)
+
+        premium_button = Button(
+            label="Premium",
+            url="https://statshq.xyz/Premium/",
+            style=discord.ButtonStyle.link,
+            row=1
+        )
+        self.add_item(premium_button)
+
+        faq_button = Button(
+            label="FAQ",
+            url="https://statshq.xyz/docs/?page=faq",
+            style=discord.ButtonStyle.link,
+            row=1
+        )
+        self.add_item(faq_button)
+
+        # Row 3 (explicitly set row=2)
+        vote_button = Button(
+            label="Vote for Bot",
+            url="https://top.gg/bot/1481328229909270568/vote",
+            style=discord.ButtonStyle.link,
+            row=2
+        )
+        self.add_item(vote_button)
+
         support_button = Button(
             label="Support",
             url="https://discord.gg/hreJvck8cK",
             style=discord.ButtonStyle.link,
-            row=1
+            row=2
         )
         self.add_item(support_button)
-
-        invite_button = Button(
-            label="Invite Bot",
-            url="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863601&integration_type=0&scope=bot+applications.commands",
-            style=discord.ButtonStyle.link,
-            row=1
-        )
-        self.add_item(invite_button)
 
 
 class BotLinks(commands.Cog):
@@ -96,6 +129,18 @@ class BotLinks(commands.Cog):
             )
 
             embed.add_field(
+                name="⚙️ Bot Setup Guide",
+                value="[Click here for the setup guide!](https://statshq.xyz/docs/?page=bot-setup)",
+                inline=False
+            )
+
+            embed.add_field(
+                name="🛠️ Dashboard Setup Guide",
+                value="[Click here for the dashboard setup guide!](https://statshq.xyz/docs/?page=dashboard-setup)",
+                inline=False
+            )
+
+            embed.add_field(
                 name="📚 Documentation",
                 value="[Click here to read the documentation!](https://statshq.xyz/docs/)",
                 inline=False
@@ -108,20 +153,32 @@ class BotLinks(commands.Cog):
             )
 
             embed.add_field(
-                name="🆘 Support Server",
-                value="[Click here to join our support server!](https://discord.gg/KXSk4Q84)",
+                name="💎 Premium",
+                value="[Click here to view Premium!](https://statshq.xyz/Premium/)",
                 inline=False
             )
 
             embed.add_field(
-                name="⚙️ Setup Guide",
-                value="[Click here for the setup guide!](https://statshq.xyz/docs/?page=setup)",
+                name="❓ FAQ",
+                value="[Click here to read the FAQ!](https://statshq.xyz/docs/?page=faq)",
                 inline=False
             )
 
             embed.add_field(
                 name="🗳️ Vote for Bot",
                 value="[Click here to vote for the bot on top.gg!](https://top.gg/bot/1481328229909270568/vote)",
+                inline=False
+            )
+
+            embed.add_field(
+                name="🆘 Support Server",
+                value="[Click here to join our support server!](https://discord.gg/hreJvck8cK)",
+                inline=False
+            )
+
+            embed.add_field(
+                name="📧 Email",
+                value="[statshqofficial@gmail.com](mailto:statshqofficial@gmail.com)",
                 inline=False
             )
 
@@ -144,7 +201,7 @@ class BotLinks(commands.Cog):
 
             embed.add_field(
                 name="Support Server",
-                value="[Click here to join our support server!](https://discord.gg/KXSk4Q84)",
+                value="[Click here to join our support server!](https://discord.gg/hreJvck8cK)",
                 inline=False
             )
 
@@ -179,12 +236,22 @@ class BotLinks(commands.Cog):
             )
 
         elif option == "setup":
-            embed.title = "Setup Guide"
+            embed.title = "Bot Setup Guide"
             embed.description = "Learn how to set up the bot on your server!"
 
             embed.add_field(
-                name="Setup Guide",
-                value="[Click here for the setup guide!](https://statshq.xyz/docs/?page=setup)",
+                name="Bot Setup Guide",
+                value="[Click here for the setup guide!](https://statshq.xyz/docs/?page=bot-setup)",
+                inline=False
+            )
+
+        elif option == "dashboard-setup":
+            embed.title = "Dashboard Setup Guide"
+            embed.description = "Learn how to log in and set up the dashboard!"
+
+            embed.add_field(
+                name="Dashboard Setup Guide",
+                value="[Click here for the dashboard setup guide!](https://statshq.xyz/docs/?page=dashboard-setup)",
                 inline=False
             )
 
@@ -195,6 +262,36 @@ class BotLinks(commands.Cog):
             embed.add_field(
                 name="Vote Link",
                 value="[Click here to vote for the bot!](https://top.gg/bot/1481328229909270568/vote)",
+                inline=False
+            )
+
+        elif option == "premium":
+            embed.title = "Premium"
+            embed.description = "Unlock premium features for the bot!"
+
+            embed.add_field(
+                name="Premium",
+                value="[Click here to view Premium!](https://statshq.xyz/Premium/)",
+                inline=False
+            )
+
+        elif option == "faq":
+            embed.title = "FAQ"
+            embed.description = "Frequently asked questions about the bot!"
+
+            embed.add_field(
+                name="FAQ",
+                value="[Click here to read the FAQ!](https://statshq.xyz/docs/?page=faq)",
+                inline=False
+            )
+
+        elif option == "email":
+            embed.title = "Email"
+            embed.description = "Get in touch with us via email!"
+
+            embed.add_field(
+                name="Email",
+                value="[statshqofficial@gmail.com](mailto:statshqofficial@gmail.com)",
                 inline=False
             )
 
@@ -370,10 +467,30 @@ class BotLinks(commands.Cog):
         """Show the setup guide link"""
         await self._handle_links_command(ctx, option="setup", is_interaction=False)
 
+    @commands.command(name="dashboardsetup", aliases=["dashboard setup", "dash setup"])
+    async def dashboard_setup_shortcut(self, ctx: commands.Context):
+        """Show the dashboard setup guide link"""
+        await self._handle_links_command(ctx, option="dashboard-setup", is_interaction=False)
+
     @commands.command(name="vote", aliases=["voting", "topgg"])
     async def vote_shortcut(self, ctx: commands.Context):
         """Show the vote link for the bot on top.gg"""
         await self._handle_links_command(ctx, option="vote", is_interaction=False)
+
+    @commands.command(name="premium", aliases=["prem"])
+    async def premium_shortcut(self, ctx: commands.Context):
+        """Show the premium link"""
+        await self._handle_links_command(ctx, option="premium", is_interaction=False)
+
+    @commands.command(name="faq", aliases=["questions"])
+    async def faq_shortcut(self, ctx: commands.Context):
+        """Show the FAQ link"""
+        await self._handle_links_command(ctx, option="faq", is_interaction=False)
+
+    @commands.command(name="email", aliases=["contact", "mail"])
+    async def email_shortcut(self, ctx: commands.Context):
+        """Show the contact email"""
+        await self._handle_links_command(ctx, option="email", is_interaction=False)
 
     # =========================================================
     # HELP COMMAND
@@ -524,24 +641,30 @@ class BotLinks(commands.Cog):
 
         Parameters:
         - `invite` or `bot`: Show only the bot invite link
-        - `support` or `server`: Show only the support server link
         - `website` or `site`: Show only the website link
+        - `setup` or `guide`: Show only the setup guide link
+        - `dashboardsetup` or `dashboard setup`: Show only the dashboard setup guide link
         - `docs` or `documentation`: Show only the documentation link
         - `dashboard` or `dash`: Show only the dashboard link
-        - `setup` or `guide`: Show only the setup guide link
-        - `vote` or `topgg`: Show only the vote link
+        - `premium` or `prem`: Show only the premium link
+        - `faq` or `question`: Show only the FAQ link
+        - `support` or `server`: Show only the support server link
+        - `email` or `contact`: Show only the email
         """
         # Map parameter strings to options
         if option:
             option_lower = option.lower()
-            if "support" in option_lower or "server" in option_lower:
-                await self._handle_links_command(ctx, option="support", is_interaction=False)
-                return
-            elif "invite" in option_lower or "bot" in option_lower:
+            if "invite" in option_lower or "bot" in option_lower:
                 await self._handle_links_command(ctx, option="invite", is_interaction=False)
                 return
             elif "website" in option_lower or "site" in option_lower:
                 await self._handle_links_command(ctx, option="website", is_interaction=False)
+                return
+            elif "dashboardsetup" in option_lower or "dashboard setup" in option_lower or "dash setup" in option_lower:
+                await self._handle_links_command(ctx, option="dashboard-setup", is_interaction=False)
+                return
+            elif "setup" in option_lower or "guide" in option_lower:
+                await self._handle_links_command(ctx, option="setup", is_interaction=False)
                 return
             elif "docs" in option_lower or "documentation" in option_lower:
                 await self._handle_links_command(ctx, option="docs", is_interaction=False)
@@ -549,8 +672,17 @@ class BotLinks(commands.Cog):
             elif "dashboard" in option_lower or "dash" in option_lower:
                 await self._handle_links_command(ctx, option="dashboard", is_interaction=False)
                 return
-            elif "setup" in option_lower or "guide" in option_lower:
-                await self._handle_links_command(ctx, option="setup", is_interaction=False)
+            elif "premium" in option_lower or "prem" in option_lower:
+                await self._handle_links_command(ctx, option="premium", is_interaction=False)
+                return
+            elif "faq" in option_lower or "question" in option_lower:
+                await self._handle_links_command(ctx, option="faq", is_interaction=False)
+                return
+            elif "support" in option_lower or "server" in option_lower:
+                await self._handle_links_command(ctx, option="support", is_interaction=False)
+                return
+            elif "email" in option_lower or "contact" in option_lower or "mail" in option_lower:
+                await self._handle_links_command(ctx, option="email", is_interaction=False)
                 return
             elif "vote" in option_lower or "topgg" in option_lower:
                 await self._handle_links_command(ctx, option="vote", is_interaction=False)
@@ -595,12 +727,17 @@ class BotLinks(commands.Cog):
     )
     @app_commands.choices(option=[
         app_commands.Choice(name="Bot Invite Link", value="invite"),
-        app_commands.Choice(name="Support Server", value="support"),
         app_commands.Choice(name="Website", value="website"),
+        app_commands.Choice(name="Bot Setup Guide", value="setup"),
+        app_commands.Choice(name="Dashboard Setup Guide",
+                            value="dashboard-setup"),
         app_commands.Choice(name="Documentation", value="docs"),
         app_commands.Choice(name="Dashboard", value="dashboard"),
-        app_commands.Choice(name="Setup Guide", value="setup"),
-        app_commands.Choice(name="Vote for Bot", value="vote")
+        app_commands.Choice(name="Premium", value="premium"),
+        app_commands.Choice(name="FAQ", value="faq"),
+        app_commands.Choice(name="Vote for Bot", value="vote"),
+        app_commands.Choice(name="Support Server", value="support"),
+        app_commands.Choice(name="Email", value="email")
     ])
     async def links_command(
         self,
