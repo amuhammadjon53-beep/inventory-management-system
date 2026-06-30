@@ -47,6 +47,13 @@ const NavBar = () => {
     return decodeURIComponent(rawPath);
   };
 
+  const DOCS_PAGES = [
+    "introduction", "bot-setup", "dashboard-setup", "faq",
+    "invite-tracking", "distribution", "ships", "history-sync",
+    "modules", "managing-subscriptions",
+    "privacy", "terms", "data-retention", "cookies", "refund"
+  ];
+
   const checkPrivilegedStatus = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/auth/status`, {
@@ -153,16 +160,11 @@ const NavBar = () => {
         setCurrentPage("Dashboard");
         fetchSelectedServer();
       } else if (path.includes("/docs/") || path === '/docs') {
-        if (pageParam === 'setup') setCurrentPage("setup");
-        else if (pageParam === 'faq') setCurrentPage("faq");
-        else if (pageParam === 'privacy') setCurrentPage("privacy");
-        else if (pageParam === 'terms') setCurrentPage("terms");
-        else if (pageParam === 'cookies') setCurrentPage("cookies");
-        else if (pageParam === 'refund') setCurrentPage("refund");
-        else if (pageParam === 'invite-tracking') setCurrentPage("invite-tracking");
-        else if (pageParam === 'distribution') setCurrentPage("distribution");
-        else if (pageParam === 'ships') setCurrentPage("ships");
-        else setCurrentPage("introduction");
+        if (pageParam && DOCS_PAGES.includes(pageParam)) {
+          setCurrentPage(pageParam);
+        } else {
+          setCurrentPage("introduction");
+        }
         setServerInfo(null);
       } else if (path.includes("/Commands/") || path === '/Commands') {
         setCurrentPage("commands");
@@ -214,7 +216,7 @@ const NavBar = () => {
     if (isMobileMenuOpen) {
       if (currentPage === "Dashboard") {
         setMenuLevel("Dashboard");
-      } else if (["introduction", "setup", "faq", "privacy", "terms", "cookies", "refund", "invite-tracking", "distribution", "ships"].includes(currentPage)) {
+      } else if (DOCS_PAGES.includes(currentPage)) {
         setMenuLevel("docs");
       } else {
         setMenuLevel("main");
@@ -371,8 +373,11 @@ const NavBar = () => {
         <a href="/docs/" className={`mobile-nav-link ${currentPage === 'introduction' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Introduction
         </a>
-        <a href="/docs/?page=setup" className={`mobile-nav-link ${currentPage === 'setup' ? 'active' : ''}`} onClick={closeMobileMenu}>
-          Set Up
+        <a href="/docs/?page=bot-setup" className={`mobile-nav-link ${currentPage === 'bot-setup' ? 'active' : ''}`} onClick={closeMobileMenu}>
+          Bot Setup
+        </a>
+        <a href="/docs/?page=dashboard-setup" className={`mobile-nav-link ${currentPage === 'dashboard-setup' ? 'active' : ''}`} onClick={closeMobileMenu}>
+          Dashboard Set Up
         </a>
         <a href="/docs/?page=faq" className={`mobile-nav-link ${currentPage === 'faq' ? 'active' : ''}`} onClick={closeMobileMenu}>
           FAQ
@@ -389,6 +394,18 @@ const NavBar = () => {
         <a href="/docs/?page=ships" className={`mobile-nav-link ${currentPage === 'ships' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Ships
         </a>
+        <a href="/docs/?page=history-sync" className={`mobile-nav-link ${currentPage === 'history-sync' ? 'active' : ''}`} onClick={closeMobileMenu}>
+          History Data Sync
+        </a>
+      </div>
+      <div className="submenu-category">
+        <h3 className="category-title">PREMIUM</h3>
+        <a href="/docs/?page=modules" className={`mobile-nav-link ${currentPage === 'modules' ? 'active' : ''}`} onClick={closeMobileMenu}>
+          Modules
+        </a>
+        <a href="/docs/?page=managing-subscriptions" className={`mobile-nav-link ${currentPage === 'managing-subscriptions' ? 'active' : ''}`} onClick={closeMobileMenu}>
+          Managing Subscriptions
+        </a>
       </div>
       <div className="submenu-category">
         <h3 className="category-title">LEGAL</h3>
@@ -397,6 +414,9 @@ const NavBar = () => {
         </a>
         <a href="/docs/?page=terms" className={`mobile-nav-link ${currentPage === 'terms' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Terms of Service
+        </a>
+        <a href="/docs/?page=data-retention" className={`mobile-nav-link ${currentPage === 'data-retention' ? 'active' : ''}`} onClick={closeMobileMenu}>
+          6 Month Data Retention Policy
         </a>
         <a href="/docs/?page=cookies" className={`mobile-nav-link ${currentPage === 'cookies' ? 'active' : ''}`} onClick={closeMobileMenu}>
           Cookie Policy
@@ -426,7 +446,7 @@ const NavBar = () => {
         <span className="mobile-nav-icon"><Star size={18} color={ACCENT} /></span>
         Premium
       </a>
-      <a href="#" className={`mobile-nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'refund', 'invite-tracking', 'distribution', 'ships'].includes(currentPage) ? 'active' : ''}`} onClick={handleDocsClick}>
+      <a href="#" className={`mobile-nav-link ${DOCS_PAGES.includes(currentPage) ? 'active' : ''}`} onClick={handleDocsClick}>
         <span className="mobile-nav-icon"><BookOpenText size={18} color={ACCENT} /></span>
         Docs
       </a>
@@ -464,7 +484,7 @@ const NavBar = () => {
               <span className="nav-icon"><Star size={16} color={ACCENT} /></span>
               <span className="nav-label">Premium</span>
             </a>
-            <a href="/docs/" className={`nav-link ${['introduction', 'setup', 'faq', 'privacy', 'terms', 'cookies', 'refund'].includes(currentPage) ? 'active' : ''}`}>
+            <a href="/docs/" className={`nav-link ${DOCS_PAGES.includes(currentPage) ? 'active' : ''}`}>
               <span className="nav-icon"><BookOpenText size={16} color={ACCENT} /></span>
               <span className="nav-label">Docs</span>
             </a>

@@ -92,12 +92,12 @@ const Login = () => {
 
   const handleMyCart = (e) => {
     e.preventDefault();
-    window.location.href = '/My Cart/index.html';
+    window.location.href = '/My Cart/';
   };
 
   const handleMySubscriptions = (e) => {
     e.preventDefault();
-    window.location.href = '/My Subscriptions/index.html';
+    window.location.href = '/My Subscriptions/';
   };
 
   const toggleDropdown = () => {
@@ -148,10 +148,10 @@ const Login = () => {
             <a href="/Manage Servers/" className="dropdown-item" onClick={handleManageServers}>
               Manage Servers
             </a>
-            <a href="/My Cart/index.html" className="dropdown-item" onClick={handleMyCart}>
+            <a href="/My Cart/" className="dropdown-item" onClick={handleMyCart}>
               My Cart
             </a>
-            <a href="/My Subscriptions/index.html" className="dropdown-item" onClick={handleMySubscriptions}>
+            <a href="/My Subscriptions/" className="dropdown-item" onClick={handleMySubscriptions}>
               My Subscriptions
             </a>
             <button className="dropdown-item logout-item" onClick={handleLogout}>

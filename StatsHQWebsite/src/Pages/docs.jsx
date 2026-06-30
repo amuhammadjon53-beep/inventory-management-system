@@ -50,39 +50,53 @@ const DocsPage = () => {
   const navbarRef = useRef(null);
   const leftMenuRef = useRef(null);
   const rightTocRef = useRef(null);
+  const docsWrapperRef = useRef(null);
 
-  const pages = ["Introduction", "Set Up", "FAQ", "Invite Tracking", "Distribution", "Ships", "Privacy Policy", "Terms Of Service", "Cookie Policy"];
+  const pages = ["Introduction", "Bot Setup", "Dashboard Set Up", "FAQ", "Invite Tracking", "Distribution", "Ships", "History Data Sync", "Modules", "Managing Subscriptions", "Privacy Policy", "Terms Of Service", "6 Month Data Retention Policy", "Cookie Policy", "Refund Policy"];
   
   const categories = {
-    "The Basics": ["Introduction", "Set Up", "FAQ"],
-    "Features": ["Invite Tracking", "Distribution", "Ships"],
-    "Legal": ["Privacy Policy", "Terms Of Service", "Cookie Policy"]
+    "The Basics": ["Introduction", "Bot Setup", "Dashboard Set Up", "FAQ"],
+    "Features": ["Invite Tracking", "Distribution", "Ships", "History Data Sync"],
+    "Premium": ["Modules", "Managing Subscriptions"],
+    "Legal": ["Privacy Policy", "Terms Of Service", "6 Month Data Retention Policy", "Cookie Policy", "Refund Policy"]
   };
 
   // Map URL params to page names
   const paramToPage = {
     'intro': 'Introduction',
-    'setup': 'Set Up',
+    'bot-setup': 'Bot Setup',
+    'dashboard-setup': 'Dashboard Set Up',
     'faq': 'FAQ',
     'invite-tracking': 'Invite Tracking',
     'distribution': 'Distribution',
     'ships': 'Ships',
+    'history-sync': 'History Data Sync',
+    'modules': 'Modules',
+    'managing-subscriptions': 'Managing Subscriptions',
     'privacy': 'Privacy Policy',
     'terms': 'Terms Of Service',
-    'cookies': 'Cookie Policy'
+    'data-retention': '6 Month Data Retention Policy',
+    'cookies': 'Cookie Policy',
+    'refund': 'Refund Policy'
   };
 
   // Map page names to URL params
   const pageToParam = {
     'Introduction': 'intro',
-    'Set Up': 'setup',
+    'Bot Setup': 'bot-setup',
+    'Dashboard Set Up': 'dashboard-setup',
     'FAQ': 'faq',
     'Invite Tracking': 'invite-tracking',
     'Distribution': 'distribution',
     'Ships': 'ships',
+    'History Data Sync': 'history-sync',
+    'Modules': 'modules',
+    'Managing Subscriptions': 'managing-subscriptions',
     'Privacy Policy': 'privacy',
     'Terms Of Service': 'terms',
-    'Cookie Policy': 'cookies'
+    '6 Month Data Retention Policy': 'data-retention',
+    'Cookie Policy': 'cookies',
+    'Refund Policy': 'refund'
   };
 
   // Simulate loading
@@ -98,9 +112,19 @@ const DocsPage = () => {
     // Check URL for page parameter on initial load
     const searchParams = new URLSearchParams(window.location.search);
     const pageParam = searchParams.get('page');
+    const sectionParam = searchParams.get('section');
     
     if (pageParam && paramToPage[pageParam]) {
       setCurrentPage(paramToPage[pageParam]);
+    }
+
+    // If a section was specified in the URL, scroll straight to it once
+    // the page content has finished rendering, instead of starting at the top.
+    if (sectionParam) {
+      const timer = setTimeout(() => {
+        scrollToSection(sectionParam);
+      }, 1000);
+      return () => clearTimeout(timer);
     }
   }, []);
 
@@ -156,10 +180,15 @@ const DocsPage = () => {
           title: "Welcome to the Stats Docs!",
           description: "In here you will find explanation about what Stats is, what it does, how to set it up, FAQ and so much more!"
         };
-      case "Set Up":
+      case "Bot Setup":
         return {
-          title: "Set Up",
+          title: "Bot Setup",
           description: "Find out the most important info regarding the bot's set up."
+        };
+      case "Dashboard Set Up":
+        return {
+          title: "Dashboard Set Up",
+          description: "Learn how to log in, select your active server, and navigate the Stats dashboard."
         };
       case "Invite Tracking":
         return {
@@ -176,6 +205,21 @@ const DocsPage = () => {
           title: "Ships",
           description: "Discover how compatibility between users is calculated based on interaction patterns."
         };
+      case "History Data Sync":
+        return {
+          title: "History Data Sync",
+          description: "Backfill your server's statistics from before the bot joined, right from the dashboard."
+        };
+      case "Modules":
+        return {
+          title: "Modules",
+          description: "Learn how Stats's premium system is structured and what each module unlocks."
+        };
+      case "Managing Subscriptions":
+        return {
+          title: "Managing Subscriptions",
+          description: "Learn how to purchase, manage, refund, and cancel your premium subscriptions."
+        };
       case "FAQ":
         return {
           title: "FAQ",
@@ -191,10 +235,20 @@ const DocsPage = () => {
           title: "Terms Of Service",
           description: "Learn the rules that govern your use of the bot."
         };
+      case "6 Month Data Retention Policy":
+        return {
+          title: "6 Month Data Retention Policy",
+          description: "Understand how long your statistics are stored, how the deletion cycle works, and how Optimization+ changes it."
+        };
       case "Cookie Policy":
         return {
           title: "Cookie Policy",
           description: "Understand how we use cookies and similar technologies on our website to enhance your experience."
+        };
+      case "Refund Policy":
+        return {
+          title: "Refund Policy",
+          description: "Learn how refunds are handled for purchases, subscriptions, and premium modules."
         };
       default:
         return {
@@ -216,12 +270,21 @@ const DocsPage = () => {
           { id: "what-makes-different", title: "What makes Stats different?" },
           { id: "is-stats-for-me", title: "Is Stats for me?" }
         ];
-      case "Set Up":
+      case "Bot Setup":
         return [
           { id: "setup", title: "Set Up" },
           { id: "permissions", title: "Permissions" },
           { id: "prefix-slash", title: "Prefix and Slash commands" },
+          { id: "advanced-tracking", title: "Advanced Tracking" },
           { id: "other-info", title: "Other Info" }
+        ];
+      case "Dashboard Set Up":
+        return [
+          { id: "what-is-dashboard", title: "What is the Dashboard?" },
+          { id: "logging-in", title: "1. Log In" },
+          { id: "manage-servers", title: "2. Choose Your Active Server" },
+          { id: "dashboard-access", title: "3. Access the Dashboard" },
+          { id: "switching-servers", title: "Switching Between Servers" }
         ];
       case "Invite Tracking":
         return [
@@ -242,8 +305,35 @@ const DocsPage = () => {
           { id: "how-ships-calculated", title: "How are ships calculated?" },
           { id: "no-ships-leaderboard", title: "Why are there no ships in the leaderboard?" }
         ];
+      case "History Data Sync":
+        return [
+          { id: "what-is-history-sync", title: "What is History Data Sync?" },
+          { id: "how-history-sync-works", title: "How does it work?" },
+          { id: "stat-types-depth", title: "Stat Types and Time Period" },
+          { id: "cooldown", title: "Cooldowns and Limits" },
+          { id: "accessing-history-sync", title: "How do I access it?" },
+          { id: "permissions-history-sync", title: "Who can use it?" }
+        ];
+      case "Modules":
+        return [
+          { id: "what-are-modules", title: "What are modules?" },
+          { id: "available-modules", title: "Available Modules" },
+          { id: "premium-tiers", title: "Premium Tiers" },
+          { id: "billing", title: "Billing Options" },
+          { id: "multi-server-discount", title: "Multi-Server Discount" }
+        ];
+      case "Managing Subscriptions":
+        return [
+          { id: "adding-to-cart", title: "Adding a Subscription to Your Cart" },
+          { id: "checkout", title: "Checking Out" },
+          { id: "my-subscriptions", title: "Managing Subscriptions" },
+          { id: "refunds-subs", title: "Refunds" },
+          { id: "cancelling-subs", title: "Cancelling a Subscription" },
+          { id: "dashboard-subscriptions", title: "Managing Subscriptions from the Server Dashboard" }
+        ];
       case "FAQ":
         return [
+          { id: "data-decreasing", title: "Why is my data decreasing?" },
           { id: "timezone", title: "Change timezone" },
           { id: "filter-role", title: "Filter by role" },
           { id: "streaks-update", title: "Activity streaks update" }
@@ -286,6 +376,16 @@ const DocsPage = () => {
           { id: "termination", title: "10. Termination" },
           { id: "governing", title: "11. Governing Law and Contact" }
         ];
+      case "6 Month Data Retention Policy":
+        return [
+          { id: "retention-overview", title: "1. Overview" },
+          { id: "how-it-works", title: "2. How Retention Works" },
+          { id: "weekly-deletion", title: "3. The Weekly Deletion Cycle" },
+          { id: "extending-retention", title: "4. Extending Retention with Optimization+" },
+          { id: "retention-after-cancel", title: "5. What Happens If You Cancel" },
+          { id: "retention-changes", title: "6. Changes to This Policy" },
+          { id: "retention-contact", title: "7. Contact Information" }
+        ];
       case "Cookie Policy":
         return [
           { id: "cookie-introduction", title: "1. Introduction" },
@@ -301,6 +401,18 @@ const DocsPage = () => {
           { id: "your-rights-cookies", title: "11. Your Rights" },
           { id: "cookie-contact", title: "12. Contact Us" },
           { id: "cookie-consent", title: "13. Consent" }
+        ];
+      case "Refund Policy":
+        return [
+          { id: "refund-eligibility", title: "1. Refund Eligibility" },
+          { id: "refund-requests", title: "2. Refund Requests" },
+          { id: "non-refundable", title: "3. Non-Refundable Purchases" },
+          { id: "approved-refunds", title: "4. Approved Refunds" },
+          { id: "chargebacks", title: "5. Chargebacks and Payment Disputes" },
+          { id: "fraud-prevention", title: "6. Fraud Prevention" },
+          { id: "consumer-rights", title: "7. Consumer Rights" },
+          { id: "refund-changes", title: "8. Changes to This Policy" },
+          { id: "refund-contact", title: "9. Contact Information" }
         ];
       default:
         return [];
@@ -318,6 +430,7 @@ const DocsPage = () => {
     const param = pageToParam[page];
     const url = new URL(window.location);
     url.searchParams.set('page', param);
+    url.searchParams.delete('section');
     window.history.pushState({}, '', url);
     
     // Dispatch a custom event to notify NavBar of URL change
@@ -357,6 +470,12 @@ const DocsPage = () => {
       });
       
       setActiveSection(sectionId);
+
+      // Update the URL so this exact section can be linked to and shared,
+      // letting visitors land directly on it instead of the top of the page.
+      const url = new URL(window.location);
+      url.searchParams.set('section', sectionId);
+      window.history.replaceState({}, '', url);
       
       if (scrollTimeoutRef.current) {
         clearTimeout(scrollTimeoutRef.current);
@@ -401,6 +520,53 @@ const DocsPage = () => {
     };
   }, []);
 
+  // Give every heading that has an id its own hoverable/clickable anchor
+  // link to the left, so individual points on the page can be linked to
+  // and copied directly, the same way most documentation sites work.
+  useEffect(() => {
+    if (loading) return;
+    const container = docsWrapperRef.current;
+    if (!container) return;
+
+    const headings = container.querySelectorAll('h1[id], h2[id], h3[id]');
+    const cleanupFns = [];
+
+    headings.forEach((heading) => {
+      // Avoid double-inserting if this effect ever re-runs against the same DOM
+      if (heading.querySelector(':scope > .heading-anchor-link')) return;
+
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'heading-anchor-link';
+      link.setAttribute('aria-label', 'Copy link to this section');
+      link.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6.5 9.5L9.5 6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5 11.2L3.4 12.8C2.2 14 0.4 14 -0.6 12.8C-1.6 11.6 -1.6 9.8 -0.6 8.6L2.4 5.6C3.6 4.4 5.4 4.4 6.4 5.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" transform="translate(2,0)"/><path d="M9.6 10.4L11.6 8.4C13.2 6.8 13.2 4.6 11.6 3C10 1.4 7.8 1.4 6.2 3L4.6 4.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+
+      const onClick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        scrollToSection(heading.id);
+
+        const url = new URL(window.location);
+        url.searchParams.set('section', heading.id);
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url.toString()).catch(() => {});
+        }
+
+        link.classList.add('copied');
+        setTimeout(() => link.classList.remove('copied'), 1200);
+      };
+
+      link.addEventListener('click', onClick);
+      heading.insertBefore(link, heading.firstChild);
+
+      cleanupFns.push(() => link.removeEventListener('click', onClick));
+    });
+
+    return () => cleanupFns.forEach((fn) => fn());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, loading]);
+
   const renderContent = () => {
     if (loading) {
       return (
@@ -440,7 +606,7 @@ const DocsPage = () => {
 
             <h2 id="is-bot-free" className="docs-heading">Is the Bot free?</h2>
             <p className="docs-text">
-              Yes! Stats is currently <strong>completely free</strong> with premium planned for the future. <a href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863601&integration_type=0&scope=applications.commands+bot" className="docs-link" target="_blank" rel="noopener noreferrer">Invite Stats now</a> and enjoy all its features completely free before premium is released!
+              Yes! Stats is currently <strong>completely free to use</strong> with only a few specific features requiring a <a href="https://statshq.xyz/Premium" className="docs-link" target="_blank" rel="noopener noreferrer">premium</a> subscription. 
             </p>
 
             <h2 id="what-makes-different" className="docs-heading">What makes Stats different from other bots that track statistics?</h2>
@@ -481,12 +647,12 @@ const DocsPage = () => {
           </div>
         );
 
-      case "Set Up":
+      case "Bot Setup":
         return (
           <div className="docs-content">
             <h2 id="setup" className="docs-heading">Set Up</h2>
             <p className="docs-text">
-              Stats requires <strong>ZERO setup</strong>. You simply have to invite the bot with <a href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863601&integration_type=0&scope=applications.commands+bot" className="docs-link" target="_blank" rel="noopener noreferrer">this invite link</a>, select the server you wish to add the bot to, and click authorize. Tracking for any type of statistic will automatically start upon the bot's join. Keep in mind that only statistics from after the bot's join are tracked, the bot doesn't have access to any data before its join date.
+              Stats requires <strong>ZERO setup</strong>. You simply have to invite the bot with <a href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863601&integration_type=0&scope=applications.commands+bot" className="docs-link" target="_blank" rel="noopener noreferrer">this invite link</a>, select the server you wish to add the bot to, and click authorize. Tracking for any type of statistic will automatically start upon the bot's join, with the exception of advanced statistics. Keep in mind that only statistics from after the bot's join are tracked, the bot doesn't have access to any data before its join date. You can however add past data from before the bot's join using the <a href="?page=history-sync" className="docs-link">History Data Sync</a> feature.
             </p>
 
             <h2 id="permissions" className="docs-heading">Permissions</h2>
@@ -508,9 +674,58 @@ const DocsPage = () => {
               The default prefix is <strong>s!</strong>, you can change this prefix anytime using the settings command. The bot also supports <strong>slash commands</strong> on all commands.
             </p>
 
+            <h2 id="advanced-tracking" className="docs-heading">Advanced Tracking</h2>
+            <p className="docs-text">
+              By default, tracking for messages, voice activity, and emojis is enabled. In order to track advanced statistics like invites, joins and leaves, role growth, mentions, and status activity, you need to turn them on manually.
+            </p>
+            <p className="docs-text">
+              There are two ways to turn on these stat types:
+            </p>
+            <ul className="docs-list">
+              <li>
+                <strong>On the bot:</strong> you can turn on these tracking features through the settings server command. Use either the slash command or the prefix command with <strong>s!</strong> to open the settings server menu, navigate to "Stat Type Toggle", select the statistics you need tracked, then click apply.
+              </li>
+              <li>
+                <strong>On the dashboard:</strong> after logging in and selecting your active server (see <a href="?page=dashboard-setup" className="docs-link">Dashboard Set Up</a> for the full walkthrough), navigate to the <a href="https://statshq.xyz/Dashboard/Settings/" className="docs-link" target="_blank" rel="noopener noreferrer">settings dashboard</a>, scroll to the stat type toggle, and choose your desired stat types.
+              </li>
+            </ul>
+            <p className="docs-text">
+              In order to track more than 4 different stat types, you need the Optimization+ premium module, which can be found on the <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">premium page</a>.
+            </p>
+
             <h2 id="other-info" className="docs-heading">Other Info</h2>
             <p className="docs-text">
               After adding the bot and allowing the correct permissions the bot should instantly start working perfectly. Make sure it has access to all the channels or categories you need it to track statistics for. If you need help with the commands, you can visit the <a href="/Commands/index.html" className="docs-link">Commands page</a> and look at our full list of commands with a short explanation to each. If you generally need help with anything else please don't hesitate to join our <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">support discord server</a> and ask our dev team directly.
+            </p>
+          </div>
+        );
+
+      case "Dashboard Set Up":
+        return (
+          <div className="docs-content">
+            <h2 id="what-is-dashboard" className="docs-heading">What is the Dashboard?</h2>
+            <p className="docs-text">
+              The dashboard is Stats's web interface, where you can view detailed analytics, configure server settings, manage premium subscriptions, and access features that aren't available through Discord commands, like <a href="?page=history-sync" className="docs-link">History Data Sync</a>.
+            </p>
+
+            <h2 id="logging-in" className="docs-heading">1. Log In</h2>
+            <p className="docs-text">
+              Head to the <a href="https://statshq.xyz/" className="docs-link" target="_blank" rel="noopener noreferrer">Stats website</a> and click the <strong>Login</strong> button in the top right corner. You'll be redirected to Discord to authorize the dashboard, after which you'll be brought back to the site fully logged in.
+            </p>
+
+            <h2 id="manage-servers" className="docs-heading">2. Choose Your Active Server</h2>
+            <p className="docs-text">
+              Once logged in, head to the <a href="https://statshq.xyz/Manage%20Servers/" className="docs-link" target="_blank" rel="noopener noreferrer">Manage Servers</a> page. This lists every server where you have the required permissions to access the dashboard. Select the server you want to manage, this becomes your <strong>active server</strong>, and every dashboard page you visit afterwards will show data for that server.
+            </p>
+
+            <h2 id="dashboard-access" className="docs-heading">3. Access the Dashboard</h2>
+            <p className="docs-text">
+              With an active server selected, you can now navigate to any dashboard page, manage your server settings, access features like the <a href="?page=history-sync" className="docs-link">History Data Sync</a>, and <a href="?page=managing-subscriptions" className="docs-link">manage subscriptions</a>. The currently selected server stays active as you move between pages, so there's no need to reselect it each time unless you want to switch to a different server.
+            </p>
+
+            <h2 id="switching-servers" className="docs-heading">Switching Between Servers</h2>
+            <p className="docs-text">
+              To manage a different server, simply return to the <a href="https://statshq.xyz/Manage%20Servers/" className="docs-link" target="_blank" rel="noopener noreferrer">Manage Servers</a> page at any time and select a new active server.
             </p>
           </div>
         );
@@ -609,11 +824,164 @@ const DocsPage = () => {
           </div>
         );
 
+      case "History Data Sync":
+        return (
+          <div className="docs-content">
+            <h2 id="what-is-history-sync" className="docs-heading">What is History Data Sync?</h2>
+            <p className="docs-text">
+              History Data Sync backfills your server's statistics from <strong>before</strong> Stats joined. Normally, the bot can only track data starting from the day it joins your server, History Sync goes back through your channels and pulls in past messages, mentions, and emoji usage so your stats don't start from zero.
+            </p>
+
+            <h2 id="how-history-sync-works" className="docs-heading">How does it work?</h2>
+            <p className="docs-text">
+              Once started, the sync walks back through each selected channel's message history and processes it in the background. You can watch progress live on the dashboard's sync monitor, which shows messages, mentions, and emoji collected in real time for every channel currently running.
+            </p>
+            <p className="docs-text">
+              Each channel can be started, paused, resumed, cancelled, or reset independently. Pausing keeps your progress and lets you resume exactly where you left off, while cancelling stops the sync for that channel and clears its progress.
+            </p>
+
+            <h2 id="stat-types-depth" className="docs-heading">Stat Types and Time Period</h2>
+            <p className="docs-text">
+              Before starting a sync, you choose which stat types to backfill (messages, mentions, emoji) and how far back to go, anywhere from 7 days up to all time.
+            </p>
+            <ul className="docs-list">
+              <li><strong>Free tier:</strong> One stat type at a time, up to 6 months of history, and only one sync ever per server.</li>
+              <li><strong>Optimization+:</strong> All stat types synced together at once, unlimited history depth, and repeat syncs are allowed after a cooldown.</li>
+            </ul>
+
+            <h2 id="cooldown" className="docs-heading">Cooldowns and Limits</h2>
+            <p className="docs-text">
+              After a sync completes successfully, a cooldown period applies before another can be started. Free servers can only ever run <strong>one</strong> sync, while <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">Optimization+</a> servers can run another sync after a <strong>3-month cooldown</strong>. The dashboard clearly shows your remaining cooldown time and when you'll next be eligible to sync again.
+            </p>
+
+            <h2 id="accessing-history-sync" className="docs-heading">How do I access it?</h2>
+            <p className="docs-text">
+              History Data Sync is managed entirely on the website dashboard, not through Discord commands. To get there:
+            </p>
+            <ul className="docs-list">
+              <li><strong>1.</strong> <a href="https://statshq.xyz/" className="docs-link" target="_blank" rel="noopener noreferrer">Log in</a> with your Discord account using the login button at the top right of the site.</li>
+              <li><strong>2.</strong> Head to <a href="https://statshq.xyz/Manage%20Servers/" className="docs-link" target="_blank" rel="noopener noreferrer">Manage Servers</a> and select the server you want to sync.</li>
+              <li><strong>3.</strong> Open the <a href="https://statshq.xyz/Dashboard/History%20Data%20Sync/" className="docs-link" target="_blank" rel="noopener noreferrer">History Data Sync</a> page from your dashboard to configure and start a sync.</li>
+            </ul>
+            <p className="docs-text">
+              For a more detailed walkthrough of logging in and navigating the dashboard, check out the <a href="?page=dashboard-setup" className="docs-link">Dashboard Set Up</a> page.
+            </p>
+
+            <h2 id="permissions-history-sync" className="docs-heading">Who can use it?</h2>
+            <p className="docs-text">
+              Only server members with the <strong>Administrator</strong> permission can start, pause, cancel, or reset history syncs for a server.
+            </p>
+          </div>
+        );
+
+      case "Modules":
+        return (
+          <div className="docs-content">
+            <h2 id="what-are-modules" className="docs-heading">What are modules?</h2>
+            <p className="docs-text">
+              Stats's premium is built around modules. Each module unlocks a specific set of advanced features, allowing you to purchase only the functionality you need instead of paying for a single, bundled premium plan. You can browse and purchase modules on the <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">Premium page</a>.
+            </p>
+            <p className="docs-text">
+              For a full walkthrough of adding a module to your cart, checking out, and managing or cancelling a subscription afterwards, see our <a href="?page=managing-subscriptions" className="docs-link">Managing Subscriptions</a> guide.
+            </p>
+            <p className="docs-text">
+              If you ever decide premium isn't for you, purchases made within the last 48 hours are covered by our <a href="?page=refund" className="docs-link">Refund Policy</a>.
+            </p>
+
+            <h2 id="available-modules" className="docs-heading">Available Modules</h2>
+            <p className="docs-text">
+              Currently, only the <strong>Optimization+</strong> module is available. As new premium features are released, additional modules will become available for purchase, each focused on a different part of the bot's functionality.
+            </p>
+
+            <h2 id="premium-tiers" className="docs-heading">Premium Tiers</h2>
+            <p className="docs-text">
+              In the future, StatsHQ will also introduce <strong>Premium Tiers</strong>. These tiers will bundle multiple modules together at a discounted price, making them a more cost-effective option for servers that use several premium features. Existing standalone modules will remain available for users who only need specific functionality, so you'll never be forced into a bundle you don't need.
+            </p>
+
+            <h2 id="billing" className="docs-heading">Billing Options</h2>
+            <p className="docs-text">
+              All subscriptions can be purchased with either monthly or yearly billing. Yearly subscriptions are offered at a discounted rate compared to paying monthly for a full year, so servers planning to keep a module long-term can save by committing annually.
+            </p>
+
+            <h2 id="multi-server-discount" className="docs-heading">Multi-Server Discount</h2>
+            <p className="docs-text">
+              If you purchase subscriptions for multiple servers, you'll automatically receive a <strong>5% discount</strong> for each additional subscribed server, up to a maximum discount of <strong>50%</strong>. This discount applies across both modules and premium tiers, making it more affordable to manage premium features across multiple communities.
+            </p>
+          </div>
+        );
+
+      case "Managing Subscriptions":
+        return (
+          <div className="docs-content">
+            <h2 id="adding-to-cart" className="docs-heading">Adding a Subscription to Your Cart</h2>
+            <p className="docs-text">
+              Browse the available premium modules on the <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">Premium</a> page and pick the module, tier, and billing option (monthly or yearly) you want. Adding a module doesn't charge you immediately, it's added to your <a href="https://statshq.xyz/My%20Cart/" className="docs-link" target="_blank" rel="noopener noreferrer">My Cart</a> page first, so you can add multiple subscriptions before purchasing them all together.
+            </p>
+
+            <h2 id="checkout" className="docs-heading">Checking Out</h2>
+            <p className="docs-text">
+              Once you're happy with what's in your <a href="https://statshq.xyz/My%20Cart/" className="docs-link" target="_blank" rel="noopener noreferrer">My Cart</a>, finalize the purchase to be taken to a secure checkout page. After payment completes, the module(s) activate automatically for the server(s) you assigned them to.
+            </p>
+            <p className="docs-text">
+              If you're subscribing for multiple servers, remember that each additional subscribed server gives you an automatic <strong>5% discount</strong>, up to a maximum of <strong>50%</strong>. See our <a href="?page=modules" className="docs-link">Modules</a> page for more on how billing and discounts work.
+            </p>
+
+            <h2 id="my-subscriptions" className="docs-heading">Managing Subscriptions</h2>
+            <p className="docs-text">
+              All of your active and past subscriptions can be managed from the <a href="https://statshq.xyz/My%20Subscriptions/" className="docs-link" target="_blank" rel="noopener noreferrer">My Subscriptions</a> page, accessible from the user menu by clicking on your account name or profile picture in the top-left corner of the website. From here you can:
+            </p>
+            <ul className="docs-list">
+              <li><strong>Generate an invoice</strong> for any purchase, for your own records or for billing purposes.</li>
+              <li><strong>Request a refund</strong>, as long as the purchase was made within the last 48 hours.</li>
+              <li><strong>Cancel a subscription</strong>, at any time, regardless of how long you've had it.</li>
+            </ul>
+
+            <h2 id="refunds-subs" className="docs-heading">Refunds</h2>
+            <p className="docs-text">
+              Refund requests must be submitted within <strong>48 hours</strong> of the original purchase, through the <a href="https://statshq.xyz/My%20Subscriptions/" className="docs-link" target="_blank" rel="noopener noreferrer">My Subscriptions</a> page. Once approved, access to the premium module is revoked immediately and the refund is issued to your original payment method. For full details, including what's non-refundable, see our <a href="?page=refund" className="docs-link">Refund Policy</a>.
+            </p>
+
+            <h2 id="cancelling-subs" className="docs-heading">Cancelling a Subscription</h2>
+            <p className="docs-text">
+              Subscriptions can be cancelled at any time from the <a href="https://statshq.xyz/My%20Subscriptions/" className="docs-link" target="_blank" rel="noopener noreferrer">My Subscriptions</a> page, there's no minimum commitment. Cancelling stops future billing and removes your access to features from the subscription.
+            </p>
+
+            <h2 id="dashboard-subscriptions" className="docs-heading">Managing Subscriptions from the Server Dashboard</h2>
+            <p className="docs-text">
+              Server administrators can also view a server's active subscriptions directly from that server's dashboard, on the Subscriptions page. From there, admins can see which modules are currently active on the server and freely cancel any of them, without needing to go through My Subscriptions or even be the original purchaser.
+            </p>
+          </div>
+        );
+
       case "FAQ":
         return (
           <div className="docs-content">
             <h2 id="faq" className="docs-heading">Frequently Asked Questions</h2>
-            
+
+            <h3 id="data-decreasing" className="docs-subheading">Why is my server or member data decreasing?</h3>
+            <p className="docs-text">There are two possible reasons:</p>
+
+            <p className="docs-text"><strong>1. Your selected time period</strong></p>
+            <p className="docs-text">
+              In most cases, no data has actually been lost. Every Stats command only displays data within the currently selected time period. As older activity falls outside that range, totals may appear to decrease.
+            </p>
+            <p className="docs-text">To view a different range, either:</p>
+            <ul className="docs-list">
+              <li>Click the 🕒 button on the command response itself, or</li>
+              <li>Set a custom default time period using the settings server command.</li>
+            </ul>
+            <p className="docs-text">
+              Setting a custom default time period also requires the <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">Optimization+ module</a>.
+            </p>
+
+            <p className="docs-text"><strong>2. Data retention</strong></p>
+            <p className="docs-text">
+              Stats stores historical data for up to 6 months by default. Once data exceeds this retention period, it is permanently removed from the database. You can read the full details on our <a href="?page=data-retention" className="docs-link">6 Month Data Retention Policy</a> page.
+            </p>
+            <p className="docs-text">
+              You can remove this limitation by purchasing the <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">Optimization+ module</a>, which unlocks extended data retention.
+            </p>
+
             <h3 id="timezone" className="docs-subheading">How do I change the timezone of the distribution command?</h3>
             <p className="docs-text">Simply head over to settings, choose <strong>timezone settings</strong>, then choose from our range of timezones.</p>
 
@@ -822,7 +1190,7 @@ const DocsPage = () => {
             <p className="docs-text">While no system can guarantee absolute security, we continuously review and improve protections and follow industry best practices.</p>
 
             <h2 id="retention" className="docs-heading">5. Data Retention and Deletion</h2>
-            <p className="docs-text">Data is retained indefinitely to preserve historical trends and long-term analytics, unless explicitly deleted by authorized users.</p>
+            <p className="docs-text">By default, Stats retains historical data for up to 6 months to preserve historical trends and short-to-medium term analytics. This is enforced through our <strong>6 Month Data Retention and Deletion Policy</strong>, under which data older than 6 months is automatically and permanently deleted from our systems on a rolling weekly basis. Servers using the Optimization+ module may retain data for longer, with their retention window growing for as long as the module stays active. Full details on how this works are available on our <a href="?page=data-retention" className="docs-link">6 Month Data Retention Policy</a> page.</p>
             <p className="docs-text"><strong>Data Deletion Options:</strong></p>
             <ul className="docs-list">
               <li><strong>Server Administrators</strong> may permanently delete all stored statistics for their server using the <code>"reset server"</code> command or through the web dashboard. This removes all member statistics, channel data, and server settings associated with that guild.</li>
@@ -989,6 +1357,81 @@ const DocsPage = () => {
             <h2 id="governing" className="docs-heading">11. Governing Law and Contact</h2>
             <p className="docs-text">These Terms are governed by applicable laws of the bot's operational jurisdiction.</p>
             <p className="docs-text">For questions or disputes, contact the developers and owner of Stats through the <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">support discord server</a>.</p>
+          </div>
+        );
+
+      case "6 Month Data Retention Policy":
+        return (
+          <div className="docs-content">
+            <h1 id="data-retention-policy" className="docs-main-title">6 Month Data Retention Policy</h1>
+
+            <p className="docs-text">
+              <strong>Effective Date:</strong> 17 June 2026<br />
+              <strong>Last Updated:</strong> 17 June 2026
+            </p>
+
+            <p className="docs-text">
+              This policy explains exactly how long Stats ("we," "us," or "our") stores your server's statistical data, how that data is deleted over time, and how the <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">Optimization+</a> module changes the length of time your data is kept.
+            </p>
+
+            <h2 id="retention-overview" className="docs-heading">1. Overview</h2>
+            <p className="docs-text">
+              By default, every server using Stats has its statistical data retained for up to <strong>6 months</strong>. This applies to all standard statistic types tracked by the bot, including messages, voice activity, emojis, invites, role growth, mentions, and status activity.
+            </p>
+            <p className="docs-text">
+              Data within the 6-month window remains fully accessible through commands and the dashboard. Once data falls outside that window, it is permanently removed and cannot be recovered.
+            </p>
+
+            <h2 id="how-it-works" className="docs-heading">2. How Retention Works</h2>
+            <p className="docs-text">
+              Retention is measured as a <strong>rolling window</strong> rather than a fixed cutoff date. This means the 6-month window is always relative to "today," constantly sliding forward as time passes, rather than being tied to the date the bot joined your server.
+            </p>
+            <p className="docs-text">
+              In practical terms, on any given day your server can see statistics from roughly the last 6 months. As each day passes, the oldest day of data eventually falls outside that window and is removed, while the newest day of data is added.
+            </p>
+
+            <h2 id="weekly-deletion" className="docs-heading">3. The Weekly Deletion Cycle</h2>
+            <p className="docs-text">
+              To keep this process efficient, deletion is processed in weekly batches rather than continuously. Once a week, the oldest week of data that has fallen outside your retention window is permanently deleted from our database.
+            </p>
+            <p className="docs-text">
+              At the same time, a new week of fresh data is added to the front of the window as it is collected. Because one week is removed from the back of the window and one week is added to the front, the <strong>total size of your retention window stays constant</strong> over time, it simply slides forward week by week.
+            </p>
+
+            <h2 id="extending-retention" className="docs-heading">4. Extending Retention with Optimization+</h2>
+            <p className="docs-text">
+              Purchasing the <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">Optimization+</a> module removes the default 6-month limitation and extends your server's retention window for as long as the module remains active. The longer you keep Optimization+ active, the larger your retention window grows.
+            </p>
+            <p className="docs-text">
+              For example, if you maintain Optimization+ for 8 consecutive months, your server's retention window grows to 8 months of data, all governed by the same weekly deletion cycle described above, just with a larger window.
+            </p>
+
+            <h2 id="retention-after-cancel" className="docs-heading">5. What Happens If You Cancel</h2>
+            <p className="docs-text">
+              Cancelling Optimization+ does <strong>not</strong> cause your extended retention window to collapse back down to 6 months, and it does not delete the extra data you already earned while subscribed.
+            </p>
+            <p className="docs-text">
+              Instead, your retention window simply <strong>freezes at its current size</strong>. Using the same example, if you built up an 8-month retention window and then cancel, your server keeps an 8-month window going forward.
+            </p>
+            <p className="docs-text">
+              This is possible because of the same weekly deletion cycle explained in Section 3. Every week, exactly one week of old data is deleted and exactly one new week of data is added. Since these two events offset each other, the total size of your window never shrinks, it remains a constant stalemate between what's deleted and what's added, regardless of whether Optimization+ is still active.
+            </p>
+            <p className="docs-text">
+              The only difference cancelling makes is that your window will no longer continue to <strong>grow</strong> beyond the size you already reached. Re-subscribing to Optimization+ in the future will resume growth from wherever your window was left off, rather than starting over.
+            </p>
+
+            <h2 id="retention-changes" className="docs-heading">6. Changes to This Policy</h2>
+            <p className="docs-text">
+              We may update this policy from time to time to reflect changes in our data infrastructure, premium offerings, or legal requirements. Updates are reflected in the "Last Updated" date at the top of this policy. Continued use of Stats after changes are published constitutes acceptance of the revised policy.
+            </p>
+
+            <h2 id="retention-contact" className="docs-heading">7. Contact Information</h2>
+            <p className="docs-text">
+              If you have questions about how data retention works on your server, please reach out:
+            </p>
+            <ul className="docs-list">
+              <li><strong>Discord Support Server:</strong> <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">Join our support server</a> and create a post in the support channel.</li>
+            </ul>
           </div>
         );
 
@@ -1413,6 +1856,104 @@ const DocsPage = () => {
             <p className="docs-text">
               This Cookie Policy is part of and incorporated into our <a href="?page=privacy" className="docs-link">Privacy Policy</a> and <a href="?page=terms" className="docs-link">Terms of Service</a>.
             </p>
+          </div>
+        );
+
+      case "Refund Policy":
+        return (
+          <div className="docs-content">
+            <h1 id="refund-policy" className="docs-main-title">Refund Policy</h1>
+
+            <p className="docs-text">
+              <strong>Effective Date:</strong> 17 June 2026<br />
+              <strong>Last Updated:</strong> 17 June 2026
+            </p>
+
+            <p className="docs-text">
+              This Refund Policy applies to all products, subscriptions, services, and digital offerings provided through Stats ("we," "us," or "our") unless otherwise stated. By purchasing, subscribing to, or otherwise obtaining access to any paid product or service offered by Stats, you acknowledge and agree to this Refund Policy. For a full walkthrough of purchasing, refunding, and cancelling subscriptions, see our <a href="?page=managing-subscriptions" className="docs-link">Managing Subscriptions</a> guide.
+            </p>
+
+            <h2 id="refund-eligibility" className="docs-heading">1. Refund Eligibility</h2>
+            <p className="docs-text">
+              Customers may request a refund within forty-eight (48) hours of the original purchase date and time. To be eligible for a refund, the following conditions must be met:
+            </p>
+            <ul className="docs-list">
+              <li>The refund request must be submitted within 48 hours of the original purchase</li>
+              <li>The purchase must be verifiable through our billing records</li>
+              <li>The request must be submitted through the methods described in this policy</li>
+            </ul>
+            <p className="docs-text">
+              Refund requests submitted after the 48-hour period are not eligible for a refund except where required by applicable law.
+            </p>
+
+            <h2 id="refund-requests" className="docs-heading">2. Refund Requests</h2>
+            <p className="docs-text">
+              Eligible refund requests may be submitted through the My Subscriptions page. The My Subscriptions page can be accessed from the user menu by clicking on your account name or profile picture located in the top-left corner of the website.
+            </p>
+            <p className="docs-text">
+              We may request additional information to verify ownership of a purchase before a refund is processed.
+            </p>
+
+            <h2 id="non-refundable" className="docs-heading">3. Non-Refundable Purchases</h2>
+            <p className="docs-text">
+              The following purchases and circumstances are generally not eligible for refunds:
+            </p>
+            <ul className="docs-list">
+              <li>Refund requests submitted more than 48 hours after the original purchase</li>
+              <li>Subscription renewal charges</li>
+              <li>Partial billing periods</li>
+              <li>Previously refunded purchases</li>
+              <li>Purchases associated with violations of our Terms of Service</li>
+              <li>Purchases associated with fraudulent, deceptive, or abusive activity</li>
+            </ul>
+            <p className="docs-text">
+              These restrictions apply except where prohibited by applicable law.
+            </p>
+
+            <h2 id="approved-refunds" className="docs-heading">4. Approved Refunds</h2>
+            <p className="docs-text">
+              If a refund request is approved, access to paid products, services, subscriptions, licenses, features, and other purchased benefits may be suspended, revoked, or terminated. Any associated entitlements, permissions, or premium features may be removed immediately upon processing of the refund. Continued use of refunded products or services is not permitted.
+            </p>
+            <p className="docs-text">
+              Approved refunds will be issued to the original payment method used for the purchase. Processing times may vary depending on the payment provider, financial institution, or payment method used.
+            </p>
+
+            <h2 id="chargebacks" className="docs-heading">5. Chargebacks and Payment Disputes</h2>
+            <p className="docs-text">
+              Customers are encouraged to contact support and request assistance before initiating a chargeback or payment dispute. We reserve the right to suspend or terminate access to products and services associated with transactions that are subject to a chargeback, payment dispute, or suspected fraudulent activity.
+            </p>
+
+            <h2 id="fraud-prevention" className="docs-heading">6. Fraud Prevention</h2>
+            <p className="docs-text">
+              Refund requests may be denied where there is reasonable evidence of:
+            </p>
+            <ul className="docs-list">
+              <li>Fraudulent activity</li>
+              <li>Abuse of the refund system</li>
+              <li>Unauthorized transactions</li>
+              <li>Misrepresentation of facts</li>
+              <li>Attempts to obtain products or services without payment</li>
+              <li>Violations of our Terms of Service</li>
+            </ul>
+
+            <h2 id="consumer-rights" className="docs-heading">7. Consumer Rights</h2>
+            <p className="docs-text">
+              Nothing in this Refund Policy limits, excludes, or replaces any rights that may be granted to consumers under applicable laws. Where local laws provide mandatory rights or remedies, those rights and remedies shall apply.
+            </p>
+
+            <h2 id="refund-changes" className="docs-heading">8. Changes to This Policy</h2>
+            <p className="docs-text">
+              We may update this Refund Policy from time to time to reflect changes in our business practices, legal requirements, products, services, or operational procedures. Updates are reflected in the "Last Updated" date at the top of this policy. Continued use of our products or services after changes are published constitutes acceptance of the revised Refund Policy.
+            </p>
+
+            <h2 id="refund-contact" className="docs-heading">9. Contact Information</h2>
+            <p className="docs-text">
+              For questions regarding this Refund Policy or refund requests, please contact us:
+            </p>
+            <ul className="docs-list">
+              <li><strong>Discord:</strong> Join our <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">support discord server</a> and create a post in the support channel.</li>
+              <li><strong>Email:</strong> <a href="mailto:statshqofficial@gmail.com" className="docs-link">statshqofficial@gmail.com</a></li>
+            </ul>
           </div>
         );
 
@@ -1898,6 +2439,60 @@ const DocsPage = () => {
       font-weight: 600;
       color: #ffffff;
       margin: 30px 0 15px;
+      position: relative;
+    }
+
+    /* ── Per-section anchor links ──
+       Every heading with an id gets a small hoverable/clickable link icon
+       to its left, so individual points on the page can be linked to or
+       copied directly (clicking scrolls to it and copies the URL). */
+    .heading-anchor-link {
+      position: absolute;
+      left: -30px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: none;
+      padding: 0;
+      margin: 0;
+      color: #aa00ff;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s ease, color 0.15s ease;
+      border-radius: 6px;
+    }
+
+    .heading-anchor-link:hover {
+      color: #cc66ff;
+      background-color: rgba(170, 0, 255, 0.12);
+    }
+
+    .heading-anchor-link.copied {
+      opacity: 1 !important;
+      color: #38d9a9;
+    }
+
+    .docs-main-title:hover .heading-anchor-link,
+    .docs-heading:hover .heading-anchor-link,
+    .docs-subheading:hover .heading-anchor-link,
+    .heading-anchor-link:focus-visible {
+      opacity: 1;
+    }
+
+    @media (max-width: 768px) {
+      .heading-anchor-link {
+        position: static;
+        opacity: 1;
+        display: inline-flex;
+        vertical-align: middle;
+        margin-right: 6px;
+        transform: none;
+      }
     }
 
     .docs-text {
@@ -2282,7 +2877,7 @@ const DocsPage = () => {
                 </button>
               </div>
 
-              <div className="docs-content-wrapper">
+              <div className="docs-content-wrapper" ref={docsWrapperRef}>
                 {renderContent()}
               </div>
 
