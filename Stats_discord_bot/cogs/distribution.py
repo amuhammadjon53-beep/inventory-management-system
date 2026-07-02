@@ -1075,13 +1075,13 @@ class TimezoneDistribution(commands.Cog):
 
     @distribution_group.command(name="server")
     async def dist_server_prefix(self, ctx: commands.Context):
-        """Server-wide hourly activity distribution."""
+        """Server-wide hourly stats distribution."""
         await self._send_distribution(ctx, is_interaction=False, scope="server")
 
     @distribution_group.command(name="channel")
     async def dist_channel_prefix(self, ctx: commands.Context,
                                   channel: discord.TextChannel = None):
-        """Channel hourly activity distribution. Defaults to current channel."""
+        """Channel hourly stats distribution. Defaults to current channel."""
         ch = channel or ctx.channel
         await self._send_distribution(
             ctx, is_interaction=False,
@@ -1091,7 +1091,7 @@ class TimezoneDistribution(commands.Cog):
     @distribution_group.command(name="user")
     async def dist_user_prefix(self, ctx: commands.Context,
                                member: discord.Member = None):
-        """User hourly activity distribution. Defaults to command author."""
+        """User hourly stats distribution. Defaults to command author."""
         m = member or ctx.author
         await self._send_distribution(
             ctx, is_interaction=False,
@@ -1102,7 +1102,7 @@ class TimezoneDistribution(commands.Cog):
     @distribution_group.command(name="category")
     async def dist_category_prefix(self, ctx: commands.Context,
                                    category: discord.CategoryChannel = None):
-        """Category hourly activity distribution."""
+        """Category hourly stats distribution."""
         cat = category or (
             ctx.channel.category if ctx.channel.category else None)
         if cat is None:
@@ -1169,12 +1169,12 @@ class TimezoneDistribution(commands.Cog):
     )
 
     @distribution_slash.command(name="server",
-                                description="Server-wide hourly activity distribution.")
+                                description="Server-wide hourly stats distribution.")
     async def slash_dist_server(self, interaction: discord.Interaction):
         await self._send_distribution(interaction, is_interaction=True, scope="server")
 
     @distribution_slash.command(name="channel",
-                                description="Channel hourly activity distribution.")
+                                description="Channel hourly stats distribution.")
     @app_commands.describe(channel="The channel to view (defaults to current channel).")
     async def slash_dist_channel(
         self, interaction: discord.Interaction,
@@ -1187,7 +1187,7 @@ class TimezoneDistribution(commands.Cog):
         )
 
     @distribution_slash.command(name="user",
-                                description="User hourly activity distribution.")
+                                description="User hourly stats distribution.")
     @app_commands.describe(member="The member to view (defaults to yourself).")
     async def slash_dist_user(
         self, interaction: discord.Interaction,
@@ -1204,7 +1204,7 @@ class TimezoneDistribution(commands.Cog):
         )
 
     @distribution_slash.command(name="category",
-                                description="Category hourly activity distribution.")
+                                description="Category hourly stats distribution.")
     @app_commands.describe(category="The category to view (defaults to current channel's category).")
     async def slash_dist_category(
         self, interaction: discord.Interaction,

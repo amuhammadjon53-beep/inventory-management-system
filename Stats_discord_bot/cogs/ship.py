@@ -2393,7 +2393,7 @@ class ShipCog(commands.Cog):
 
     @ship.command(
         name="leaderboard",
-        description="Show the top ship compatibility scores on this server"
+        description="Show the top ship compatibility scores"
     )
     async def ship_leaderboard_slash(self, interaction: discord.Interaction):
         await self._handle_ship_leaderboard_command(interaction, is_interaction=True)

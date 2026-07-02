@@ -1851,11 +1851,11 @@ class ChartSystem(commands.Cog):
     @commands.group(name="chart", invoke_without_command=True)
     async def chart_group_prefix(self, ctx: commands.Context):
         """Generate activity charts"""
-        await ctx.send("Available commands:\n- `chart user [user]` - Generate user activity charts\n- `chart server` - Generate server-wide charts\n- `chart channel [channel]` - Generate channel-specific charts\n- `chart category [category]` - Generate category-specific charts\n\nShortcuts:\n- `cu [user]` - User chart shortcut\n- `cs` - Server chart shortcut\n- `cch [channel]` - Channel chart shortcut\n- `cca [category]` - Category chart shortcut")
+        await ctx.send("Available commands:\n- `chart user [user]` - Generate user-specific activity charts\n- `chart server` - Generate server-wide charts\n- `chart channel [channel]` - Generate channel-specific charts\n- `chart category [category]` - Generate category-specific charts\n\nShortcuts:\n- `cu [user]` - User chart shortcut\n- `cs` - Server chart shortcut\n- `cch [channel]` - Channel chart shortcut\n- `cca [category]` - Category chart shortcut")
 
     @chart_group_prefix.command(name="user")
     async def chart_user_prefix(self, ctx: commands.Context, user: Optional[discord.User] = None):
-        """Generate user activity charts via prefix command"""
+        """Generate user-specific activity charts via prefix command"""
         await self._handle_chart_command(ctx, "user", user, is_interaction=False)
 
     @chart_group_prefix.command(name="server")
@@ -1879,7 +1879,7 @@ class ChartSystem(commands.Cog):
     chart_group = app_commands.Group(
         name="chart", description="Generate activity charts")
 
-    @chart_group.command(name="user", description="Generate user activity charts")
+    @chart_group.command(name="user", description="Generate user-specific activity charts")
     async def chart_user(self, interaction: discord.Interaction, user: discord.User):
 
         # Check permissions
