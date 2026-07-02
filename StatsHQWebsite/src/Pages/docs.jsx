@@ -705,7 +705,7 @@ const DocsPage = () => {
           <div className="docs-content">
             <h2 id="what-is-dashboard" className="docs-heading">What is the Dashboard?</h2>
             <p className="docs-text">
-              The dashboard is Stats's web interface, where you can view detailed analytics, configure server settings, manage premium subscriptions, and access features that aren't available through Discord commands, like <a href="?page=history-sync" className="docs-link">History Data Sync</a>.
+              The dashboard is Stats's web interface, where you can view detailed analytics, configure server settings, manage premium subscriptions, and access features that aren't available through Discord commands like the <a href="?page=history-sync" className="docs-link">History Data Sync</a>.
             </p>
 
             <h2 id="logging-in" className="docs-heading">1. Log In</h2>
@@ -715,12 +715,12 @@ const DocsPage = () => {
 
             <h2 id="manage-servers" className="docs-heading">2. Choose Your Active Server</h2>
             <p className="docs-text">
-              Once logged in, head to the <a href="https://statshq.xyz/Manage%20Servers/" className="docs-link" target="_blank" rel="noopener noreferrer">Manage Servers</a> page. This lists every server where you have the required permissions to access the dashboard. Select the server you want to manage, this becomes your <strong>active server</strong>, and every dashboard page you visit afterwards will show data for that server.
+              Once logged in, head to the <a href="https://statshq.xyz/Manage%20Servers/" className="docs-link" target="_blank" rel="noopener noreferrer">Manage Servers</a> page. This lists every server where you have the required permissions to access the dashboard. Select the server you want to manage, this becomes your <strong>active server</strong>, and every dashboard page you visit afterwards will show data for that server. If your server isn't listed despite having the bot in it, please contact <a href="https://discord.gg/hreJvck8cK" className="docs-link" target="_blank" rel="noopener noreferrer">support</a> 
             </p>
 
             <h2 id="dashboard-access" className="docs-heading">3. Access the Dashboard</h2>
             <p className="docs-text">
-              With an active server selected, you can now navigate to any dashboard page, manage your server settings, access features like the <a href="?page=history-sync" className="docs-link">History Data Sync</a>, and <a href="?page=managing-subscriptions" className="docs-link">manage subscriptions</a>. The currently selected server stays active as you move between pages, so there's no need to reselect it each time unless you want to switch to a different server.
+              With an active server selected, you can now navigate to any dashboard page, manage your server settings, access features like the <a href="?page=history-sync" className="docs-link">History Data Sync</a> and <a href="?page=managing-subscriptions" className="docs-link">manage subscriptions</a>. The currently selected server stays active as you move between pages, so there's no need to reselect it each time unless you want to switch to a different server.
             </p>
 
             <h2 id="switching-servers" className="docs-heading">Switching Between Servers</h2>
@@ -915,15 +915,15 @@ const DocsPage = () => {
           <div className="docs-content">
             <h2 id="adding-to-cart" className="docs-heading">Adding a Subscription to Your Cart</h2>
             <p className="docs-text">
-              Browse the available premium modules on the <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">Premium</a> page and pick the module, tier, and billing option (monthly or yearly) you want. Adding a module doesn't charge you immediately, it's added to your <a href="https://statshq.xyz/My%20Cart/" className="docs-link" target="_blank" rel="noopener noreferrer">My Cart</a> page first, so you can add multiple subscriptions before purchasing them all together.
+              Browse the available premium modules on the <a href="https://statshq.xyz/Premium/" className="docs-link" target="_blank" rel="noopener noreferrer">Premium</a> page and pick the module and billing option (monthly or yearly) you want. Adding a module doesn't charge you immediately, it's added to your <a href="https://statshq.xyz/My%20Cart/" className="docs-link" target="_blank" rel="noopener noreferrer">My Cart</a> page first, so you can add multiple subscriptions before purchasing them all together.
             </p>
 
             <h2 id="checkout" className="docs-heading">Checking Out</h2>
             <p className="docs-text">
-              Once you're happy with what's in your <a href="https://statshq.xyz/My%20Cart/" className="docs-link" target="_blank" rel="noopener noreferrer">My Cart</a>, finalize the purchase to be taken to a secure checkout page. After payment completes, the module(s) activate automatically for the server(s) you assigned them to.
+              Once you're happy with what's in your <a href="https://statshq.xyz/My%20Cart/" className="docs-link" target="_blank" rel="noopener noreferrer">cart</a>, finalize the purchase to be taken to a secure checkout page. After payment completes, the module(s) activate automatically for the server(s) you assigned them to.
             </p>
             <p className="docs-text">
-              If you're subscribing for multiple servers, remember that each additional subscribed server gives you an automatic <strong>5% discount</strong>, up to a maximum of <strong>50%</strong>. See our <a href="?page=modules" className="docs-link">Modules</a> page for more on how billing and discounts work.
+              If you're subscribing on the same module for multiple different servers, remember that each additional subscribed server gives you an automatic <strong>5% discount</strong>, up to a maximum of <strong>50%</strong>. See our <a href="?page=modules" className="docs-link">Modules</a> page for more on how billing and discounts work.
             </p>
 
             <h2 id="my-subscriptions" className="docs-heading">Managing Subscriptions</h2>
@@ -943,7 +943,7 @@ const DocsPage = () => {
 
             <h2 id="cancelling-subs" className="docs-heading">Cancelling a Subscription</h2>
             <p className="docs-text">
-              Subscriptions can be cancelled at any time from the <a href="https://statshq.xyz/My%20Subscriptions/" className="docs-link" target="_blank" rel="noopener noreferrer">My Subscriptions</a> page, there's no minimum commitment. Cancelling stops future billing and removes your access to features from the subscription.
+              Subscriptions can be cancelled at any time from the <a href="https://statshq.xyz/My%20Subscriptions/" className="docs-link" target="_blank" rel="noopener noreferrer">My Subscriptions</a> page, there's no minimum commitment. Cancelling stops future billing and keeps your access to features from the subscription until the end of the billing cycle which makes it perfect for anyone planning to try out a subscription for one month only.
             </p>
 
             <h2 id="dashboard-subscriptions" className="docs-heading">Managing Subscriptions from the Server Dashboard</h2>
@@ -987,14 +987,14 @@ const DocsPage = () => {
 
             <h3 id="filter-role" className="docs-subheading">How do I filter stats by role?</h3>
             <p className="docs-text">
-              <strong>If you're using the discord bot:</strong> use the <strong>"Input role id"</strong> button available in most commands to input the id of the specific role you wish to filter to, you can get the id of a role by using the <strong>"get id"</strong> command on that role.
+              <strong>If you're using the discord bot:</strong> use the <strong>"Filter By Role"</strong> button available in most commands and input the id of the specific role you wish to filter stats for. You can get the id of a role by using the <strong>"get id"</strong> command on that role.
             </p>
             <p className="docs-text">
-              <strong>If you're using the dashboard:</strong> you can use the role filter dropdown menu that should have all the roles in your server listed.
+              <strong>If you're using the dashboard:</strong> you can use the role filter dropdown menu that should have all the roles in your server listed. If thr roles in your server are missing from the dropdown menu please contact support.
             </p>
 
             <h3 id="streaks-update" className="docs-subheading">When do the activity streaks update?</h3>
-            <p className="docs-text">The activity streaks update everyday at <strong>00:00 UTC</strong>. This is a heavy global event that needs time to be distributed among all servers, please wait a few minutes after the stated time to contact support.</p>
+            <p className="docs-text">The activity streaks update everyday at <strong>00:00 UTC</strong>. This is a heavy global event that needs time to be distributed among all servers, please wait a few minutes after the stated time to contact support incase your streaks didn't get updated yet.</p>
           </div>
         );
 
