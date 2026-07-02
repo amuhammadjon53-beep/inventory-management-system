@@ -3578,6 +3578,65 @@ class DatabaseStatsAPI:
         Pure lookup, no DB access — useful for building UI/embeds from this file directly.
         """
         return STAT_TOGGLE_META
+    
+    
+    # ============================================
+    # RECENT SERVERS
+    # ============================================
+
+    async def record_recent_server(self, discord_id: str, guild_id: str) -> bool:
+        """Upsert a server as recently selected, pruning to the 3 most recent per user."""
+        if not self.pool:
+            return False
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO user_recent_servers (discord_id, guild_id, last_selected_at)
+                    VALUES ($1, $2, NOW())
+                    ON CONFLICT (discord_id, guild_id) DO UPDATE SET
+                        last_selected_at = NOW()
+                """, discord_id, int(guild_id))
+                await conn.execute("""
+                    DELETE FROM user_recent_servers
+                    WHERE discord_id = $1
+                    AND guild_id NOT IN (
+                        SELECT guild_id FROM user_recent_servers
+                        WHERE discord_id = $1
+                        ORDER BY last_selected_at DESC
+                        LIMIT 3
+                    )
+                """, discord_id)
+            return True
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to record recent server",
+                context={'discord_id': discord_id, 'guild_id': guild_id},
+                original=e
+            )
+
+    async def get_recent_servers(self, discord_id: str, limit: int = 3) -> List[Dict]:
+        """Get user's most recently selected servers, joined with user_servers for display info."""
+        if not self.pool:
+            return []
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT urs.guild_id::text AS guild_id, urs.last_selected_at,
+                        us.guild_name, us.guild_icon, us.member_count, us.permissions
+                    FROM user_recent_servers urs
+                    LEFT JOIN user_servers us
+                        ON us.discord_id = urs.discord_id AND us.guild_id = urs.guild_id::text
+                    WHERE urs.discord_id = $1
+                    ORDER BY urs.last_selected_at DESC
+                    LIMIT $2
+                """, discord_id, limit)
+                return [dict(row) for row in rows]
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch recent servers",
+                context={'discord_id': discord_id},
+                original=e
+            )
 
     # ============================================
     # ROLE FILTERING HELPER METHODS
@@ -41354,47 +41413,6 @@ async def get_user_servers(
             f"Unexpected error fetching servers for user {discord_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch servers")
 
-
-@app.get("/api/user/saved-server")
-async def get_saved_server(
-    user: Optional[Dict] = Depends(get_current_user)
-):
-    """Get user's selected server preference"""
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    discord_id = user['discord_id']
-
-    # Try to get from cache first
-    cached_server = await db_stats.get_cached_user_server(discord_id)
-    if cached_server:
-        # Verify the cached server is still valid
-        servers = await auth_db.get_user_servers(discord_id)
-        server_ids = [s['guild_id'] for s in servers]
-
-        if cached_server in server_ids:
-            return {"selected_server": cached_server}
-        else:
-            # Cache is invalid, clear it
-            await db_stats.invalidate_user_server_cache(discord_id)
-
-    # Fall back to database
-    servers = await auth_db.get_user_servers(discord_id)
-    server_ids = [s['guild_id'] for s in servers]
-
-    selected = user.get('selected_server')
-
-    # If selected server is not in user's actual servers, return None
-    if selected and selected not in server_ids:
-        selected = None
-    else:
-        # Cache the valid selected server
-        if selected:
-            await db_stats.cache_user_server(discord_id, selected)
-
-    return {"selected_server": selected}
-
-
 @app.post("/api/user/save-server")
 async def save_server(
     request: SaveServerRequest,
@@ -41429,6 +41447,7 @@ async def save_server(
 
             if success:
                 await db_stats.cache_user_server(user['discord_id'], request.guild_id)
+                await db_stats.record_recent_server(user['discord_id'], request.guild_id)
 
             if not success:
                 raise HTTPException(
@@ -41488,12 +41507,73 @@ async def save_server(
 
                 if success:
                     await db_stats.cache_user_server(user['discord_id'], request.guild_id)
+                    await db_stats.record_recent_server(user['discord_id'], request.guild_id)
 
                 return {
                     "success": True,
                     "selected_server": request.guild_id,
                     "message": f"Server set to: {guild_data['name']}"
                 }
+                
+@app.get("/api/user/recent-servers", response_model=List[ServerResponse])
+async def get_recent_servers(
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """Get user's top 3 most recently selected servers"""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    discord_id = user['discord_id']
+
+    try:
+        recent = await db_stats.get_recent_servers(discord_id, limit=3)
+
+        guild_ids = [r['guild_id'] for r in recent]
+        existence_map = await discord_api.verify_entities_exist('', 'guild', guild_ids)
+
+        valid_recent = [r for r in recent if existence_map.get(r['guild_id'], True)]
+
+        result = []
+        for row in valid_recent:
+            is_stats_hq = row['guild_id'] == STATSHQ_GUILD_ID
+
+            permissions_str = str(row.get('permissions', '0'))
+            try:
+                permissions_int = int(permissions_str)
+            except (ValueError, TypeError):
+                permissions_int = 0
+
+            ADMIN_PERMISSION = 0x8
+            MANAGE_SERVER_PERMISSION = 0x20
+
+            has_admin = (permissions_int & ADMIN_PERMISSION) != 0
+            has_manage_server = (
+                permissions_int & MANAGE_SERVER_PERMISSION) != 0
+
+            result.append(ServerResponse(
+                id=row['guild_id'],
+                name=row['guild_name'],
+                icon=row['guild_icon'],
+                member_count=row['member_count'],
+                has_bot=True,
+                selected=row['guild_id'] == user.get('selected_server'),
+                is_statshq=is_stats_hq,
+                permissions=str(row.get('permissions', '0')),
+                has_admin=has_admin,
+                has_manage_server=has_manage_server
+            ))
+
+        return result
+
+    except DatabaseError as e:
+        logger.error(
+            f"Database error fetching recent servers for user {discord_id}: {e}")
+        return []
+    except Exception as e:
+        logger.error(
+            f"Unexpected error fetching recent servers for user {discord_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to fetch recent servers")
 
 
 @app.post("/api/blacklist/check")
@@ -46359,10 +46439,12 @@ async def cancel_subscription(
     user: Optional[Dict] = Depends(get_current_user)
 ):
     """
-    Cancel a subscription.
-    Body: { "effective_from": "immediately" | "next_billing_period" } (default: "immediately")
+    Cancel a subscription. The user keeps access to the module until the end
+    of the current billing period — this just stops auto-renewal, it does not
+    revoke access immediately.
     Allowed callers: subscription owner OR a guild admin for the guild this subscription belongs to.
-    DB update is handled automatically by the subscription.canceled webhook.
+    DB update is handled automatically by the subscription.canceled webhook,
+    which Paddle fires once the current billing period actually ends.
     """
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -46377,27 +46459,15 @@ async def cancel_subscription(
 
         is_owner = sub["discord_id"] == discord_id
         if not is_owner:
-            # Check if the user is an admin of the guild this subscription belongs to.
-            # Returns a Discord permissions integer, or None if user isn't in the guild.
-            # 0x8  = ADMINISTRATOR (bypasses all permission checks in Discord)
-            # 0x20 = MANAGE_GUILD  (can manage server settings)
             permissions = await auth_db.get_user_permissions_from_db(discord_id, str(sub["guild_id"]))
             is_guild_admin = bool(permissions and permissions & 0x8)
             if not is_guild_admin:
                 raise HTTPException(
                     status_code=403, detail="Not authorized to cancel this subscription")
 
-        body = {}
-        if await request.body():
-            body = await request.json()
-        effective_from = body.get("effective_from", "immediately")
-        if effective_from not in ("immediately", "next_billing_period"):
-            raise HTTPException(
-                status_code=400,
-                detail="effective_from must be 'immediately' or 'next_billing_period'"
-            )
-
-        result = await paddle_client.cancel_subscription(paddle_subscription_id, effective_from)
+        # Always cancel at the end of the current billing period so the guild
+        # keeps module access until then — never cancel immediately.
+        result = await paddle_client.cancel_subscription(paddle_subscription_id, "next_billing_period")
         return result
     except HTTPException:
         raise
@@ -46408,7 +46478,6 @@ async def cancel_subscription(
     except Exception as e:
         logger.error(f"Error in cancel_subscription: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.patch("/api/paddle/subscriptions/{paddle_subscription_id}/auto-renew")
 async def set_auto_renew(

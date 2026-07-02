@@ -154,6 +154,21 @@ const CheckoutSuccessPage = () => {
     return guildName || guildId || 'Unknown Server';
   };
 
+  // ─── Shared post-purchase info line ─────────────────────────────────────────
+  const renderSupportLinks = () => (
+    <p className="support-line">
+      Learn more about{' '}
+      <a href="/docs/?page=managing-subscriptions" className="support-link">
+        managing your subscriptions
+      </a>{' '}
+      and our{' '}
+      <a href="/docs/?page=refund" className="support-link">
+        refund policy
+      </a>
+      .
+    </p>
+  );
+
   // ─── Login overlay ─────────────────────────────────────────────────────────
   if (authChecked && showLoginOverlay) {
     return (
@@ -260,6 +275,8 @@ const CheckoutSuccessPage = () => {
             Go to Dashboard
           </a>
         </div>
+
+        {renderSupportLinks()}
       </div>
     );
   };
@@ -290,6 +307,8 @@ const CheckoutSuccessPage = () => {
       <p className="timeout-note">
         Attempt {pollingAttempts} of {MAX_ATTEMPTS} completed
       </p>
+
+      {renderSupportLinks()}
     </div>
   );
 
@@ -586,6 +605,28 @@ const allStyles = `
     background: rgba(170,0,255,0.05);
   }
 
+  /* ── Post-purchase support line ── */
+  .support-line {
+    font-size: 14px;
+    color: #b0b0b0;
+    line-height: 1.6;
+    margin-top: 24px;
+    text-align: center;
+  }
+
+  .support-link {
+    color: #aa00ff;
+    font-weight: 600;
+    text-decoration: none;
+    transition: text-shadow 0.2s ease, color 0.2s ease;
+  }
+
+  .support-link:hover {
+    color: #bb33ff;
+    text-shadow: 0 0 10px rgba(170,0,255,0.5);
+    text-decoration: underline;
+  }
+
   /* ── Timeout state ── */
   .timeout-container {
     display: flex;
@@ -765,6 +806,8 @@ const allStyles = `
 
     .timeout-title { font-size: 22px; }
     .timeout-message { font-size: 14px; }
+
+    .support-line { font-size: 13px; }
   }
 `;
 

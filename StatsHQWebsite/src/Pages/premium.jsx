@@ -288,6 +288,12 @@ const PremiumPage = () => {
             planning to purchase a module for multiple servers.
           </p>
 
+          {/* Learn more side note */}
+          <p className="learn-more-note">
+            Curious on how the billing system, modules and discounts work? Learn more {' '}
+            <a href="/docs/?page=modules" className="learn-more-link">here</a>.
+          </p>
+
         </div>
       </div>
 
@@ -873,6 +879,27 @@ const PremiumPage = () => {
           max-width: 480px;
           margin-left: auto;
           margin-right: auto;
+        }
+
+        .learn-more-note {
+          margin-top: 20px;
+          font-size: 13px;
+          color: #6e7180;
+          text-align: center;
+          line-height: 1.6;
+        }
+
+        .learn-more-link {
+          color: #aa00ff;
+          text-decoration: none;
+          font-weight: 600;
+          transition: text-shadow 0.2s ease, color 0.2s ease;
+        }
+
+        .learn-more-link:hover {
+          color: #bb33ff;
+          text-shadow: 0 0 10px rgba(170, 0, 255, 0.5);
+          text-decoration: underline;
         }
 
         /* ── Responsive ── */

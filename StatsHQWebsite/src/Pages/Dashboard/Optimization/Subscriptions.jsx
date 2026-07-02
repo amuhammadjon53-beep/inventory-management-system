@@ -147,7 +147,7 @@ const ConfirmModal = ({ title, message, confirmLabel, onConfirm, onCancel, loadi
 // SUBSCRIPTION CARD
 // ============================================
 
-const SubscriptionCard = ({ sub, onCancel, onInvoice, invoiceLoading, cancelLoading }) => {
+const SubscriptionCard = ({ sub, onCancel, onInvoice, invoiceLoading, cancelLoading, isPendingCancellation }) => {
   const info = MODULE_INFO[sub.module_key] || { name: sub.module_key, icon: <Settings size={22} color="#aa00ff" /> };
   const statusMeta = getStatusMeta(sub.status);
   const isActive = sub.status === "active" || sub.status === "trialing";
@@ -196,7 +196,7 @@ const SubscriptionCard = ({ sub, onCancel, onInvoice, invoiceLoading, cancelLoad
         {sub.current_period_end && isActive && (
           <div className="sub-detail-row">
             <Clock size={13} className="sub-detail-icon" />
-            <span className="sub-detail-label">Renews</span>
+            <span className="sub-detail-label">{isPendingCancellation ? "Access until" : "Renews"}</span>
             <span className="sub-detail-value">{formatDate(sub.current_period_end)}</span>
           </div>
         )}
@@ -221,6 +221,17 @@ const SubscriptionCard = ({ sub, onCancel, onInvoice, invoiceLoading, cancelLoad
         )}
       </div>
 
+      {/* Pending cancellation notice */}
+      {isPendingCancellation && (
+        <div className="sub-pending-notice">
+          <Clock size={13} />
+          <span>
+            Renewal cancelled — access continues until{" "}
+            {sub.current_period_end ? formatDate(sub.current_period_end) : "the end of this billing period"}
+          </span>
+        </div>
+      )}
+
       <div className="sub-card-divider" />
 
       {/* Actions */}
@@ -235,7 +246,7 @@ const SubscriptionCard = ({ sub, onCancel, onInvoice, invoiceLoading, cancelLoad
             <span>Invoice</span>
           </button>
         )}
-        {isActive && (
+        {isActive && !isPendingCancellation && (
           <button
             className="sub-action-btn sub-cancel-btn"
             onClick={() => onCancel(sub)}
@@ -263,6 +274,10 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
   const [modal, setModal] = useState(null);
   const [invoiceLoading, setInvoiceLoading] = useState(null);
   const [cancelLoading, setCancelLoading] = useState(null);
+
+  // Subs where cancellation has been scheduled for the end of the current
+  // billing period (access is retained until then — see /cancel endpoint).
+  const [pendingCancellations, setPendingCancellations] = useState(new Set());
 
   const showToast = (message, type = "info") => {
     setToast({ message, type });
@@ -321,25 +336,27 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
     setCancelLoading(sub.paddle_subscription_id);
     setModal(null);
     try {
+      // The backend always cancels at the end of the current billing period
+      // (auto-renewal off) and never revokes access immediately, regardless
+      // of what's sent here — the DB/status only updates later once Paddle's
+      // subscription.canceled webhook fires at period end.
       const res = await fetch(
         `${API_BASE_URL}/api/paddle/subscriptions/${sub.paddle_subscription_id}/cancel`,
         {
           method: "PATCH",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ effective_from: "immediately" }),
         }
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to cancel subscription");
-      setSubscriptions((prev) =>
-        prev.map((s) =>
-          s.paddle_subscription_id === sub.paddle_subscription_id
-            ? { ...s, status: "canceled", canceled_at: new Date().toISOString() }
-            : s
-        )
+      setPendingCancellations((prev) => new Set(prev).add(sub.paddle_subscription_id));
+      showToast(
+        `Renewal cancelled. Access continues${
+          sub.current_period_end ? ` until ${formatDate(sub.current_period_end)}` : " until the end of this billing period"
+        }.`,
+        "success"
       );
-      showToast("Subscription cancelled successfully.", "success");
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -477,6 +494,7 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
                 onInvoice={handleInvoice}
                 invoiceLoading={invoiceLoading === sub.paddle_subscription_id}
                 cancelLoading={cancelLoading === sub.paddle_subscription_id}
+                isPendingCancellation={pendingCancellations.has(sub.paddle_subscription_id)}
               />
             ))}
           </div>
@@ -500,6 +518,7 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
                 onInvoice={handleInvoice}
                 invoiceLoading={invoiceLoading === sub.paddle_subscription_id}
                 cancelLoading={cancelLoading === sub.paddle_subscription_id}
+                isPendingCancellation={pendingCancellations.has(sub.paddle_subscription_id)}
               />
             ))}
           </div>
@@ -520,7 +539,7 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
       {modal?.type === "cancel" && (
         <ConfirmModal
           title="Cancel subscription?"
-          message={`This will immediately cancel the ${MODULE_INFO[modal.sub.module_key]?.name || modal.sub.module_key} subscription for ${modal.sub.guild_name || "this server"}. Access will be revoked right away.`}
+          message={`This will cancel the ${MODULE_INFO[modal.sub.module_key]?.name || modal.sub.module_key} subscription for ${modal.sub.guild_name || "this server"}. It'll keep access until the end of the current billing cycle${modal.sub.current_period_end ? ` on ${formatDate(modal.sub.current_period_end)}` : ""}, after which it won't renew.`}
           confirmLabel="Yes, cancel it"
           onConfirm={handleCancelConfirm}
           onCancel={() => setModal(null)}
@@ -812,6 +831,14 @@ const styles = `
   .sub-detail-label { font-size: 12px; color: #666; font-weight: 500; min-width: 62px; }
   .sub-detail-value { font-size: 13px; color: #ccc; font-weight: 500; }
   .sub-mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; color: #777; }
+
+  /* ── Pending cancellation notice ── */
+  .sub-pending-notice {
+    display: flex; align-items: center; gap: 7px;
+    margin-top: 14px; padding: 9px 12px;
+    background: rgba(240,165,0,0.08); border: 1px solid rgba(240,165,0,0.25); border-radius: 8px;
+    font-size: 12px; color: #f0a500;
+  }
 
   .sub-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .sub-action-btn {

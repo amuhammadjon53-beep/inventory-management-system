@@ -561,6 +561,12 @@ const MyCartPage = () => {
               )}
             </>
           )}
+
+          {/* Refund policy note */}
+          <p className="refund-note">
+            All purchases are subject to our{' '}
+            <a href="/docs/?page=refund" className="refund-link">refund policy</a>.
+          </p>
         </div>
       </div>
       <Footer />
@@ -744,6 +750,27 @@ const baseStyles = `
     margin-top: 12px; font-size: 13px; color: #6e7180;
     text-align: center; line-height: 1.6;
     max-width: 480px; margin-left: auto; margin-right: auto;
+  }
+
+  .refund-note {
+    margin-top: 40px;
+    font-size: 13px;
+    color: #6e7180;
+    text-align: center;
+    line-height: 1.6;
+  }
+
+  .refund-link {
+    color: #aa00ff;
+    text-decoration: none;
+    font-weight: 600;
+    transition: text-shadow 0.2s ease, color 0.2s ease;
+  }
+
+  .refund-link:hover {
+    color: #bb33ff;
+    text-shadow: 0 0 10px rgba(170,0,255,0.5);
+    text-decoration: underline;
   }
 
   @media (max-width: 768px) {

@@ -654,10 +654,11 @@ const SubscriptionCard = ({
   transactionHistory,
   onToggleHistory,
   isHistoryExpanded,
+  isPendingCancellation,
 }) => {
   const info = getModuleInfo(sub.module_key);
   const statusMeta = getStatusMeta(sub.status);
-  const eligible = sub.status === 'active' && isWithin48Hours(sub.created_at || sub.current_period_start);
+  const eligible = sub.status === 'active' && !isPendingCancellation && isWithin48Hours(sub.created_at || sub.current_period_start);
   const discountPct = sub.discount_pct ? (sub.discount_pct * 100).toFixed(0) : null;
   const isStaffGrant = sub.source === 'staff_grant';
 
@@ -722,7 +723,7 @@ const SubscriptionCard = ({
         {sub.current_period_end && sub.status === 'active' && (
           <div className="detail-row">
             <RefreshCw size={13} className="detail-icon" />
-            <span className="detail-label">{isStaffGrant ? 'Expires' : 'Renews'}</span>
+            <span className="detail-label">{isStaffGrant ? 'Expires' : isPendingCancellation ? 'Access until' : 'Renews'}</span>
             <span className="detail-value">{formatDate(sub.current_period_end)}</span>
           </div>
         )}
@@ -746,6 +747,17 @@ const SubscriptionCard = ({
         <div className="eligible-notice">
           <AlertCircle size={13} />
           <span>Cancel or refund available — within 48 hours of purchase</span>
+        </div>
+      )}
+
+      {/* Pending cancellation notice */}
+      {isPendingCancellation && (
+        <div className="eligible-notice">
+          <Clock size={13} />
+          <span>
+            Renewal cancelled — access continues until{' '}
+            {sub.current_period_end ? formatDate(sub.current_period_end) : 'the end of this billing period'}
+          </span>
         </div>
       )}
 
@@ -916,6 +928,10 @@ const MySubscriptionsPage = () => {
 
   // Confirm modal state
   const [modal, setModal] = useState(null); // { type: 'cancel'|'refund', sub }
+
+  // Subs where cancellation has been scheduled for the end of the current
+  // billing period (access is retained until then — see /cancel endpoint).
+  const [pendingCancellations, setPendingCancellations] = useState(new Set());
 
   // Server-switch state
   const [switchModalSub, setSwitchModalSub] = useState(null);
@@ -1101,23 +1117,24 @@ const MySubscriptionsPage = () => {
     setCancelLoading(sub.paddle_subscription_id);
     setModal(null);
     try {
+      // The backend always cancels at the end of the current billing period
+      // (auto-renewal off) and never revokes access immediately, regardless
+      // of what's sent here — the DB/status only updates later once Paddle's
+      // subscription.canceled webhook fires at period end.
       const res = await fetch(`${API_URL}/api/paddle/subscriptions/${sub.paddle_subscription_id}/cancel`, {
         method: 'PATCH',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ effective_from: 'immediately' }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Failed to cancel subscription');
-      setSubscriptions(prev =>
-        prev.map(s =>
-          s.paddle_subscription_id === sub.paddle_subscription_id
-            ? { ...s, status: 'canceled', canceled_at: new Date().toISOString() }
-            : s
-        )
+      setPendingCancellations(prev => new Set(prev).add(sub.paddle_subscription_id));
+      setSuccessMsg(
+        `Renewal cancelled. You'll keep access to ${getModuleInfo(sub.module_key).name}${
+          sub.current_period_end ? ` until ${formatDate(sub.current_period_end)}` : ' until the end of your current billing period'
+        }.`
       );
-      setSuccessMsg('Subscription cancelled successfully.');
-      setTimeout(() => setSuccessMsg(null), 5000);
+      setTimeout(() => setSuccessMsg(null), 6000);
     } catch (err) {
       setError(err.message);
       setTimeout(() => setError(null), 5000);
@@ -1382,6 +1399,7 @@ const MySubscriptionsPage = () => {
                         transactionHistory={transactionHistory}
                         onToggleHistory={toggleHistory}
                         isHistoryExpanded={transactionHistory[sub.paddle_subscription_id]?.expanded || false}
+                        isPendingCancellation={pendingCancellations.has(sub.paddle_subscription_id)}
                       />
                     ))}
                   </div>
@@ -1431,6 +1449,14 @@ const MySubscriptionsPage = () => {
               )}
             </>
           )}
+
+          {/* Managing subscriptions docs link */}
+          <p className="docs-note">
+            Need help managing your subscriptions? See our{' '}
+            <a href="/docs/?page=managing-subscriptions" className="docs-link">
+              guide to managing subscriptions
+            </a>.
+          </p>
         </div>
       </div>
 
@@ -1440,7 +1466,7 @@ const MySubscriptionsPage = () => {
           title={modal.type === 'cancel' ? 'Cancel subscription?' : 'Request a refund?'}
           message={
             modal.type === 'cancel'
-              ? `This will immediately cancel your ${getModuleInfo(modal.sub.module_key).name} subscription. Access will be revoked right away.`
+              ? `This will cancel your ${getModuleInfo(modal.sub.module_key).name} subscription. You'll keep access to its features until the end of your current billing cycle${modal.sub.current_period_end ? ` on ${formatDate(modal.sub.current_period_end)}` : ''}, after which it won't renew.`
               : `This will refund your $${parseFloat(modal.sub.final_price_usd || 0).toFixed(2)} payment and cancel the subscription. Funds typically arrive in 5–10 business days.`
           }
           confirmLabel={modal.type === 'cancel' ? 'Yes, cancel it' : 'Yes, refund me'}
@@ -1962,6 +1988,29 @@ const allStyles = `
 
   /* ── Footnote ── */
   .module-footnote { margin-top: 12px; font-size: 11px; color: #555870; font-style: italic; position: relative; z-index: 1; }
+
+  /* ── Docs note ── */
+  .docs-note {
+    margin-top: 40px;
+    font-size: 13px;
+    color: #6e7180;
+    text-align: center;
+    line-height: 1.6;
+    max-width: 520px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .docs-link {
+    color: #aa00ff;
+    text-decoration: none;
+    font-weight: 600;
+    transition: text-shadow 0.2s ease, color 0.2s ease;
+  }
+  .docs-link:hover {
+    color: #bb33ff;
+    text-shadow: 0 0 10px rgba(170,0,255,0.5);
+    text-decoration: underline;
+  }
 
   /* ── Spinners ── */
   .btn-spinner-sm {

@@ -85,7 +85,7 @@ async def get_subscription(paddle_subscription_id: str) -> Dict:
 
 async def cancel_subscription(
     paddle_subscription_id: str,
-    effective_from: str = "immediately"
+    effective_from: str = "next_billing_period"
 ) -> Dict:
     return await _request(
         "POST",

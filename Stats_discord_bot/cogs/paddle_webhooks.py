@@ -169,11 +169,15 @@ async def _handle_subscription_updated(db, data: Dict, raw: Dict) -> None:
     period = data.get("current_billing_period") or {}
     status = data.get("status", "active")
 
+    scheduled_change = data.get("scheduled_change") or {}
+    cancel_at_period_end = scheduled_change.get("action") == "cancel"
+
     sub = await db.update_subscription_status(
         data["id"],
         status=status,
         current_period_start=_parse_dt(period.get("starts_at")),
         current_period_end=_parse_dt(period.get("ends_at")),
+        cancel_at_period_end=cancel_at_period_end,
     )
 
     if sub and status in ("canceled", "paused"):
