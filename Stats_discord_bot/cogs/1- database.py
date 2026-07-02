@@ -304,8 +304,12 @@ class DatabaseStats(commands.Cog):
             func=self.purge_oldest_week_for_free_guilds, tz=ZoneInfo('UTC'))
         self.retention_alert_cron = aiocron.crontab(
             '0 10 * * *', func=self.update_retention_alert_windows, tz=ZoneInfo('UTC'))
-
-        print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, Server count message every 3 hours, Reset schedule checker every 30 minutes.")
+        self.reconcile_subs_cron = aiocron.crontab(
+            '0 20 * * 5',  # 20:00 (8 PM) every Friday
+            func=self.reconcile_expired_subscriptions, tz=ZoneInfo('UTC'))
+        print("⏱️CRON JOBS")
+        print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, 6 month retention check every friday at 12:00 UTC, reconcile expired subs every friday at 20:00 UTC.")
+        print("✅ Periodic tasks: Reset Scheduler every 30 minutes, Server count message every 3 hours.")
 
     async def check_and_execute_scheduled_resets(self):
         """Check for due reset schedules and execute them - runs every 12 hours."""
@@ -329,6 +333,88 @@ class DatabaseStats(commands.Cog):
             print(f"❌ Error in scheduled reset check: {e}")
             import traceback
             traceback.print_exc()
+
+    async def reconcile_expired_subscriptions(self):
+        """
+        Safety net for missed cancellation webhooks: revoke access for any
+        subscription whose current_period_end has passed but which is still
+        marked active in our DB.
+        """
+        if not self.pool or not self.db_connected:
+            print("⚠️ Reconciliation skipped - database not connected")
+            return
+
+        print(
+            f"🔄 Running subscription reconciliation at {datetime.now(timezone.utc)}")
+
+        # Replace db. with self.
+        stale_subs = await self.get_active_subscriptions_past_period_end()
+
+        for sub in stale_subs:
+            await self.revoke_module_access(sub["id"])
+            await self.update_subscription_status(
+                sub["paddle_subscription_id"],
+                status="canceled",
+            )
+            print(
+                f"Reconciliation: revoked stale access for sub {sub['paddle_subscription_id']}")
+
+    async def revoke_module_access(self, subscription_id: int) -> int:
+        """Revoke all access rows tied to a subscription. Returns affected count."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """UPDATE guild_module_access SET
+                       is_active  = FALSE,
+                       revoked_at = NOW()
+                   WHERE subscription_id = $1 AND is_active = TRUE""",
+                subscription_id,
+            )
+            return int(result.split()[-1])
+
+    async def update_subscription_status(
+        self,
+        paddle_subscription_id: str,
+        status: str,
+        current_period_start: Optional[datetime] = None,
+        current_period_end: Optional[datetime] = None,
+        canceled_at: Optional[datetime] = None,
+        cancel_at_period_end: Optional[bool] = None,
+        paddle_transaction_id: Optional[str] = None,
+    ) -> Optional[Dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE subscriptions SET
+                       status                = $2,
+                       current_period_start  = COALESCE($3, current_period_start),
+                       current_period_end    = COALESCE($4, current_period_end),
+                       canceled_at           = COALESCE($5, canceled_at),
+                       cancel_at_period_end  = COALESCE($6, cancel_at_period_end),
+                       paddle_transaction_id = COALESCE($7, paddle_transaction_id),
+                       updated_at            = NOW()
+                   WHERE paddle_subscription_id = $1
+                   RETURNING *""",
+                paddle_subscription_id, status,
+                current_period_start, current_period_end,
+                canceled_at, cancel_at_period_end, paddle_transaction_id,
+            )
+            return dict(row) if row else None
+
+    async def get_active_subscriptions_past_period_end(self) -> list:
+        """
+        Fetches all subscriptions marked as 'active' where the 
+        current_period_end timestamp has already passed.
+        """
+        if not self.pool:
+            return []
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, paddle_subscription_id, current_period_end 
+                FROM subscriptions 
+                WHERE status = 'active' 
+                  AND current_period_end < NOW()
+            """)
+            return [dict(row) for row in rows]
 
     # ======================================================================
     # OLDEST-WEEK ROLLING PURGE (non-Optimization+ guilds only)
@@ -3249,6 +3335,23 @@ class DatabaseStats(commands.Cog):
                     )
                 ''')
                 print("  ✅ Created/verified table: retention_alert_progress")
+                
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS user_recent_servers (
+                        id BIGSERIAL PRIMARY KEY,
+                        discord_id TEXT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        last_selected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(discord_id, guild_id)
+                    )
+                ''')
+                print("  ✅ Created/verified table: user_recent_servers")
+
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_user_recent_servers_discord_id '
+                    'ON user_recent_servers(discord_id, last_selected_at DESC)'
+                )
+                print("  ✅ Created/verified index: idx_user_recent_servers_discord_id")
 
                 # Create cart_items table
                 await conn.execute('''

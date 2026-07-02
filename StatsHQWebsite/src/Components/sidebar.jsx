@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   MessageCircle,
   Volume2,
@@ -14,6 +14,9 @@ import {
   Star,
   Bug,
   Crown,
+  ChevronDown,
+  Clock,
+  Check,
 } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
@@ -33,7 +36,14 @@ const DashboardSidebar = ({
   const [loading, setLoading] = useState(true);
   const [isPrivileged, setIsPrivileged] = useState(false);
 
+  const [showRecent, setShowRecent] = useState(false);
+  const [recentServers, setRecentServers] = useState([]);
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [recentFetched, setRecentFetched] = useState(false);
+  const [switchingId, setSwitchingId] = useState(null);
+
   const fetchedRef = React.useRef(false);
+  const serverCardRef = useRef(null);
 
   useEffect(() => {
     const styleId = 'dashboard-sidebar-styles';
@@ -107,20 +117,34 @@ const DashboardSidebar = ({
       .dashboard-sidebar .server-info-container {
         padding: 20px;
         border-bottom: 1px solid #2a2a2a;
+        position: relative;
       }
 
       .dashboard-sidebar .server-info-box {
-        background-color: #1a1c24 !important;
+        background:
+          linear-gradient(180deg, rgba(170, 0, 255, 0.07) 0%, rgba(26, 28, 36, 0) 55%),
+          #1a1c24 !important;
         border-radius: 12px !important;
-        padding: 16px !important;
+        padding: 14px 14px 14px 16px !important;
         border: 1px solid #2a2a2a !important;
+        border-top: 1px solid rgba(170, 0, 255, 0.45) !important;
         display: flex !important;
         align-items: center !important;
         gap: 12px !important;
         position: relative !important;
-        transition: all 0.2s ease !important;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25) !important;
         min-height: 80px !important;
+      }
+
+      .dashboard-sidebar .server-info-box:hover {
+        border-color: rgba(170, 0, 255, 0.35) !important;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(170, 0, 255, 0.12) !important;
+      }
+
+      .dashboard-sidebar .server-avatar-wrap {
+        position: relative !important;
+        flex-shrink: 0 !important;
       }
 
       .dashboard-sidebar .server-avatar {
@@ -130,7 +154,7 @@ const DashboardSidebar = ({
         object-fit: cover !important;
         border: 2px solid #aa00ff !important;
         transition: all 0.2s ease !important;
-        flex-shrink: 0 !important;
+        display: block !important;
       }
 
       .dashboard-sidebar .server-avatar-placeholder {
@@ -149,7 +173,26 @@ const DashboardSidebar = ({
         flex-shrink: 0 !important;
       }
 
+      .dashboard-sidebar .server-active-dot {
+        position: absolute !important;
+        bottom: -1px !important;
+        right: -1px !important;
+        width: 12px !important;
+        height: 12px !important;
+        border-radius: 50% !important;
+        background: #22c55e !important;
+        border: 2px solid #1a1c24 !important;
+        box-shadow: 0 0 6px rgba(34, 197, 94, 0.7) !important;
+      }
+
       .dashboard-sidebar .server-details { flex: 1 !important; min-width: 0 !important; }
+
+      .dashboard-sidebar .server-name-row {
+        display: flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        margin-bottom: 4px !important;
+      }
 
       .dashboard-sidebar .server-name {
         color: #ffffff !important;
@@ -158,7 +201,20 @@ const DashboardSidebar = ({
         white-space: nowrap !important;
         overflow: hidden !important;
         text-overflow: ellipsis !important;
-        margin-bottom: 4px !important;
+        min-width: 0 !important;
+      }
+
+      .dashboard-sidebar .server-active-tag {
+        flex-shrink: 0 !important;
+        font-size: 9px !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.6px !important;
+        color: #aa00ff !important;
+        background: rgba(170, 0, 255, 0.12) !important;
+        border: 1px solid rgba(170, 0, 255, 0.35) !important;
+        border-radius: 4px !important;
+        padding: 2px 6px !important;
+        text-transform: uppercase !important;
       }
 
       .dashboard-sidebar .server-edit-link-row {
@@ -212,6 +268,188 @@ const DashboardSidebar = ({
         padding: 8px 0 !important;
         text-align: center !important;
         width: 100% !important;
+      }
+
+      /* ── Recent servers toggle + popover ── */
+      .dashboard-sidebar .server-dropdown-toggle {
+        flex-shrink: 0 !important;
+        width: 28px !important;
+        height: 28px !important;
+        border-radius: 7px !important;
+        border: 1px solid #2a2a2a !important;
+        background: #14151c !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        cursor: pointer !important;
+        transition: all 0.15s ease !important;
+        padding: 0 !important;
+      }
+
+      .dashboard-sidebar .server-dropdown-toggle:hover {
+        border-color: rgba(170, 0, 255, 0.5) !important;
+        background: rgba(170, 0, 255, 0.08) !important;
+      }
+
+      .dashboard-sidebar .server-dropdown-toggle svg {
+        transition: transform 0.2s ease !important;
+        color: #b0b0b0 !important;
+      }
+
+      .dashboard-sidebar .server-dropdown-toggle:hover svg { color: #aa00ff !important; }
+
+      .dashboard-sidebar .server-dropdown-toggle.open svg {
+        transform: rotate(180deg) !important;
+        color: #aa00ff !important;
+      }
+
+      .dashboard-sidebar .recent-servers-popover {
+        position: absolute !important;
+        left: 20px !important;
+        right: 20px !important;
+        top: calc(100% - 8px) !important;
+        background: #14151c !important;
+        border: 1px solid #2a2a2a !important;
+        border-radius: 12px !important;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(170, 0, 255, 0.1) !important;
+        z-index: 950 !important;
+        overflow: hidden !important;
+        animation: recent-pop-in 0.14s ease !important;
+      }
+
+      @keyframes recent-pop-in {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .dashboard-sidebar .recent-servers-popover { animation: none !important; }
+      }
+
+      .dashboard-sidebar .recent-servers-header {
+        display: flex !important;
+        align-items: center !important;
+        gap: 6px !important;
+        padding: 10px 14px !important;
+        border-bottom: 1px solid #2a2a2a !important;
+        color: #7a7a7a !important;
+        font-size: 10px !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.8px !important;
+        text-transform: uppercase !important;
+      }
+
+      .dashboard-sidebar .recent-servers-list {
+        max-height: 168px !important;
+        overflow-y: auto !important;
+        padding: 6px !important;
+      }
+
+      .dashboard-sidebar .recent-servers-list::-webkit-scrollbar { width: 6px; }
+      .dashboard-sidebar .recent-servers-list::-webkit-scrollbar-track { background: transparent; }
+      .dashboard-sidebar .recent-servers-list::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
+      .dashboard-sidebar .recent-servers-list::-webkit-scrollbar-thumb:hover { background: #aa00ff; }
+
+      .dashboard-sidebar .recent-server-item {
+        display: flex !important;
+        align-items: center !important;
+        gap: 10px !important;
+        width: 100% !important;
+        padding: 8px !important;
+        border-radius: 8px !important;
+        border: 1px solid transparent !important;
+        border-left: 2px solid transparent !important;
+        background: transparent !important;
+        cursor: pointer !important;
+        text-align: left !important;
+        transition: all 0.15s ease !important;
+        font-family: inherit !important;
+      }
+
+      .dashboard-sidebar .recent-server-item:hover:not(:disabled) {
+        background: rgba(170, 0, 255, 0.08) !important;
+        border-left-color: #aa00ff !important;
+      }
+
+      .dashboard-sidebar .recent-server-item:disabled {
+        cursor: default !important;
+        opacity: 0.55 !important;
+      }
+
+      .dashboard-sidebar .recent-server-item.is-current {
+        border-left-color: rgba(170, 0, 255, 0.5) !important;
+        background: rgba(170, 0, 255, 0.05) !important;
+      }
+
+      .dashboard-sidebar .recent-server-avatar {
+        width: 30px !important;
+        height: 30px !important;
+        border-radius: 50% !important;
+        object-fit: cover !important;
+        border: 1.5px solid #2a2a2a !important;
+        flex-shrink: 0 !important;
+      }
+
+      .dashboard-sidebar .recent-server-avatar-placeholder {
+        width: 30px !important;
+        height: 30px !important;
+        border-radius: 50% !important;
+        background: #1a1c24 !important;
+        border: 1.5px solid #2a2a2a !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-size: 13px !important;
+        font-weight: 600 !important;
+        color: #aa00ff !important;
+        flex-shrink: 0 !important;
+      }
+
+      .dashboard-sidebar .recent-server-info {
+        flex: 1 !important;
+        min-width: 0 !important;
+      }
+
+      .dashboard-sidebar .recent-server-name {
+        color: #ffffff !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+      }
+
+      .dashboard-sidebar .recent-server-meta {
+        color: #7a7a7a !important;
+        font-size: 11px !important;
+      }
+
+      .dashboard-sidebar .recent-server-check {
+        flex-shrink: 0 !important;
+        color: #aa00ff !important;
+        display: flex !important;
+      }
+
+      .dashboard-sidebar .recent-server-spinner {
+        flex-shrink: 0 !important;
+        width: 14px !important;
+        height: 14px !important;
+        border: 2px solid #2a2a2a !important;
+        border-top: 2px solid #aa00ff !important;
+        border-radius: 50% !important;
+        animation: sidebar-spin 0.7s linear infinite !important;
+      }
+
+      .dashboard-sidebar .recent-servers-empty,
+      .dashboard-sidebar .recent-servers-loading {
+        padding: 20px 14px !important;
+        text-align: center !important;
+        color: #7a7a7a !important;
+        font-size: 12.5px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 8px !important;
       }
 
       /* ── Nav ── */
@@ -428,6 +666,81 @@ const DashboardSidebar = ({
     fetchServerInfo();
   }, [currentServerId, isPublicMode, publicGuildId]);
 
+  // ── Close the recent-servers popover on outside click ──
+  useEffect(() => {
+    if (!showRecent) return;
+
+    const handleClickOutside = (e) => {
+      if (serverCardRef.current && !serverCardRef.current.contains(e.target)) {
+        setShowRecent(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showRecent]);
+
+  const fetchRecentServers = async () => {
+    setRecentLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/user/recent-servers`, {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }
+      });
+      if (response.ok) {
+        const servers = await response.json();
+        setRecentServers(servers || []);
+      } else {
+        setRecentServers([]);
+      }
+    } catch (error) {
+      console.error('Error fetching recent servers:', error);
+      setRecentServers([]);
+    } finally {
+      setRecentLoading(false);
+      setRecentFetched(true);
+    }
+  };
+
+  const handleToggleRecent = () => {
+    if (isPublicMode) return;
+    const next = !showRecent;
+    setShowRecent(next);
+    if (next && !recentFetched) {
+      fetchRecentServers();
+    }
+  };
+
+  const handleSelectRecentServer = async (server) => {
+    if (switchingId || server.id === currentServerId) {
+      setShowRecent(false);
+      return;
+    }
+
+    setSwitchingId(server.id);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/user/save-server`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({ guild_id: server.id })
+      });
+
+      if (response.ok) {
+        window.location.reload();
+      } else {
+        console.error('Failed to switch server:', await response.text());
+        setSwitchingId(null);
+      }
+    } catch (error) {
+      console.error('Error switching server:', error);
+      setSwitchingId(null);
+    }
+  };
+
   const handleManageServersClick = (e) => {
     e.preventDefault();
     window.location.href = '/Manage Servers/';
@@ -439,8 +752,8 @@ const DashboardSidebar = ({
         <h2 className="sidebar-title">DASHBOARD</h2>
       </div>
       
-      {/* ── Server info box (no tooltip — Edit Server link instead) ── */}
-      <div className="server-info-container">
+      {/* ── Server info box ── */}
+      <div className="server-info-container" ref={serverCardRef}>
         <div className="server-info-box">
           {loading ? (
             <div className="server-loading">
@@ -449,23 +762,29 @@ const DashboardSidebar = ({
             </div>
           ) : serverInfo ? (
             <>
-              {serverInfo.avatarUrl ? (
-                <img 
-                  src={serverInfo.avatarUrl} 
-                  alt={serverInfo.name}
-                  className="server-avatar"
-                  onError={(e) => {
-                    e.target.onerror = null;
-                    e.target.style.display = 'none';
-                  }}
-                />
-              ) : (
-                <div className="server-avatar-placeholder">
-                  {serverInfo.name?.charAt(0).toUpperCase()}
-                </div>
-              )}
+              <div className="server-avatar-wrap">
+                {serverInfo.avatarUrl ? (
+                  <img 
+                    src={serverInfo.avatarUrl} 
+                    alt={serverInfo.name}
+                    className="server-avatar"
+                    onError={(e) => {
+                      e.target.onerror = null;
+                      e.target.style.display = 'none';
+                    }}
+                  />
+                ) : (
+                  <div className="server-avatar-placeholder">
+                    {serverInfo.name?.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <span className="server-active-dot" title="Active server" />
+              </div>
               <div className="server-details">
-                <div className="server-name">{serverInfo.name}</div>
+                <div className="server-name-row">
+                  <span className="server-name">{serverInfo.name}</span>
+                  <span className="server-active-tag">Active</span>
+                </div>
                 {serverInfo.member_count && (
                   <div className="server-members">
                     {serverInfo.member_count.toLocaleString()} members
@@ -481,11 +800,91 @@ const DashboardSidebar = ({
                   </a>
                 </div>
               </div>
+              {!isPublicMode && (
+                <button
+                  type="button"
+                  className={`server-dropdown-toggle ${showRecent ? 'open' : ''}`}
+                  onClick={handleToggleRecent}
+                  aria-label="Switch to a recent server"
+                  aria-expanded={showRecent}
+                >
+                  <ChevronDown size={16} />
+                </button>
+              )}
             </>
           ) : (
             <div className="server-not-found">No server selected</div>
           )}
         </div>
+
+        {showRecent && (
+          <div className="recent-servers-popover" role="menu">
+            <div className="recent-servers-header">
+              <Clock size={11} />
+              <span>Recent Servers</span>
+            </div>
+
+            <div className="recent-servers-list">
+              {recentLoading ? (
+                <div className="recent-servers-loading">
+                  <div className="loading-spinner-small"></div>
+                  <span>Loading...</span>
+                </div>
+              ) : recentServers.length === 0 ? (
+                <div className="recent-servers-empty">
+                  No recent servers yet
+                </div>
+              ) : (
+                recentServers.map((server) => {
+                  const isCurrent = server.id === currentServerId;
+                  const isSwitching = switchingId === server.id;
+                  const avatarUrl = server.icon
+                    ? `https://cdn.discordapp.com/icons/${server.id}/${server.icon}.png?size=128`
+                    : null;
+
+                  return (
+                    <button
+                      key={server.id}
+                      type="button"
+                      role="menuitem"
+                      className={`recent-server-item ${isCurrent ? 'is-current' : ''}`}
+                      onClick={() => handleSelectRecentServer(server)}
+                      disabled={!!switchingId}
+                    >
+                      {avatarUrl ? (
+                        <img
+                          src={avatarUrl}
+                          alt={server.name}
+                          className="recent-server-avatar"
+                          onError={(e) => { e.target.style.display = 'none'; }}
+                        />
+                      ) : (
+                        <div className="recent-server-avatar-placeholder">
+                          {server.name?.charAt(0).toUpperCase() || '?'}
+                        </div>
+                      )}
+                      <div className="recent-server-info">
+                        <div className="recent-server-name">{server.name || 'Unknown Server'}</div>
+                        {server.member_count ? (
+                          <div className="recent-server-meta">
+                            {server.member_count.toLocaleString()} members
+                          </div>
+                        ) : null}
+                      </div>
+                      {isSwitching ? (
+                        <div className="recent-server-spinner" />
+                      ) : isCurrent ? (
+                        <span className="recent-server-check">
+                          <Check size={14} />
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
       </div>
       
       {/* ── Navigation ── */}

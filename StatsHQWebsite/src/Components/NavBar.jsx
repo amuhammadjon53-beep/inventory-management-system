@@ -21,6 +21,9 @@ import {
   Trash2,
   Crown,
   Bug,
+  ChevronDown,
+  Clock,
+  Check,
 } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
@@ -38,9 +41,17 @@ const NavBar = () => {
   const [loadingServer, setLoadingServer] = useState(false);
   const [isPrivileged, setIsPrivileged] = useState(false);
   const [isMenuClosing, setIsMenuClosing] = useState(false);
+
+  const [showRecentMobile, setShowRecentMobile] = useState(false);
+  const [recentServersMobile, setRecentServersMobile] = useState([]);
+  const [recentLoadingMobile, setRecentLoadingMobile] = useState(false);
+  const [recentFetchedMobile, setRecentFetchedMobile] = useState(false);
+  const [switchingIdMobile, setSwitchingIdMobile] = useState(null);
+
   const mobileMenuRef = useRef(null);
   const menuButtonRef = useRef(null);
   const navRef = useRef(null);
+  const serverBoxRef = useRef(null);
 
   const getDecodedPath = () => {
     const rawPath = window.location.pathname;
@@ -103,6 +114,7 @@ const NavBar = () => {
                 setServerInfo({
                   id: selectedServer.id,
                   name: selectedServer.name,
+                  member_count: selectedServer.member_count,
                   avatarUrl: selectedServer.icon ? `https://cdn.discordapp.com/icons/${selectedServer.id}/${selectedServer.icon}.png?size=64` : null
                 });
               } else {
@@ -224,8 +236,23 @@ const NavBar = () => {
     }
   }, [isMobileMenuOpen, currentPage]);
 
+  // ── Close the recent-servers popover on outside click ──
+  useEffect(() => {
+    if (!showRecentMobile) return;
+
+    const handleClickOutsideRecent = (event) => {
+      if (serverBoxRef.current && !serverBoxRef.current.contains(event.target)) {
+        setShowRecentMobile(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutsideRecent);
+    return () => document.removeEventListener('mousedown', handleClickOutsideRecent);
+  }, [showRecentMobile]);
+
   // Close with a short outro animation instead of an instant unmount
   const closeMobileMenu = () => {
+    setShowRecentMobile(false);
     setIsMenuClosing(true);
     window.setTimeout(() => {
       setIsMobileMenuOpen(false);
@@ -256,48 +283,196 @@ const NavBar = () => {
     window.location.href = '/Manage Servers/';
   };
 
+  const fetchRecentServersMobile = async () => {
+    setRecentLoadingMobile(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/user/recent-servers`, {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }
+      });
+      if (response.ok) {
+        const servers = await response.json();
+        setRecentServersMobile(servers || []);
+      } else {
+        setRecentServersMobile([]);
+      }
+    } catch (error) {
+      console.error('Error fetching recent servers:', error);
+      setRecentServersMobile([]);
+    } finally {
+      setRecentLoadingMobile(false);
+      setRecentFetchedMobile(true);
+    }
+  };
+
+  const handleToggleRecentMobile = () => {
+    const next = !showRecentMobile;
+    setShowRecentMobile(next);
+    if (next && !recentFetchedMobile) {
+      fetchRecentServersMobile();
+    }
+  };
+
+  // ── Selecting a recent server calls save-server and reloads so every
+  //    guild-scoped view on the page re-fetches for the new server ──
+  const handleSelectRecentServerMobile = async (server) => {
+    if (switchingIdMobile || (serverInfo && server.id === serverInfo.id)) {
+      setShowRecentMobile(false);
+      return;
+    }
+
+    setSwitchingIdMobile(server.id);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/user/save-server`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({ guild_id: server.id })
+      });
+
+      if (response.ok) {
+        window.location.reload();
+      } else {
+        console.error('Failed to switch server:', await response.text());
+        setSwitchingIdMobile(null);
+      }
+    } catch (error) {
+      console.error('Error switching server:', error);
+      setSwitchingIdMobile(null);
+    }
+  };
+
   const ServerInfoBox = () => (
-    <div className="mobile-server-info">
-      {loadingServer ? (
-        <div className="mobile-server-loading">
-          <div className="loading-spinner-small"></div>
-          <span>Loading server...</span>
-        </div>
-      ) : serverInfo ? (
-        <div className="mobile-server-details">
-          {serverInfo.avatarUrl ? (
-            <img 
-              src={serverInfo.avatarUrl} 
-              alt={serverInfo.name}
-              className="mobile-server-avatar"
-              onError={(e) => {
-                e.target.onerror = null;
-                e.target.style.display = 'none';
-                if (e.target.nextSibling) {
-                  e.target.nextSibling.style.display = 'flex';
-                }
-              }}
-            />
-          ) : (
-            <div className="mobile-server-avatar-placeholder">
-              {serverInfo.name?.charAt(0).toUpperCase()}
+    <div className="mobile-server-info" ref={serverBoxRef}>
+      <div className="mobile-server-details">
+        {loadingServer ? (
+          <div className="mobile-server-loading">
+            <div className="loading-spinner-small"></div>
+            <span>Loading server...</span>
+          </div>
+        ) : serverInfo ? (
+          <>
+            <div className="mobile-server-avatar-wrap">
+              {serverInfo.avatarUrl ? (
+                <img 
+                  src={serverInfo.avatarUrl} 
+                  alt={serverInfo.name}
+                  className="mobile-server-avatar"
+                  onError={(e) => {
+                    e.target.onerror = null;
+                    e.target.style.display = 'none';
+                    if (e.target.nextSibling) {
+                      e.target.nextSibling.style.display = 'flex';
+                    }
+                  }}
+                />
+              ) : (
+                <div className="mobile-server-avatar-placeholder">
+                  {serverInfo.name?.charAt(0).toUpperCase()}
+                </div>
+              )}
+              <span className="mobile-server-active-dot" />
             </div>
-          )}
-          <div className="mobile-server-text">
-            <div className="mobile-server-name">{serverInfo.name}</div>
-            <div className="mobile-server-edit">
-              <a 
-                href="/Manage Servers/"
-                onClick={handleManageServersClick}
-                className="mobile-edit-link"
-              >
-                Edit Server →
-              </a>
+            <div className="mobile-server-text">
+              <div className="mobile-server-name-row">
+                <span className="mobile-server-name">{serverInfo.name}</span>
+                <span className="mobile-server-active-tag">Active</span>
+              </div>
+              <div className="mobile-server-edit">
+                <a 
+                  href="/Manage Servers/"
+                  onClick={handleManageServersClick}
+                  className="mobile-edit-link"
+                >
+                  Edit Server {'→'}
+                </a>
+              </div>
             </div>
+            <button
+              type="button"
+              className={`mobile-server-dropdown-toggle ${showRecentMobile ? 'open' : ''}`}
+              onClick={handleToggleRecentMobile}
+              aria-label="Switch to a recent server"
+              aria-expanded={showRecentMobile}
+            >
+              <ChevronDown size={14} />
+            </button>
+          </>
+        ) : (
+          <div className="mobile-server-not-found">No server selected</div>
+        )}
+      </div>
+
+      {showRecentMobile && (
+        <div className="mobile-recent-servers-popover" role="menu">
+          <div className="mobile-recent-servers-header">
+            <Clock size={10} />
+            <span>Recent Servers</span>
+          </div>
+
+          <div className="mobile-recent-servers-list">
+            {recentLoadingMobile ? (
+              <div className="mobile-recent-servers-loading">
+                <div className="loading-spinner-small"></div>
+                <span>Loading...</span>
+              </div>
+            ) : recentServersMobile.length === 0 ? (
+              <div className="mobile-recent-servers-empty">
+                No recent servers yet
+              </div>
+            ) : (
+              recentServersMobile.map((server) => {
+                const isCurrent = serverInfo && server.id === serverInfo.id;
+                const isSwitching = switchingIdMobile === server.id;
+                const avatarUrl = server.icon
+                  ? `https://cdn.discordapp.com/icons/${server.id}/${server.icon}.png?size=128`
+                  : null;
+
+                return (
+                  <button
+                    key={server.id}
+                    type="button"
+                    role="menuitem"
+                    className={`mobile-recent-server-item ${isCurrent ? 'is-current' : ''}`}
+                    onClick={() => handleSelectRecentServerMobile(server)}
+                    disabled={!!switchingIdMobile}
+                  >
+                    {avatarUrl ? (
+                      <img
+                        src={avatarUrl}
+                        alt={server.name}
+                        className="mobile-recent-server-avatar"
+                        onError={(e) => { e.target.style.display = 'none'; }}
+                      />
+                    ) : (
+                      <div className="mobile-recent-server-avatar-placeholder">
+                        {server.name?.charAt(0).toUpperCase() || '?'}
+                      </div>
+                    )}
+                    <div className="mobile-recent-server-info">
+                      <div className="mobile-recent-server-name">{server.name || 'Unknown Server'}</div>
+                      {server.member_count ? (
+                        <div className="mobile-recent-server-meta">
+                          {server.member_count.toLocaleString()} members
+                        </div>
+                      ) : null}
+                    </div>
+                    {isSwitching ? (
+                      <div className="mobile-recent-server-spinner" />
+                    ) : isCurrent ? (
+                      <span className="mobile-recent-server-check">
+                        <Check size={12} />
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })
+            )}
           </div>
         </div>
-      ) : (
-        <div className="mobile-server-not-found">No server selected</div>
       )}
     </div>
   );
@@ -309,7 +484,7 @@ const NavBar = () => {
 
   const DashboardMenu = () => (
     <div className="mobile-submenu">
-      <ServerInfoBox />
+      {currentPage === "Dashboard" && <ServerInfoBox />}
       <div className="submenu-category">
         <h3 className="category-title">ANALYTICS</h3>
         <a href="/Dashboard/Messages/" className={`mobile-nav-link ${isDashboardPageActive('Messages') ? 'active' : ''}`} onClick={closeMobileMenu}>
@@ -1190,16 +1365,20 @@ const NavBar = () => {
           margin-bottom: 24px;
           padding-bottom: 16px;
           border-bottom: 1px solid #2c2f3a;
+          position: relative;
         }
 
         .mobile-server-details {
           display: flex;
           align-items: center;
-          gap: 12px;
-          background: linear-gradient(135deg, #1a1c24 0%, #14161c 100%);
-          padding: 12px;
+          gap: 10px;
+          background:
+            linear-gradient(180deg, rgba(170, 0, 255, 0.07) 0%, rgba(26, 28, 36, 0) 55%),
+            linear-gradient(135deg, #1a1c24 0%, #14161c 100%);
+          padding: 10px 10px 10px 12px;
           border-radius: 12px;
           border: 1px solid #2c2f3a;
+          border-top: 1px solid rgba(170, 0, 255, 0.45);
           transition: all 0.2s ease;
         }
 
@@ -1208,38 +1387,76 @@ const NavBar = () => {
           box-shadow: 0 0 16px rgba(170, 0, 255, 0.12);
         }
 
+        .mobile-server-avatar-wrap {
+          position: relative;
+          flex-shrink: 0;
+        }
+
         .mobile-server-avatar {
-          width: 48px;
-          height: 48px;
+          width: 44px;
+          height: 44px;
           border-radius: 50%;
           object-fit: cover;
           border: 2px solid #aa00ff;
+          display: block;
         }
 
         .mobile-server-avatar-placeholder {
-          width: 48px;
-          height: 48px;
+          width: 44px;
+          height: 44px;
           border-radius: 50%;
           background: linear-gradient(135deg, #2a2a2a 0%, #1a1c24 100%);
           border: 2px solid #aa00ff;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 20px;
+          font-size: 18px;
           font-weight: 600;
           color: #aa00ff;
         }
 
+        .mobile-server-active-dot {
+          position: absolute;
+          bottom: -1px;
+          right: -1px;
+          width: 11px;
+          height: 11px;
+          border-radius: 50%;
+          background: #22c55e;
+          border: 2px solid #14161c;
+          box-shadow: 0 0 6px rgba(34, 197, 94, 0.7);
+        }
+
         .mobile-server-text { flex: 1; min-width: 0; }
+
+        .mobile-server-name-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-bottom: 3px;
+        }
 
         .mobile-server-name {
           color: #ffffff;
-          font-size: 15px;
+          font-size: 14px;
           font-weight: 600;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          margin-bottom: 4px;
+          min-width: 0;
+        }
+
+        .mobile-server-active-tag {
+          flex-shrink: 0;
+          font-size: 8px;
+          font-weight: 700;
+          letter-spacing: 0.5px;
+          color: #aa00ff;
+          background: rgba(170, 0, 255, 0.12);
+          border: 1px solid rgba(170, 0, 255, 0.35);
+          border-radius: 4px;
+          padding: 1.5px 5px;
+          text-transform: uppercase;
         }
 
         .mobile-server-edit { font-size: 12px; }
@@ -1247,13 +1464,187 @@ const NavBar = () => {
         .mobile-edit-link {
           color: #aa00ff;
           text-decoration: none;
-          font-size: 12px;
+          font-size: 11.5px;
           transition: all 0.2s ease;
         }
 
         .mobile-edit-link:hover {
           text-decoration: underline;
           text-shadow: 0 0 8px #aa00ff;
+        }
+
+        .mobile-server-dropdown-toggle {
+          flex-shrink: 0;
+          width: 26px;
+          height: 26px;
+          border-radius: 7px;
+          border: 1px solid #2c2f3a;
+          background: #0f1016;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          transition: all 0.15s ease;
+          padding: 0;
+        }
+
+        .mobile-server-dropdown-toggle:active {
+          border-color: rgba(170, 0, 255, 0.5);
+          background: rgba(170, 0, 255, 0.1);
+        }
+
+        .mobile-server-dropdown-toggle svg {
+          transition: transform 0.2s ease;
+          color: #b0b0b0;
+        }
+
+        .mobile-server-dropdown-toggle.open svg {
+          transform: rotate(180deg);
+          color: #aa00ff;
+        }
+
+        .mobile-recent-servers-popover {
+          position: absolute;
+          left: 0;
+          right: 0;
+          top: calc(100% + 6px);
+          background: #0f1016;
+          border: 1px solid #2c2f3a;
+          border-radius: 12px;
+          box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(170, 0, 255, 0.1);
+          z-index: 1010;
+          overflow: hidden;
+          animation: recentPopIn 0.14s ease;
+        }
+
+        @keyframes recentPopIn {
+          from { opacity: 0; transform: translateY(-4px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+
+        .mobile-recent-servers-header {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 9px 12px;
+          border-bottom: 1px solid #2c2f3a;
+          color: #7a7a7a;
+          font-size: 9.5px;
+          font-weight: 700;
+          letter-spacing: 0.7px;
+          text-transform: uppercase;
+        }
+
+        .mobile-recent-servers-list {
+          max-height: 152px;
+          overflow-y: auto;
+          padding: 6px;
+        }
+
+        .mobile-recent-servers-list::-webkit-scrollbar { width: 5px; }
+        .mobile-recent-servers-list::-webkit-scrollbar-track { background: transparent; }
+        .mobile-recent-servers-list::-webkit-scrollbar-thumb { background: #2c2f3a; border-radius: 3px; }
+
+        .mobile-recent-server-item {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          width: 100%;
+          padding: 7px;
+          border-radius: 8px;
+          border: 1px solid transparent;
+          border-left: 2px solid transparent;
+          background: transparent;
+          cursor: pointer;
+          text-align: left;
+          transition: all 0.15s ease;
+          font-family: inherit;
+        }
+
+        .mobile-recent-server-item:active:not(:disabled) {
+          background: rgba(170, 0, 255, 0.1);
+          border-left-color: #aa00ff;
+        }
+
+        .mobile-recent-server-item:disabled {
+          cursor: default;
+          opacity: 0.55;
+        }
+
+        .mobile-recent-server-item.is-current {
+          border-left-color: rgba(170, 0, 255, 0.5);
+          background: rgba(170, 0, 255, 0.05);
+        }
+
+        .mobile-recent-server-avatar {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          object-fit: cover;
+          border: 1.5px solid #2c2f3a;
+          flex-shrink: 0;
+        }
+
+        .mobile-recent-server-avatar-placeholder {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          background: #1a1c24;
+          border: 1.5px solid #2c2f3a;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+          font-weight: 600;
+          color: #aa00ff;
+          flex-shrink: 0;
+        }
+
+        .mobile-recent-server-info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .mobile-recent-server-name {
+          color: #ffffff;
+          font-size: 12.5px;
+          font-weight: 500;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .mobile-recent-server-meta {
+          color: #7a7a7a;
+          font-size: 10.5px;
+        }
+
+        .mobile-recent-server-check {
+          flex-shrink: 0;
+          color: #aa00ff;
+          display: flex;
+        }
+
+        .mobile-recent-server-spinner {
+          flex-shrink: 0;
+          width: 13px;
+          height: 13px;
+          border: 2px solid #2c2f3a;
+          border-top: 2px solid #aa00ff;
+          border-radius: 50%;
+          animation: spin 0.7s linear infinite;
+        }
+
+        .mobile-recent-servers-empty,
+        .mobile-recent-servers-loading {
+          padding: 18px 12px;
+          text-align: center;
+          color: #7a7a7a;
+          font-size: 12px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
         }
 
         .mobile-server-loading {
@@ -1347,7 +1738,8 @@ const NavBar = () => {
         @media (prefers-reduced-motion: reduce) {
           .nav-link, .nav-link::before, .nav-link::after, .nav-icon,
           .mobile-nav-link, .mobile-nav-icon, .mobile-menu, .mobile-menu-overlay,
-          .mobile-menu-content, .burger-bar, .menu-button {
+          .mobile-menu-content, .burger-bar, .menu-button,
+          .mobile-recent-servers-popover {
             animation-duration: 0.01ms !important;
             transition-duration: 0.01ms !important;
           }
@@ -1386,12 +1778,12 @@ const NavBar = () => {
 
           .mobile-server-avatar,
           .mobile-server-avatar-placeholder {
-            width: 40px;
-            height: 40px;
-            font-size: 18px;
+            width: 38px;
+            height: 38px;
+            font-size: 16px;
           }
 
-          .mobile-server-name { font-size: 14px; }
+          .mobile-server-name { font-size: 13px; }
           .mobile-nav-link { padding: 14px 4px; font-size: 16px; }
           .submenu-category .mobile-nav-link { padding: 10px 4px 10px 12px; font-size: 14px; }
         }
