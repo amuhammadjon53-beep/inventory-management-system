@@ -7,6 +7,17 @@ from discord.ui import Button, View
 from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limiter
 
 
+# =========================================================
+# FEEDBACK / VOTE CONSTANTS
+# =========================================================
+FEEDBACK_GUILD_ID = 1456950849094811726
+SUGGESTION_CHANNEL_ID = 1522104980067192862
+BUG_REPORT_CHANNEL_ID = 1522104941932576788
+SUPPORT_SERVER_URL = "https://discord.gg/hreJvck8cK"
+VOTE_URL = "https://top.gg/bot/1481328229909270568/vote"
+NEW_EMBED_COLOR = "#aa00ff"
+
+
 class HelpView(View):
     """View class for help command buttons"""
 
@@ -91,6 +102,154 @@ class HelpView(View):
             row=2
         )
         self.add_item(support_button)
+
+
+# =========================================================
+# FEEDBACK FLOW - MODAL
+# =========================================================
+class FeedbackModal(discord.ui.Modal):
+    """Modal (popup form) that lets the user type their suggestion / bug report"""
+
+    def __init__(self, cog, feedback_type: str, author_id: int, prefill: str = None):
+        title = "Submit a Suggestion" if feedback_type == "suggestion" else "Submit a Bug Report"
+        super().__init__(title=title)
+        self.cog = cog
+        self.feedback_type = feedback_type
+        self.author_id = author_id
+
+        label = "Describe your suggestion" if feedback_type == "suggestion" else "Describe the bug"
+        placeholder = (
+            "e.g. It would be cool if the bot could ..."
+            if feedback_type == "suggestion"
+            else "e.g. When I run /xyz the bot ..."
+        )
+
+        self.feedback_input = discord.ui.TextInput(
+            label=label,
+            style=discord.TextStyle.paragraph,
+            placeholder=placeholder,
+            required=True,
+            max_length=4000,
+            default=prefill
+        )
+        self.add_item(self.feedback_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ This isn't your feedback session.", ephemeral=True
+            )
+            return
+
+        text = str(self.feedback_input.value)
+        embed = self.cog._build_feedback_review_embed(self.feedback_type, text)
+        view = FeedbackReviewView(
+            self.cog, self.feedback_type, text, self.author_id)
+
+        # This works because the modal was launched from a component on this message,
+        # allowing us to edit the original message on modal submit.
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+# =========================================================
+# FEEDBACK FLOW - VIEWS
+# =========================================================
+class FeedbackTypeView(View):
+    """Page 1: choose Suggestion or Bug Report"""
+
+    def __init__(self, cog, author_id: int):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.author_id = author_id
+
+    async def _check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ This isn't your feedback session.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Suggestion", emoji="💡", style=discord.ButtonStyle.primary)
+    async def suggestion_button(self, interaction: discord.Interaction, button: Button):
+        if not await self._check(interaction):
+            return
+        embed = self.cog._build_feedback_write_embed("suggestion")
+        view = FeedbackWriteView(self.cog, "suggestion", self.author_id)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="Bug Report", emoji="🐛", style=discord.ButtonStyle.danger)
+    async def bug_report_button(self, interaction: discord.Interaction, button: Button):
+        if not await self._check(interaction):
+            return
+        embed = self.cog._build_feedback_write_embed("bug")
+        view = FeedbackWriteView(self.cog, "bug", self.author_id)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class FeedbackWriteView(View):
+    """Page 2: prompt the user to open the modal and write their feedback"""
+
+    def __init__(self, cog, feedback_type: str, author_id: int):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.feedback_type = feedback_type
+        self.author_id = author_id
+
+    @discord.ui.button(label="Write Feedback", emoji="📝", style=discord.ButtonStyle.success)
+    async def write_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ This isn't your feedback session.", ephemeral=True
+            )
+            return
+        modal = FeedbackModal(self.cog, self.feedback_type, self.author_id)
+        await interaction.response.send_modal(modal)
+
+
+class FeedbackReviewView(View):
+    """Page 3: review the submitted text, then submit (or rewrite) it"""
+
+    def __init__(self, cog, feedback_type: str, text: str, author_id: int):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.feedback_type = feedback_type
+        self.text = text
+        self.author_id = author_id
+
+    async def _check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ This isn't your feedback session.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Submit", emoji="✅", style=discord.ButtonStyle.success)
+    async def submit_button(self, interaction: discord.Interaction, button: Button):
+        if not await self._check(interaction):
+            return
+
+        try:
+            await self.cog._deliver_feedback(interaction, self.feedback_type, self.text)
+        except Exception:
+            await interaction.response.send_message(
+                "❌ Something went wrong while submitting your feedback. Please try again later, "
+                f"or reach out on our [support server]({SUPPORT_SERVER_URL}).",
+                ephemeral=True
+            )
+            return
+
+        embed = self.cog._build_feedback_success_embed(self.feedback_type)
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @discord.ui.button(label="Rewrite", emoji="✏️", style=discord.ButtonStyle.secondary)
+    async def rewrite_button(self, interaction: discord.Interaction, button: Button):
+        if not await self._check(interaction):
+            return
+        modal = FeedbackModal(self.cog, self.feedback_type,
+                              self.author_id, prefill=self.text)
+        await interaction.response.send_modal(modal)
 
 
 class BotLinks(commands.Cog):
@@ -435,6 +594,185 @@ class BotLinks(commands.Cog):
             await ctx_or_interaction.send(embed=embed, view=view)
 
     # =========================================================
+    # INTERNAL FUNCTION FOR VOTE COMMAND
+    # =========================================================
+    @rate_limited(RateLimitType.MESSAGE, timeout=10.0)
+    async def _handle_vote_command(self, ctx_or_interaction, is_interaction=False):
+        """Internal function to handle the vote command for both command types"""
+
+        # Defer for interactions to prevent timeout while rate limiting
+        if is_interaction:
+            await ctx_or_interaction.response.defer()
+
+        embed = discord.Embed(
+            title="🗳️ Vote for the Bot",
+            description="Enjoying the bot? Support us by voting on top.gg, it only takes a second!",
+            color=discord.Color.from_str(NEW_EMBED_COLOR)
+        )
+
+        embed.add_field(
+            name="Vote Link",
+            value=f"[Click here to vote for the bot on top.gg!]({VOTE_URL})",
+            inline=False
+        )
+
+        embed.set_footer(text="Thank you for your support!")
+
+        # Send the response (not ephemeral)
+        if is_interaction:
+            await ctx_or_interaction.followup.send(embed=embed)
+        else:
+            await ctx_or_interaction.send(embed=embed)
+
+    # =========================================================
+    # INTERNAL FUNCTIONS + EMBED BUILDERS FOR FEEDBACK COMMAND
+    # =========================================================
+    def _build_feedback_intro_embed(self):
+        """Page 1: explain the difference between a suggestion and a bug report"""
+        embed = discord.Embed(
+            title="📝 Feedback",
+            description="We'd love to hear from you! Please choose the type of feedback you'd like to submit by using the buttons below.",
+            color=discord.Color.from_str(NEW_EMBED_COLOR)
+        )
+
+        embed.add_field(
+            name="💡 What is a Suggestion?",
+            value=(
+                "A suggestion is an idea to make the bot better. For example:\n"
+                "• Requesting a **brand new feature**\n"
+                "• Requesting a **new command**\n"
+                "• Asking us to **change or improve an existing feature**"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🐛 What is a Bug Report?",
+            value=(
+                "A bug report is used to flag something that's already broken. For example:\n"
+                "• A command **erroring out** or not responding at all\n"
+                "• The dashboard **showing incorrect or missing data**\n"
+                "• Any other **existing issue** you've noticed within the bot"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🆘 Need Immediate Help?",
+            value=f"If you have an issue that needs a quicker follow-up, consider joining our [support server]({SUPPORT_SERVER_URL})!",
+            inline=False
+        )
+
+        embed.set_footer(text="Click a button below to get started")
+        return embed
+
+    def _build_feedback_write_embed(self, feedback_type: str):
+        """Page 2: prompt the user to open the modal"""
+        is_suggestion = feedback_type == "suggestion"
+        embed = discord.Embed(
+            title="💡 Submit a Suggestion" if is_suggestion else "🐛 Submit a Bug Report",
+            description=(
+                "Click the button below to open a form where you can type out your "
+                f"{'suggestion' if is_suggestion else 'bug report'}."
+            ),
+            color=discord.Color.from_str(NEW_EMBED_COLOR)
+        )
+        embed.set_footer(
+            text="Your feedback will be sent directly to our team")
+        return embed
+
+    def _build_feedback_review_embed(self, feedback_type: str, text: str):
+        """Page 3: show back what the user wrote before they submit it"""
+        is_suggestion = feedback_type == "suggestion"
+        embed = discord.Embed(
+            title="🔍 Review Your Suggestion" if is_suggestion else "🔍 Review Your Bug Report",
+            description=text,
+            color=discord.Color.from_str(NEW_EMBED_COLOR)
+        )
+        embed.set_footer(
+            text="Click Submit to send it, or Rewrite to make changes")
+        return embed
+
+    def _build_feedback_success_embed(self, feedback_type: str):
+        """Final page: confirm the feedback was received"""
+        is_suggestion = feedback_type == "suggestion"
+        embed = discord.Embed(
+            title="✅ Feedback Received",
+            description=(
+                f"Thank you! Your {'suggestion' if is_suggestion else 'bug report'} has been received "
+                "and forwarded to our team. We greatly appreciate you taking the time to help us improve "
+                "the bot!\n\n"
+                f"If you have an issue that needs follow-up, feel free to join our [support server]({SUPPORT_SERVER_URL})."
+            ),
+            color=discord.Color.from_str(NEW_EMBED_COLOR)
+        )
+        return embed
+
+    async def _deliver_feedback(self, interaction: discord.Interaction, feedback_type: str, text: str):
+        """Send the submitted feedback to the correct channel in the feedback guild"""
+        is_suggestion = feedback_type == "suggestion"
+        channel_id = SUGGESTION_CHANNEL_ID if is_suggestion else BUG_REPORT_CHANNEL_ID
+
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            channel = await self.bot.fetch_channel(channel_id)
+
+        author = interaction.user
+        outgoing_embed = discord.Embed(
+            title="💡 New Suggestion" if is_suggestion else "🐛 New Bug Report",
+            description=text,
+            color=discord.Color.from_str(NEW_EMBED_COLOR),
+            timestamp=discord.utils.utcnow()
+        )
+        outgoing_embed.set_author(
+            name=f"{author}", icon_url=author.display_avatar.url if author.display_avatar else discord.Embed.Empty
+        )
+        outgoing_embed.add_field(
+            name="User ID", value=f"`{author.id}`", inline=True)
+
+        source_guild = interaction.guild
+        if source_guild:
+            outgoing_embed.add_field(
+                name="From Server", value=f"{source_guild.name} (`{source_guild.id}`)", inline=True
+            )
+        else:
+            outgoing_embed.add_field(
+                name="From Server", value="Direct Message", inline=True)
+
+        await channel.send(embed=outgoing_embed)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=10.0)
+    async def _handle_feedback_command(self, ctx_or_interaction, option=None, is_interaction=False):
+        """Internal function to handle the feedback command for both command types
+
+        NOTE: Discord only allows ephemeral responses on slash command interactions.
+        For prefix commands there is no interaction to attach to for the initial
+        message, so the flow will be visible in the channel; every button/modal
+        interaction that follows a slash-triggered flow stays ephemeral automatically.
+        """
+
+        if is_interaction:
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            author = ctx_or_interaction.user
+        else:
+            author = ctx_or_interaction.author
+
+        if option == "suggestion":
+            embed = self._build_feedback_write_embed("suggestion")
+            view = FeedbackWriteView(self, "suggestion", author.id)
+        elif option == "bug":
+            embed = self._build_feedback_write_embed("bug")
+            view = FeedbackWriteView(self, "bug", author.id)
+        else:
+            embed = self._build_feedback_intro_embed()
+            view = FeedbackTypeView(self, author.id)
+
+        if is_interaction:
+            await ctx_or_interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        else:
+            await ctx_or_interaction.send(embed=embed, view=view)
+
+    # =========================================================
     # SHORTCUT COMMANDS
     # =========================================================
     @commands.command(name="support", aliases=["support server", "discord server"])
@@ -475,7 +813,7 @@ class BotLinks(commands.Cog):
     @commands.command(name="vote", aliases=["voting", "topgg"])
     async def vote_shortcut(self, ctx: commands.Context):
         """Show the vote link for the bot on top.gg"""
-        await self._handle_links_command(ctx, option="vote", is_interaction=False)
+        await self._handle_vote_command(ctx, is_interaction=False)
 
     @commands.command(name="premium", aliases=["prem"])
     async def premium_shortcut(self, ctx: commands.Context):
@@ -492,6 +830,16 @@ class BotLinks(commands.Cog):
         """Show the contact email"""
         await self._handle_links_command(ctx, option="email", is_interaction=False)
 
+    @commands.command(name="suggest", aliases=["suggestion"])
+    async def suggestion_shortcut(self, ctx: commands.Context):
+        """Jump straight to submitting a suggestion"""
+        await self._handle_feedback_command(ctx, option="suggestion", is_interaction=False)
+
+    @commands.command(name="bugreport", aliases=["bug", "reportbug"])
+    async def bug_report_shortcut(self, ctx: commands.Context):
+        """Jump straight to submitting a bug report"""
+        await self._handle_feedback_command(ctx, option="bug", is_interaction=False)
+
     # =========================================================
     # HELP COMMAND
     # =========================================================
@@ -501,6 +849,27 @@ class BotLinks(commands.Cog):
     async def help_prefix(self, ctx: commands.Context):
         """Get help with the bot and access important links"""
         await self._handle_help_command(ctx, is_interaction=False)
+
+    # =========================================================
+    # FEEDBACK COMMAND
+    # =========================================================
+    @commands.command(name="feedback", aliases=["fb"])
+    async def feedback_prefix(self, ctx: commands.Context, *, option: str = None):
+        """Submit a suggestion or a bug report
+
+        Parameters:
+        - `suggestion`: Jump straight to submitting a suggestion
+        - `bug`: Jump straight to submitting a bug report
+        """
+        parsed_option = None
+        if option:
+            option_lower = option.lower()
+            if "suggest" in option_lower:
+                parsed_option = "suggestion"
+            elif "bug" in option_lower:
+                parsed_option = "bug"
+
+        await self._handle_feedback_command(ctx, option=parsed_option, is_interaction=False)
 
     # =========================================================
     # GET ID COMMAND GROUP (NESTED GROUPING)
@@ -754,6 +1123,31 @@ class BotLinks(commands.Cog):
     async def help_command(self, interaction: discord.Interaction):
         """Slash command version of help"""
         await self._handle_help_command(interaction, is_interaction=True)
+
+    @app_commands.command(
+        name="vote",
+        description="Get the link to vote for the bot on top.gg"
+    )
+    async def vote_command(self, interaction: discord.Interaction):
+        """Slash command version of vote"""
+        await self._handle_vote_command(interaction, is_interaction=True)
+
+    @app_commands.command(
+        name="feedback",
+        description="Submit a suggestion or a bug report"
+    )
+    @app_commands.choices(option=[
+        app_commands.Choice(name="Suggestion", value="suggestion"),
+        app_commands.Choice(name="Bug Report", value="bug"),
+    ])
+    async def feedback_command(
+        self,
+        interaction: discord.Interaction,
+        option: app_commands.Choice[str] = None
+    ):
+        """Slash command version of feedback"""
+        option_value = option.value if option else None
+        await self._handle_feedback_command(interaction, option=option_value, is_interaction=True)
 
 
 async def setup(bot):
