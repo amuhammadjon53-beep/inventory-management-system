@@ -40,6 +40,7 @@ export default defineConfig({
         debug: path.resolve(__dirname, 'Dashboard/Debug/index.html'),
         distribution: path.resolve(__dirname, 'Dashboard/Distribution/index.html'),
         subscriptions: path.resolve(__dirname, 'Dashboard/Subscriptions/index.html'),
+        diagnostics: path.resolve(__dirname, 'diagnostics/index.html'),
       },
     },
   },

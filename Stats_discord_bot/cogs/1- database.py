@@ -32,6 +32,7 @@ import numpy as np
 import hashlib
 import re
 import math
+import functools
 from asyncio import Semaphore
 import emoji
 import unicodedata
@@ -47,6 +48,35 @@ from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limi
 root_dir = Path(__file__).parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
+
+
+def track_sync_job(job_type: str):
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            start = time.monotonic()
+            status = "success"
+            error_message = None
+            try:
+                return await func(self, *args, **kwargs)
+            except Exception as e:
+                status = "failed"
+                error_message = str(e)[:500]
+                raise
+            finally:
+                duration_ms = (time.monotonic() - start) * 1000
+                if self.pool:
+                    try:
+                        async with self.pool.acquire() as conn:
+                            await conn.execute('''
+                                INSERT INTO sync_job_runs (job_type, status, duration_ms, error_message)
+                                VALUES ($1, $2, $3, $4)
+                            ''', job_type, status, duration_ms, error_message)
+                    except Exception as log_err:
+                        print(
+                            f"⚠️ [Diagnostics] Failed to log sync_job_runs for {job_type}: {log_err}")
+        return wrapper
+    return decorator
 
 
 load_dotenv()
@@ -954,6 +984,7 @@ class DatabaseStats(commands.Cog):
         print("❌ All Discords.com authentication methods failed.")
         print("   Please verify your DISCORDS_TOKEN in the .env file.")
 
+    @track_sync_job("channel_sync")
     async def sync_all_guilds_channels_sharded(self):
         """Sync channels for all guilds with sharded approach and rate limiting."""
         if not self.pool or not self.db_connected:
@@ -1014,6 +1045,7 @@ class DatabaseStats(commands.Cog):
         print(f"📊 Total channels/categories synced: {total_channels_synced}")
         return success_count
 
+    @track_sync_job("role_membership_sync")
     async def _sync_guild_role_memberships(self, guild: discord.Guild):
         """Actually sync role memberships for a single guild with role names and colors."""
         if not self.pool or not self.db_connected:
@@ -1215,6 +1247,7 @@ class DatabaseStats(commands.Cog):
             f"\n✅ Role membership sync completed: {success_count}/{total_guilds} guilds synced")
         print(f"{'='*60}\n")
 
+    @track_sync_job("activity_streak_update")
     async def update_activity_streaks(self):
         """Update activity streaks for all users (uses ActivityTracker cog)."""
         print(f"\n{'='*60}")
@@ -1242,6 +1275,7 @@ class DatabaseStats(commands.Cog):
 
         print(f"{'='*60}\n")
 
+    @track_sync_job("startup_full_sync")
     async def startup_sync_all_guilds(self):
         """Run all sync operations sequentially at startup."""
         if not self.pool or not self.db_connected:
@@ -2058,6 +2092,8 @@ class DatabaseStats(commands.Cog):
             await self._write_direct_to_postgresql(batch_type, data)
             return
 
+        start = time.monotonic()
+
         try:
             should_flush = False
             async with self.redis_batch_lock:
@@ -2553,6 +2589,9 @@ class DatabaseStats(commands.Cog):
     async def _flush_batch_to_postgresql(self, batch_type: str):
         """Flush a specific batch to PostgreSQL.
         Each record gets its own transaction to ensure commits happen."""
+
+        start = time.monotonic()
+
         if not self.pool or not self.db_connected:
             return
 
@@ -2938,6 +2977,19 @@ class DatabaseStats(commands.Cog):
             self.metrics['redis_batch_flushes'] += 1
             if batch_type in self.metrics['redis_batch_sizes']:
                 self.metrics['redis_batch_sizes'][batch_type] = 0
+
+        duration_ms = (time.monotonic() - start) * 1000
+        if successful_count > 0 or failed_count > 0:
+            if self.pool:
+                try:
+                    async with self.pool.acquire() as conn:
+                        await conn.execute('''
+                            INSERT INTO batch_write_runs (batch_type, successful_count, failed_count, duration_ms)
+                            VALUES ($1, $2, $3, $4)
+                        ''', batch_type, successful_count, failed_count, duration_ms)
+                except Exception as log_err:
+                    print(
+                        f"⚠️ [Diagnostics] Failed to log batch_write_runs: {log_err}")
 
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -3335,7 +3387,7 @@ class DatabaseStats(commands.Cog):
                     )
                 ''')
                 print("  ✅ Created/verified table: retention_alert_progress")
-                
+
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS user_recent_servers (
                         id BIGSERIAL PRIMARY KEY,
@@ -3491,6 +3543,55 @@ class DatabaseStats(commands.Cog):
                     'CREATE INDEX IF NOT EXISTS idx_history_sync_progress_status '
                     'ON history_sync_progress(guild_id, status)'
                 )
+
+                # ===================================================================
+                # ===== DIAGNOSTICS TABLES =====
+                # ===================================================================
+                print("\n" + "="*60)
+                print("🩺 CREATING DIAGNOSTICS TABLES")
+                print("="*60)
+
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS bot_diagnostics (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: bot_diagnostics")
+
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS sync_job_runs (
+                        id BIGSERIAL PRIMARY KEY,
+                        job_type TEXT NOT NULL,
+                        guild_id BIGINT,
+                        status TEXT NOT NULL,
+                        duration_ms FLOAT NOT NULL,
+                        error_message TEXT,
+                        ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                ''')
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_sync_job_runs_type_time '
+                    'ON sync_job_runs(job_type, ran_at DESC)'
+                )
+                print("  ✅ Created/verified table: sync_job_runs")
+
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS batch_write_runs (
+                        id BIGSERIAL PRIMARY KEY,
+                        batch_type TEXT NOT NULL,
+                        successful_count INT NOT NULL DEFAULT 0,
+                        failed_count INT NOT NULL DEFAULT 0,
+                        duration_ms FLOAT NOT NULL DEFAULT 0,
+                        ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                ''')
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_batch_write_runs_type_time '
+                    'ON batch_write_runs(batch_type, ran_at DESC)'
+                )
+                print("  ✅ Created/verified table: batch_write_runs")
 
                 # ===================================================================
                 # ===== PADDLE PAYMENT SYSTEM TABLES =====
@@ -4118,6 +4219,43 @@ class DatabaseStats(commands.Cog):
 
         self.invite_snapshot_locks.clear()
         self.invite_snapshots.clear()
+
+    async def cog_load(self):
+        """Runs once when the cog is loaded. Records a restart in bot_diagnostics."""
+        # pool isn't ready yet at this point (init_pools task hasn't run) —
+        # so we defer the write to a one-shot background task instead of
+        # blocking cog_load, which would delay the rest of bot startup.
+        asyncio.create_task(self._record_restart_when_ready())
+
+    async def _record_restart_when_ready(self):
+        # Wait until init_pools has actually set self.pool
+        for _ in range(60):  # ~30s max wait
+            if self.pool is not None:
+                break
+            await asyncio.sleep(0.5)
+
+        if self.pool is None:
+            print(
+                "⚠️ [Diagnostics] Pool never became ready — restart count not recorded")
+            return
+
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute('''
+                    INSERT INTO bot_diagnostics (key, value, updated_at)
+                    VALUES ('restart_count', '1', NOW())
+                    ON CONFLICT (key) DO UPDATE
+                    SET value = (bot_diagnostics.value::int + 1)::text, updated_at = NOW()
+                ''')
+                await conn.execute('''
+                    INSERT INTO bot_diagnostics (key, value, updated_at)
+                    VALUES ('last_restart_at', NOW()::text, NOW())
+                    ON CONFLICT (key) DO UPDATE
+                    SET value = NOW()::text, updated_at = NOW()
+                ''')
+            print("✅ [Diagnostics] Restart recorded")
+        except Exception as e:
+            print(f"⚠️ [Diagnostics] Failed to record restart: {e}")
 
     async def _cleanup_all_memory(self):
         """Clean up all memory caches."""

@@ -19,6 +19,7 @@ import {
   Cog,
   Ban,
   Trash2,
+  Activity,
   Crown,
   Bug,
   ChevronDown,
@@ -186,6 +187,15 @@ const NavBar = () => {
         setServerInfo(null);
       } else if (path.includes("/Premium/") || path === '/Premium') {
         setCurrentPage("premium");
+        setServerInfo(null);
+      } else if (path.includes("/Manage Servers/") || path === '/Manage Servers/') {
+        setCurrentPage("manage-servers");
+        setServerInfo(null);
+      } else if (path.includes("/Premium/") || path === '/Premium') {
+        setCurrentPage("premium");
+        setServerInfo(null);
+      } else if (path.includes("/diagnostics")) {
+        setCurrentPage("diagnostics");
         setServerInfo(null);
       } else {
         setCurrentPage("home");
@@ -629,6 +639,12 @@ const NavBar = () => {
         <span className="mobile-nav-icon"><HandHelping size={18} color={ACCENT} /></span>
         Support
       </a>
+      {isPrivileged && (
+        <a href="/diagnostics" className={`mobile-nav-link ${currentPage === 'diagnostics' ? 'active' : ''}`} onClick={closeMobileMenu}>
+          <span className="mobile-nav-icon"><Activity size={18} color={ACCENT} /></span>
+          Diagnostics
+        </a>
+      )}
     </div>
   );
 
@@ -667,6 +683,12 @@ const NavBar = () => {
               <span className="nav-icon"><HandHelping size={16} color={ACCENT} /></span>
               <span className="nav-label">Support</span>
             </a>
+            {isPrivileged && (
+              <a href="/diagnostics/" className={`nav-link ${currentPage === 'diagnostics' ? 'active' : ''}`}>
+                <span className="nav-icon"><Activity size={16} color={ACCENT} /></span>
+                <span className="nav-label">Diagnostics</span>
+              </a>
+            )}
           </nav>
         </div>
         <div className={`login-container desktop ${isDashboardPage ? 'dashboard-login' : ''}`}>

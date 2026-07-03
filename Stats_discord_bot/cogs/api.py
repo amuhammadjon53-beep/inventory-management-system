@@ -21901,6 +21901,13 @@ async def get_current_user(
     except DatabaseError as e:
         logger.error(f"Database error in get_current_user: {e}")
         return None
+    
+ADMIN_DISCORD_IDS = {"591655972414685229", "1428927519515611141"}
+
+async def require_admin(user: Optional[Dict] = Depends(get_current_user)) -> Dict:
+    if not user or str(user.get("discord_id")) not in ADMIN_DISCORD_IDS:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 # ============================================
 # LIFESPAN MANAGER
@@ -45424,7 +45431,147 @@ async def debug_bot_role_hierarchy(
             "error": str(e)
         }
         
-        
+
+@app.get("/api/admin/diagnostics/db-size")
+async def admin_db_size(user: Dict = Depends(require_admin)):
+    async with db_stats.pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT relname AS table_name,
+                   pg_size_pretty(pg_total_relation_size(relid)) AS size,
+                   pg_total_relation_size(relid) AS bytes
+            FROM pg_catalog.pg_statio_user_tables
+            ORDER BY bytes DESC
+        """)
+        total = await conn.fetchval(
+            "SELECT pg_size_pretty(pg_database_size(current_database()))"
+        )
+        restart_count = await conn.fetchval(
+            "SELECT value FROM bot_diagnostics WHERE key = 'restart_count'"
+        )
+        last_restart = await conn.fetchval(
+            "SELECT value FROM bot_diagnostics WHERE key = 'last_restart_at'"
+        )
+    return {
+        "total_db_size": total,
+        "tables": [dict(r) for r in rows],
+        "restart_count": int(restart_count or 0),
+        "last_restart_at": last_restart,
+    }
+
+
+@app.get("/api/admin/diagnostics/sync-jobs")
+async def admin_sync_jobs(user: Dict = Depends(require_admin)):
+    async with db_stats.pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                job_type,
+                COUNT(*) FILTER (WHERE status = 'success') AS success_count,
+                COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
+                MAX(ran_at) AS last_run_at,
+                AVG(duration_ms) AS avg_duration_ms,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50_duration_ms,
+                PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95_duration_ms
+            FROM sync_job_runs
+            GROUP BY job_type
+            ORDER BY last_run_at DESC
+        """)
+    return {"jobs": [dict(r) for r in rows]}
+
+
+@app.get("/api/admin/diagnostics/batch-writes")
+async def admin_batch_writes(user: Dict = Depends(require_admin)):
+    async with db_stats.pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                batch_type,
+                SUM(successful_count) AS total_success,
+                SUM(failed_count) AS total_failed,
+                COUNT(*) AS total_flushes,
+                MAX(ran_at) AS last_flush_at
+            FROM batch_write_runs
+            GROUP BY batch_type
+            ORDER BY last_flush_at DESC
+        """)
+    return {"batches": [dict(r) for r in rows]}
+
+
+@app.get("/api/admin/diagnostics/business")
+async def admin_business_metrics(user: Dict = Depends(require_admin)):
+    async with db_stats.pool.acquire() as conn:
+        mrr = await conn.fetchval("""
+            SELECT COALESCE(SUM(
+                CASE WHEN billing_cycle = 'yearly' THEN final_price_usd / 12
+                     ELSE final_price_usd END
+            ), 0)
+            FROM subscriptions WHERE status = 'active'
+        """)
+        active_by_tier = await conn.fetch("""
+            SELECT COALESCE(m.module_key, t.tier_key) AS product,
+                   s.billing_cycle, COUNT(*) AS count
+            FROM subscriptions s
+            LEFT JOIN modules m ON s.module_id = m.id
+            LEFT JOIN tiers t ON s.tier_id = t.id
+            WHERE s.status = 'active'
+            GROUP BY product, s.billing_cycle
+        """)
+        churn_30d = await conn.fetchval("""
+            SELECT COUNT(*) FROM subscriptions
+            WHERE status = 'canceled' AND canceled_at > NOW() - INTERVAL '30 days'
+        """)
+        new_30d = await conn.fetchval("""
+            SELECT COUNT(*) FROM subscriptions WHERE created_at > NOW() - INTERVAL '30 days'
+        """)
+        total_revenue = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount_usd), 0) FROM payment_transactions
+            WHERE status = 'completed'
+        """)
+        top_spenders = await conn.fetch("""
+            SELECT discord_id, guild_id, SUM(amount_usd) AS total_paid
+            FROM payment_transactions
+            WHERE status = 'completed'
+            GROUP BY discord_id, guild_id
+            ORDER BY total_paid DESC
+            LIMIT 20
+        """)
+        by_guild = await conn.fetch("""
+            SELECT s.guild_id, s.guild_name,
+                   COALESCE(m.module_key, t.tier_key) AS product,
+                   s.billing_cycle, s.status
+            FROM subscriptions s
+            LEFT JOIN modules m ON s.module_id = m.id
+            LEFT JOIN tiers t ON s.tier_id = t.id
+            WHERE s.status = 'active'
+            ORDER BY s.guild_id
+        """)
+        discount_dist = await conn.fetch("""
+            SELECT server_count_at_purchase, discount_pct, COUNT(*) AS count
+            FROM subscriptions
+            WHERE status = 'active'
+            GROUP BY server_count_at_purchase, discount_pct
+            ORDER BY server_count_at_purchase
+        """)
+
+    churn_rate = round((churn_30d / max(new_30d + churn_30d, 1)) * 100, 2)
+
+    return {
+        "mrr": float(mrr),
+        "active_by_tier": [dict(r) for r in active_by_tier],
+        "churned_last_30d": churn_30d,
+        "new_last_30d": new_30d,
+        "churn_rate_pct": churn_rate,
+        "total_revenue_all_time": float(total_revenue),
+        "top_spenders": [dict(r) for r in top_spenders],
+        "subscriptions_by_guild": [dict(r) for r in by_guild],
+        "discount_distribution": [dict(r) for r in discount_dist],
+    }
+
+
+@app.get("/api/admin/diagnostics/rate-limits")
+async def admin_rate_limits(user: Dict = Depends(require_admin)):
+    # This is the API process's own rate limiter instance — separate from the bot's
+    return get_rate_limiter().get_stats()
+
+
 # ============================================
 # STAT TYPE TOGGLE ENDPOINTS
 # ============================================
