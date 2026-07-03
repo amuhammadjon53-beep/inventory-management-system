@@ -237,6 +237,11 @@ const VoiceDashboard = () => {
   const [serverTimezone, setServerTimezone] = useState('UTC');
   const [retentionAlert, setRetentionAlert] = useState(null);
   const [retentionDismissed, setRetentionDismissed] = useState(false);
+
+  // Tracks whether the very first fetch for the current server has resolved.
+  // The filter-watcher effect uses this to avoid firing an extra fetch
+  // right after initialization.
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   
   const [loadingTopUsers, setLoadingTopUsers] = useState(true);
   const [loadingTopChannels, setLoadingTopChannels] = useState(true);
@@ -293,11 +298,21 @@ const VoiceDashboard = () => {
   const [rawUserIds, setRawUserIds] = useState([]);
   const [isFetchingUsernames, setIsFetchingUsernames] = useState(false);
 
+  // Guards against React.StrictMode's mount -> unmount -> remount double effect run
+  const didInitRef = useRef(false);
+
+  // Guards the unified "server changed" effect so it only runs its
+  // full init sequence once per server id (not on every hasAccess flip)
+  const initialDataLoadedRef = useRef(null);
+
   const fetchedRef = useRef(false);
   const prevFiltersRef = useRef(JSON.stringify({
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
     selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
   }));
+
+  // In-flight request de-dup for fetchDataWithParams, keyed by server + filters + overrides
+  const inFlightRequestsRef = useRef({});
 
   const channelsRef = useRef([]);
   const categoriesRef = useRef([]);
@@ -581,10 +596,17 @@ const VoiceDashboard = () => {
     return () => { cancelled = true; };
   }, [currentServer, isPublicMode, hasAccess]);
 
+  // Mount effect — guarded so React.StrictMode's dev double-invoke
+  // (mount -> unmount -> remount) can't fire loadInitialData twice
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     loadInitialData();
   }, []);
 
+  // Determines access/permissions ONLY. Does not apply a time period or
+  // trigger a data fetch — the unified [currentServer, hasAccess] effect
+  // below owns that entire sequence.
   const checkServerAccess = async (guildId, hasAdmin, hasManageServer) => {
     try {
       const settingsResponse = await fetch(`${API_BASE_URL}/api/settings/get`, {
@@ -615,19 +637,16 @@ const VoiceDashboard = () => {
         }
         
         setHasAccess(hasAccessFlag);
-        const timeParams = applyServerTimePeriod(settingsData);
-        setLoading(false);
-        
-        await fetchDataWithParams(timeParams);
-        
+        // NOTE: no time-period application or data fetch here anymore —
+        // the unified [currentServer, hasAccess] effect handles that.
       } else {
         console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
-        setLoading(false);
       }
     } catch (error) {
       console.error('Error checking server access:', error);
       setHasAccess(false);
+    } finally {
       setLoading(false);
     }
   };
@@ -683,6 +702,8 @@ const VoiceDashboard = () => {
                     selectedServer.has_admin || false,
                     selectedServer.has_manage_server || false
                   );
+                } else {
+                  setLoading(false);
                 }
               } else {
                 setLoading(false);
@@ -1009,11 +1030,21 @@ const VoiceDashboard = () => {
     }
   };
 
+  // UNIFIED "server changed" effect. This is the single source of truth for
+  // initializing a server: reset -> fetch entity lists -> fetch settings once
+  // -> resolve time period -> fetch data once with resolved params -> sync
+  // prevFiltersRef -> flip initialLoadComplete. This replaces the old
+  // separate "Load all data when server changes" effect AND the old
+  // "fetchAndApplyTimePeriod" effect, which used to race each other and
+  // each other's stale state.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
-    
+    if (initialDataLoadedRef.current === currentServer.id) return;
+    initialDataLoadedRef.current = currentServer.id;
+
     fetchedRef.current = false;
-    
+    setInitialLoadComplete(false);
+
     setLoadingTopUsers(true);
     setLoadingTopChannels(true);
     setLoadingTopCategories(true);
@@ -1047,17 +1078,57 @@ const VoiceDashboard = () => {
     
     profileCache.clear();
     userBasicInfoCache.clear();
-    
-    Promise.all([
-      fetchAllUsers(),
-      fetchAllChannels(),
-      fetchAllCategories(),
-      fetchAllRoles()
-    ]).then(() => {
-      fetchData();
-    });
+
+    const initializeServer = async () => {
+      // Entity lists can load in parallel — they don't gate the stats fetch
+      Promise.all([
+        fetchAllUsers(),
+        fetchAllChannels(),
+        fetchAllCategories(),
+        fetchAllRoles()
+      ]).catch(err => console.error('Error loading entity lists:', err));
+
+      // Get the server's configured default time period BEFORE any data fetch
+      let timeParams = {};
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          timeParams = applyServerTimePeriod(data); // sets state AND returns values synchronously
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+      }
+
+      // Fetch data ONCE, using the resolved params directly (not stale state)
+      await fetchDataWithParams(timeParams);
+
+      // Sync prevFiltersRef to the resolved values so the filter-watcher
+      // effect sees no diff and doesn't refire right after init
+      const resolvedFilters = {
+        selectedView,
+        timePeriod: timeParams.timePeriod ?? timePeriod,
+        customDaysBack: timeParams.customDaysBack ?? customDaysBack,
+        customStartDate: timeParams.customStartDate ?? customStartDate,
+        customEndDate: timeParams.customEndDate ?? customEndDate,
+        selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
+      };
+      prevFiltersRef.current = JSON.stringify(resolvedFilters);
+
+      setInitialLoadComplete(true);
+    };
+
+    initializeServer();
   }, [currentServer, hasAccess]);
 
+  // Filter-watcher effect — only fires for genuine user-driven filter
+  // changes. Gated on fetchedRef.current (set true once the init fetch
+  // completes) so it can't "correct" the just-completed init load.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
     
@@ -1066,13 +1137,14 @@ const VoiceDashboard = () => {
       selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
     });
     
-    if (prevFiltersRef.current !== currentFilters) {
+    if (fetchedRef.current && prevFiltersRef.current !== currentFilters) {
       prevFiltersRef.current = currentFilters;
       fetchData();
     }
   }, [
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
-    selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
+    selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId,
+    initialLoadComplete, hasAccess
   ]);
 
   useEffect(() => {
@@ -1411,8 +1483,28 @@ const VoiceDashboard = () => {
     }
   };
 
-  // fetchDataWithParams - uses overrides instead of state
-  const fetchDataWithParams = async (overrides = {}) => {
+  // Public wrapper — dedupes concurrent identical calls so overlapping
+  // triggers (fast re-init, StrictMode remount, etc.) reuse one in-flight
+  // request instead of firing parallel duplicate bursts.
+  const fetchDataWithParams = (overrides = {}) => {
+    if (!currentServer || !hasAccess) return Promise.resolve();
+
+    const requestKey = `${currentServer.id}:${selectedView}:${selectedUserId}:${selectedChannelId}:${selectedCategoryId}:${selectedRoleId}:${JSON.stringify(overrides)}`;
+
+    if (inFlightRequestsRef.current[requestKey]) {
+      return inFlightRequestsRef.current[requestKey];
+    }
+
+    const promise = fetchDataWithParamsImpl(overrides).finally(() => {
+      delete inFlightRequestsRef.current[requestKey];
+    });
+
+    inFlightRequestsRef.current[requestKey] = promise;
+    return promise;
+  };
+
+  // fetchDataWithParamsImpl - uses overrides instead of state
+  const fetchDataWithParamsImpl = async (overrides = {}) => {
     if (!currentServer || !hasAccess) return;
     
     setLoading(true);
@@ -2132,7 +2224,9 @@ const VoiceDashboard = () => {
     setShowApplyButton(false);
   };
 
-  // FIXED: applyServerTimePeriod now returns computed values
+  // applyServerTimePeriod returns computed values synchronously (in addition
+  // to setting state) so callers can use the resolved values immediately
+  // instead of waiting for a re-render.
   const applyServerTimePeriod = (settings) => {
     const mode = settings.default_time_mode || 'days_back';
     const result = {};
@@ -2231,34 +2325,6 @@ const VoiceDashboard = () => {
     
     return result;
   };
-
-  // UPDATED: Fetch settings and apply time period, then fetch data immediately
-  useEffect(() => {
-    if (!currentServer) return;
-    
-    const fetchAndApplyTimePeriod = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: isPublicMode ? 'omit' : 'include',
-          body: JSON.stringify({ guild_id: currentServer.id })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const timeParams = applyServerTimePeriod(data);
-          await fetchDataWithParams(timeParams);
-        } else {
-          await fetchData();
-        }
-      } catch (e) {
-        console.error('Error fetching time period settings:', e);
-        await fetchData();
-      }
-    };
-    
-    fetchAndApplyTimePeriod();
-  }, [currentServer]);
 
   const formatValue = (value) => formatDynamicTime(value);
 

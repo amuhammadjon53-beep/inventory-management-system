@@ -810,7 +810,12 @@ const MentionsDashboard = () => {
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [rolesLoaded, setRolesLoaded] = useState(false);
 
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+
   const fetchedRef = useRef(false);
+  const didInitRef = useRef(false);
+  const initialDataLoadedRef = useRef(null);
+  const inFlightRequests = useRef({});
   const prevFiltersRef = useRef(JSON.stringify({
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
     selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId,
@@ -838,7 +843,11 @@ const MentionsDashboard = () => {
 
   const isPrivilegedUser = (userId) => PRIVILEGED_USERS.includes(userId);
 
-  useEffect(() => { loadInitialData(); }, []);
+  useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+    loadInitialData();
+  }, []);
 
   useEffect(() => {
     if (!currentServer || isPublicMode || hasAccess === null) { setRetentionAlert(null); return; }
@@ -1071,74 +1080,84 @@ const MentionsDashboard = () => {
         else hasAccessFlag = true;
 
         setHasAccess(hasAccessFlag);
-        const timeParams = applyServerTimePeriod(settingsData);
-        setLoading(false);
-        
-        // Fetch data immediately with the computed params
-        await fetchDataWithParams(timeParams);
+        // NOTE: no time-period application or data fetch here anymore —
+        // the unified [currentServer, hasAccess] effect below handles that.
       } else {
         setHasAccess(false);
-        setLoading(false);
       }
     } catch (error) {
       console.error('Error checking server access:', error);
       setHasAccess(false);
+    } finally {
       setLoading(false);
     }
   };
 
-  // NEW: fetchDataWithParams - uses overrides instead of state
+  // fetchDataWithParams - uses overrides instead of state, with in-flight request dedup
   const fetchDataWithParams = async (overrides = {}) => {
     if (!currentServer || !hasAccess) return;
-    setLoading(true);
-    setApiError(null);
 
     const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
     const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
     const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
     const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
 
-    let startDate = null;
-    let endDate = null;
+    const requestKey = `${currentServer.id}:${selectedView}:${selectedUserId}:${selectedChannelId}:${selectedCategoryId}:${effectiveTimePeriod}:${effectiveCustomDaysBack}:${effectiveCustomStartDate}:${effectiveCustomEndDate}`;
+    if (inFlightRequests.current[requestKey]) {
+      // an identical request is already in flight — reuse it instead of firing a duplicate
+      return inFlightRequests.current[requestKey];
+    }
 
-    if (effectiveTimePeriod === "all") {
-      startDate = null;
-      endDate = null;
-    } else if (effectiveTimePeriod === "custom-lookback") {
-      if (!effectiveCustomDaysBack || parseInt(effectiveCustomDaysBack) <= 0) {
+    const promise = (async () => {
+      setLoading(true);
+      setApiError(null);
+
+      let startDate = null;
+      let endDate = null;
+
+      if (effectiveTimePeriod === "all") {
         startDate = null;
         endDate = null;
+      } else if (effectiveTimePeriod === "custom-lookback") {
+        if (!effectiveCustomDaysBack || parseInt(effectiveCustomDaysBack) <= 0) {
+          startDate = null;
+          endDate = null;
+        } else {
+          endDate = new Date();
+          startDate = new Date();
+          startDate.setDate(startDate.getDate() - parseInt(effectiveCustomDaysBack));
+        }
+      } else if (effectiveTimePeriod === "custom-range") {
+        if (!effectiveCustomStartDate || !effectiveCustomEndDate) {
+          startDate = null;
+          endDate = null;
+        } else {
+          startDate = new Date(effectiveCustomStartDate);
+          endDate = new Date(effectiveCustomEndDate);
+        }
       } else {
         endDate = new Date();
         startDate = new Date();
-        startDate.setDate(startDate.getDate() - parseInt(effectiveCustomDaysBack));
+        startDate.setDate(startDate.getDate() - parseInt(effectiveTimePeriod));
       }
-    } else if (effectiveTimePeriod === "custom-range") {
-      if (!effectiveCustomStartDate || !effectiveCustomEndDate) {
-        startDate = null;
-        endDate = null;
-      } else {
-        startDate = new Date(effectiveCustomStartDate);
-        endDate = new Date(effectiveCustomEndDate);
-      }
-    } else {
-      endDate = new Date();
-      startDate = new Date();
-      startDate.setDate(startDate.getDate() - parseInt(effectiveTimePeriod));
-    }
 
-    try {
-      if (selectedView === 'server') await fetchServerDataWithDates(startDate, endDate);
-      else if (selectedView === 'user' && selectedUserId) await fetchUserDataWithDates(startDate, endDate);
-      else if (selectedView === 'channel' && selectedChannelId) await fetchChannelDataWithDates(startDate, endDate);
-      else if (selectedView === 'category' && selectedCategoryId) await fetchCategoryDataWithDates(startDate, endDate);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setApiError(error.message);
-    } finally {
-      setLoading(false);
-      fetchedRef.current = true;
-    }
+      try {
+        if (selectedView === 'server') await fetchServerDataWithDates(startDate, endDate);
+        else if (selectedView === 'user' && selectedUserId) await fetchUserDataWithDates(startDate, endDate);
+        else if (selectedView === 'channel' && selectedChannelId) await fetchChannelDataWithDates(startDate, endDate);
+        else if (selectedView === 'category' && selectedCategoryId) await fetchCategoryDataWithDates(startDate, endDate);
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        setApiError(error.message);
+      } finally {
+        setLoading(false);
+        fetchedRef.current = true;
+        delete inFlightRequests.current[requestKey];
+      }
+    })();
+
+    inFlightRequests.current[requestKey] = promise;
+    return promise;
   };
 
   // Helper functions for fetchDataWithParams
@@ -1406,33 +1425,10 @@ const MentionsDashboard = () => {
     setLoadingSummaryStats(false);
   };
 
-  // UPDATED: Fetch settings and apply time period, then fetch data immediately
-  useEffect(() => {
-    if (!currentServer) return;
-    
-    const fetchAndApplyTimePeriod = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: isPublicMode ? 'omit' : 'include',
-          body: JSON.stringify({ guild_id: currentServer.id })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const timeParams = applyServerTimePeriod(data);
-          await fetchDataWithParams(timeParams);
-        } else {
-          await fetchData();
-        }
-      } catch (e) {
-        console.error('Error fetching time period settings:', e);
-        await fetchData();
-      }
-    };
-    
-    fetchAndApplyTimePeriod();
-  }, [currentServer]);
+  // ❌ REMOVED: the old "fetchAndApplyTimePeriod" effect that re-fetched settings and
+  // re-applied the time period a second time on every currentServer change. This is now
+  // folded into the single unified [currentServer, hasAccess] effect further below, so
+  // settings are only ever fetched once per server change.
 
   const fetchUserBasicInfo = async (userId) => {
     if (!userId) return null;
@@ -1778,9 +1774,17 @@ const MentionsDashboard = () => {
     setLoadingCategoryTopRatioLow(true);
   };
 
+  // Unified "server changed" lifecycle: reset -> fetch entity lists (roles/users/channels/
+  // categories, non-blocking) -> fetch settings ONCE -> apply time period -> fetch data with
+  // the resolved params -> only then arm the filter-watcher effect via initialLoadComplete.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
+    if (initialDataLoadedRef.current === currentServer.id) return;
+
+    initialDataLoadedRef.current = currentServer.id;
     fetchedRef.current = false;
+    setInitialLoadComplete(false);
+
     resetLoadingStates();
     setLoading(true);
     setUsersLoaded(false);
@@ -1794,13 +1798,51 @@ const MentionsDashboard = () => {
     setServerSummary(null); setUserSummary(null); setChannelSummary(null); setCategorySummary(null);
     profileCache.clear();
 
-    Promise.all([fetchAllUsers(), fetchAllChannels(), fetchAllCategories(), fetchAllRoles()]).then(() => {
-      fetchData();
-    });
+    const initializeServer = async () => {
+      // 1. entity lists can load in parallel — they don't gate the stats fetch
+      Promise.all([fetchAllUsers(), fetchAllChannels(), fetchAllCategories(), fetchAllRoles()]);
+
+      // 2. get the server's configured default time period BEFORE any data fetch
+      let timeParams = {};
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          timeParams = applyServerTimePeriod(data); // sets state AND returns the values synchronously
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+      }
+
+      // 3. fetch data ONCE, using the resolved params directly (not stale state)
+      await fetchDataWithParams(timeParams);
+
+      // 🔑 sync prevFiltersRef to the resolved values before arming the filter-watcher
+      // effect, so it sees no diff and doesn't fire a duplicate fetch right after init
+      const resolvedFilters = {
+        selectedView,
+        timePeriod: timeParams.timePeriod ?? timePeriod,
+        customDaysBack: timeParams.customDaysBack ?? customDaysBack,
+        customStartDate: timeParams.customStartDate ?? customStartDate,
+        customEndDate: timeParams.customEndDate ?? customEndDate,
+        selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId,
+        userSubScope, userScopeChannelId, userScopeCategoryId
+      };
+      prevFiltersRef.current = JSON.stringify(resolvedFilters);
+
+      setInitialLoadComplete(true);
+    };
+
+    initializeServer();
   }, [currentServer, hasAccess]);
 
   useEffect(() => {
-    if (!currentServer || !hasAccess) return;
+    if (!currentServer || !hasAccess || !initialLoadComplete) return;
     const currentFilters = JSON.stringify({
       selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
       selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId,
@@ -1812,7 +1854,7 @@ const MentionsDashboard = () => {
     }
   }, [selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
       selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId,
-      userSubScope, userScopeChannelId, userScopeCategoryId]);
+      userSubScope, userScopeChannelId, userScopeCategoryId, initialLoadComplete, hasAccess]);
 
   useEffect(() => {
     if (userSearch.trim() === "") setFilteredUsers(users);
@@ -1926,43 +1968,11 @@ const MentionsDashboard = () => {
     });
   };
 
+  // fetchData now simply delegates to fetchDataWithParams() using current state (no
+  // overrides), so every data-fetch path — initial load, filter changes, and this one —
+  // shares the same in-flight request dedup instead of each keeping separate logic.
   const fetchData = async () => {
-    if (!currentServer || !hasAccess) return;
-    setLoading(true);
-    setApiError(null);
-
-    try {
-      if (selectedView === 'server') await fetchServerData();
-      else if (selectedView === 'user' && selectedUserId) await fetchUserData();
-      else if (selectedView === 'channel' && selectedChannelId) await fetchChannelData();
-      else if (selectedView === 'category' && selectedCategoryId) await fetchCategoryData();
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setApiError(error.message);
-    } finally {
-      setLoading(false);
-      fetchedRef.current = true;
-    }
-  };
-
-  const fetchServerData = async () => {
-    const { startDate, endDate } = getDateRange();
-    await fetchServerDataWithDates(startDate, endDate);
-  };
-
-  const fetchUserData = async () => {
-    const { startDate, endDate } = getDateRange();
-    await fetchUserDataWithDates(startDate, endDate);
-  };
-
-  const fetchChannelData = async () => {
-    const { startDate, endDate } = getDateRange();
-    await fetchChannelDataWithDates(startDate, endDate);
-  };
-
-  const fetchCategoryData = async () => {
-    const { startDate, endDate } = getDateRange();
-    await fetchCategoryDataWithDates(startDate, endDate);
+    await fetchDataWithParams({});
   };
 
   const handleTempRoleSelect = (role) => {

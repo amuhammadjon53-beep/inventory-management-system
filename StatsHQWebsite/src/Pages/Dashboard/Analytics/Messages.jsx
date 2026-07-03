@@ -293,12 +293,26 @@ const MessagesDashboard = () => {
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [rolesLoaded, setRolesLoaded] = useState(false);
 
+  // Tracks whether the initial per-server load (entity lists + settings +
+  // first stats fetch) has completed, so the filter-watcher effect knows
+  // not to fire a duplicate fetch during initialization.
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+
   // Use refs to prevent infinite loops
   const fetchedRef = useRef(false);
   const prevFiltersRef = useRef(JSON.stringify({
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
     selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
   }));
+
+  // Guards against React.StrictMode's intentional double-invoke of mount effects
+  const didInitRef = useRef(false);
+  // Guards against re-running the "server changed" initialization twice for
+  // the same server (e.g. if hasAccess flips more than once for the same id)
+  const initialDataLoadedRef = useRef(null);
+  // In-flight request cache so overlapping triggers reuse the same promise
+  // instead of firing parallel duplicate fetches
+  const inFlightRequestsRef = useRef({});
 
   // Create refs for current data
   const channelsRef = useRef([]);
@@ -402,6 +416,8 @@ const MessagesDashboard = () => {
 
   // Load everything on mount
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     loadInitialData();
   }, []);
 
@@ -529,6 +545,10 @@ const MessagesDashboard = () => {
     }
   };
 
+  // Determines access/permissions ONLY. Settings/time-period application and
+  // the first data fetch are handled exclusively by the unified
+  // [currentServer, hasAccess] effect further down, so this no longer
+  // triggers a fetch itself (that used to race with the other init paths).
   const checkServerAccess = async (guildId, permissions, hasAdmin, hasManageServer) => {
     try {
       const settingsResponse = await fetch(`${API_BASE_URL}/api/settings/get`, {
@@ -543,12 +563,12 @@ const MessagesDashboard = () => {
         const accessLevel = settingsData.dashboard_access_level || 'Member';
         setDashboardAccessLevel(accessLevel);
         window.accessLevel = accessLevel;
-        
+
         const isAdmin = hasAdmin;
         const hasManageServerPerm = hasManageServer;
-        
+
         let hasAccessFlag = false;
-        
+
         if (accessLevel === 'Public') {
           hasAccessFlag = true;
         } else if (accessLevel === 'Member') {
@@ -560,22 +580,16 @@ const MessagesDashboard = () => {
         } else {
           hasAccessFlag = true;
         }
-        
+
         setHasAccess(hasAccessFlag);
-        const timeParams = applyServerTimePeriod(settingsData);
-        setLoading(false);
-        
-        // Fetch data immediately with the computed params
-        await fetchDataWithParams(timeParams);
-        
       } else {
         console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
-        setLoading(false);
       }
     } catch (error) {
       console.error('Error checking server access:', error);
       setHasAccess(false);
+    } finally {
       setLoading(false);
     }
   };
@@ -1122,12 +1136,20 @@ const MessagesDashboard = () => {
     }
   };
 
-  // Load all data when server changes
+  // Unified "server changed" lifecycle: reset -> fetch entity lists -> fetch
+  // settings -> apply resolved time period -> fetch data with the resolved
+  // params. This is the ONLY effect that kicks off the initial data fetch
+  // for a server. checkServerAccess above and the old duplicate
+  // "fetchAndApplyTimePeriod" effect no longer fetch data themselves - that
+  // used to cause 2-3 overlapping requests per navigation.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
-    
+    if (initialDataLoadedRef.current === currentServer.id) return;
+
+    initialDataLoadedRef.current = currentServer.id;
     fetchedRef.current = false;
-    
+    setInitialLoadComplete(false);
+
     // Reset all loading states
     setLoadingTopUsers(true);
     setLoadingTopChannels(true);
@@ -1143,14 +1165,14 @@ const MessagesDashboard = () => {
     setLoadingCategoryTimeseries(true);
     setLoadingSummaryStats(true);
     setLoadingAverages(true);
-    
+
     setLoading(true);
-    
+
     setUsersLoaded(false);
     setChannelsLoaded(false);
     setCategoriesLoaded(false);
     setRolesLoaded(false);
-    
+
     setTopUsers([]);
     setTopChannels([]);
     setTopCategories([]);
@@ -1160,35 +1182,83 @@ const MessagesDashboard = () => {
     setCategoryTopUsers([]);
     setCategoryTopChannels([]);
     setServerData(null);
-    
+
     profileCache.clear();
-    
-    Promise.all([
-      fetchAllUsers(),
-      fetchAllChannels(),
-      fetchAllCategories(),
-      fetchAllRoles()
-    ]).then(() => {
-      fetchData();
-    });
+
+    const initializeServer = async () => {
+      // 1. Entity lists (users/channels/categories/roles) are needed via
+      // refs to resolve names inside fetchServerData/etc, so wait for them
+      // before the stats fetch. They're independent of time-period settings.
+      await Promise.all([
+        fetchAllUsers(),
+        fetchAllChannels(),
+        fetchAllCategories(),
+        fetchAllRoles()
+      ]);
+
+      // 2. Get the server's configured default time period BEFORE any
+      // stats fetch, so we don't fetch with the default period and then
+      // immediately re-fetch with the real one.
+      let timeParams = {};
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          timeParams = applyServerTimePeriod(data); // sets state AND returns the values synchronously
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+      }
+
+      // 3. Fetch data ONCE, using the resolved params directly (not stale state)
+      await fetchDataWithParams(timeParams);
+
+      // 4. Sync prevFiltersRef to the resolved values so the filter-watcher
+      // effect below sees no diff and doesn't fire a duplicate fetch right
+      // after initialization completes.
+      const resolvedFilters = {
+        selectedView,
+        timePeriod: timeParams.timePeriod ?? timePeriod,
+        customDaysBack: timeParams.customDaysBack ?? customDaysBack,
+        customStartDate: timeParams.customStartDate ?? customStartDate,
+        customEndDate: timeParams.customEndDate ?? customEndDate,
+        selectedUserId,
+        selectedChannelId,
+        selectedCategoryId,
+        selectedRoleId
+      };
+      prevFiltersRef.current = JSON.stringify(resolvedFilters);
+
+      setInitialLoadComplete(true);
+    };
+
+    initializeServer();
   }, [currentServer, hasAccess]);
 
-  // Fetch stats when filters change
+  // Fetch stats when filters change (post-initialization only). Gated on
+  // fetchedRef/initialLoadComplete so this never fires during the initial
+  // per-server load above - only for genuine user-driven filter changes.
   useEffect(() => {
-    if (!currentServer || !hasAccess) return;
+    if (!currentServer || !hasAccess || !initialLoadComplete) return;
     
     const currentFilters = JSON.stringify({
       selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
       selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
     });
     
-    if (prevFiltersRef.current !== currentFilters) {
+    if (fetchedRef.current && prevFiltersRef.current !== currentFilters) {
       prevFiltersRef.current = currentFilters;
-      fetchData();
+      fetchDataWithParams();
     }
   }, [
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
-    selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
+    selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId,
+    initialLoadComplete, hasAccess
   ]);
 
   // Filter users when search changes
@@ -1500,53 +1570,6 @@ const MessagesDashboard = () => {
       setCategoryTimeseriesData([]);
     } finally {
       setLoadingCategoryTimeseries(false);
-    }
-  };
-
-  const fetchData = async () => {
-    if (!currentServer || !hasAccess) return;
-    
-    setLoading(true);
-    setApiError(null);
-    const { startDate, endDate } = getDateRange();
-    
-    let daysInPeriod = 0;
-    if (startDate && endDate) {
-      daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
-    } else if (timePeriod !== "all" && timePeriod !== "custom-lookback" && timePeriod !== "custom-range") {
-      daysInPeriod = parseInt(timePeriod);
-    } else if (timePeriod === "custom-lookback" && customDaysBack) {
-      daysInPeriod = parseInt(customDaysBack);
-    } else {
-      daysInPeriod = 30;
-    }
-    
-    try {
-      const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
-      
-      const requestBody = {
-        guild_id: currentServer.id,
-        role_filter_ids: roleFilterArray,
-        start_time: startDate?.toISOString(),
-        end_time: endDate?.toISOString()
-      };
-      
-      if (selectedView === 'server') {
-        await fetchServerData(requestBody, daysInPeriod);
-      } else if (selectedView === 'user' && selectedUserId) {
-        await fetchUserData(requestBody, daysInPeriod);
-      } else if (selectedView === 'channel' && selectedChannelId) {
-        await fetchChannelData(requestBody, daysInPeriod);
-      } else if (selectedView === 'category' && selectedCategoryId) {
-        await fetchCategoryData(requestBody, daysInPeriod);
-      }
-      
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setApiError(error.message);
-    } finally {
-      setLoading(false);
-      fetchedRef.current = true;
     }
   };
 
@@ -2237,7 +2260,9 @@ const MessagesDashboard = () => {
     setShowCategoryDropdown(false);
   };
 
-  // FIXED: applyServerTimePeriod now returns the computed values
+  // applyServerTimePeriod returns the computed values synchronously (in
+  // addition to setting state) so callers can use them immediately without
+  // waiting for a re-render.
   const applyServerTimePeriod = (settings) => {
     const mode = settings.default_time_mode || 'days_back';
     const result = {};
@@ -2345,120 +2370,121 @@ const MessagesDashboard = () => {
     return result;
   };
 
-  // NEW: fetchDataWithParams - identical to fetchData but uses overrides instead of state
+  // fetchDataWithParams is the SINGLE entry point for fetching stats/leaderboard
+  // /timeseries data (server, user, channel, or category view depending on
+  // selectedView). It accepts optional overrides for the time-period fields
+  // so the very first fetch after a server switch can use the just-resolved
+  // settings instead of stale state. Any caller that just wants "fetch with
+  // current state" can call it with no arguments.
+  //
+  // In-flight requests are deduped by key so overlapping triggers (fast
+  // re-renders, rapid filter changes, etc.) reuse the same promise instead of
+  // firing parallel duplicate network calls.
   const fetchDataWithParams = async (overrides = {}) => {
     if (!currentServer || !hasAccess) return;
-    
-    setLoading(true);
-    setApiError(null);
-    
-    // Use overrides or current state
-    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
-    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
-    const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
-    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
-    
-    // Compute date range directly (same logic as getDateRange)
-    let startDate = null;
-    let endDate = null;
-    
-    if (effectiveTimePeriod === "all") {
-      startDate = null;
-      endDate = null;
-    } else if (effectiveTimePeriod === "custom-lookback") {
-      if (!effectiveCustomDaysBack || parseInt(effectiveCustomDaysBack) <= 0) {
+
+    const requestKey = JSON.stringify({
+      guildId: currentServer.id,
+      selectedView,
+      selectedUserId,
+      selectedChannelId,
+      selectedCategoryId,
+      selectedRoleId,
+      overrides
+    });
+
+    if (inFlightRequestsRef.current[requestKey]) {
+      return inFlightRequestsRef.current[requestKey];
+    }
+
+    const promise = (async () => {
+      setLoading(true);
+      setApiError(null);
+
+      // Use overrides or current state
+      const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+      const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+      const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+      const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+
+      // Compute date range directly (same logic as getDateRange)
+      let startDate = null;
+      let endDate = null;
+
+      if (effectiveTimePeriod === "all") {
         startDate = null;
         endDate = null;
+      } else if (effectiveTimePeriod === "custom-lookback") {
+        if (!effectiveCustomDaysBack || parseInt(effectiveCustomDaysBack) <= 0) {
+          startDate = null;
+          endDate = null;
+        } else {
+          endDate = new Date();
+          startDate = new Date();
+          startDate.setDate(startDate.getDate() - parseInt(effectiveCustomDaysBack));
+        }
+      } else if (effectiveTimePeriod === "custom-range") {
+        if (!effectiveCustomStartDate || !effectiveCustomEndDate) {
+          startDate = null;
+          endDate = null;
+        } else {
+          startDate = new Date(effectiveCustomStartDate);
+          endDate = new Date(effectiveCustomEndDate);
+        }
       } else {
+        // Preset days (7, 14, 30, 60, 90)
         endDate = new Date();
         startDate = new Date();
-        startDate.setDate(startDate.getDate() - parseInt(effectiveCustomDaysBack));
+        startDate.setDate(startDate.getDate() - parseInt(effectiveTimePeriod));
       }
-    } else if (effectiveTimePeriod === "custom-range") {
-      if (!effectiveCustomStartDate || !effectiveCustomEndDate) {
-        startDate = null;
-        endDate = null;
+
+      let daysInPeriod = 0;
+      if (startDate && endDate) {
+        daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+      } else if (effectiveTimePeriod !== "all" && effectiveTimePeriod !== "custom-lookback" && effectiveTimePeriod !== "custom-range") {
+        daysInPeriod = parseInt(effectiveTimePeriod);
+      } else if (effectiveTimePeriod === "custom-lookback" && effectiveCustomDaysBack) {
+        daysInPeriod = parseInt(effectiveCustomDaysBack);
       } else {
-        startDate = new Date(effectiveCustomStartDate);
-        endDate = new Date(effectiveCustomEndDate);
+        daysInPeriod = 30;
       }
-    } else {
-      // Preset days (7, 14, 30, 60, 90)
-      endDate = new Date();
-      startDate = new Date();
-      startDate.setDate(startDate.getDate() - parseInt(effectiveTimePeriod));
-    }
-    
-    let daysInPeriod = 0;
-    if (startDate && endDate) {
-      daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
-    } else if (effectiveTimePeriod !== "all" && effectiveTimePeriod !== "custom-lookback" && effectiveTimePeriod !== "custom-range") {
-      daysInPeriod = parseInt(effectiveTimePeriod);
-    } else if (effectiveTimePeriod === "custom-lookback" && effectiveCustomDaysBack) {
-      daysInPeriod = parseInt(effectiveCustomDaysBack);
-    } else {
-      daysInPeriod = 30;
-    }
-    
+
+      try {
+        const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
+
+        const requestBody = {
+          guild_id: currentServer.id,
+          role_filter_ids: roleFilterArray,
+          start_time: startDate?.toISOString(),
+          end_time: endDate?.toISOString()
+        };
+
+        if (selectedView === 'server') {
+          await fetchServerData(requestBody, daysInPeriod);
+        } else if (selectedView === 'user' && selectedUserId) {
+          await fetchUserData(requestBody, daysInPeriod);
+        } else if (selectedView === 'channel' && selectedChannelId) {
+          await fetchChannelData(requestBody, daysInPeriod);
+        } else if (selectedView === 'category' && selectedCategoryId) {
+          await fetchCategoryData(requestBody, daysInPeriod);
+        }
+
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        setApiError(error.message);
+      } finally {
+        setLoading(false);
+        fetchedRef.current = true;
+      }
+    })();
+
+    inFlightRequestsRef.current[requestKey] = promise;
     try {
-      const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
-      
-      const requestBody = {
-        guild_id: currentServer.id,
-        role_filter_ids: roleFilterArray,
-        start_time: startDate?.toISOString(),
-        end_time: endDate?.toISOString()
-      };
-      
-      if (selectedView === 'server') {
-        await fetchServerData(requestBody, daysInPeriod);
-      } else if (selectedView === 'user' && selectedUserId) {
-        await fetchUserData(requestBody, daysInPeriod);
-      } else if (selectedView === 'channel' && selectedChannelId) {
-        await fetchChannelData(requestBody, daysInPeriod);
-      } else if (selectedView === 'category' && selectedCategoryId) {
-        await fetchCategoryData(requestBody, daysInPeriod);
-      }
-      
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setApiError(error.message);
+      return await promise;
     } finally {
-      setLoading(false);
-      fetchedRef.current = true;
+      delete inFlightRequestsRef.current[requestKey];
     }
   };
-
-  // UPDATED: Fetch settings and apply time period, then fetch data immediately
-  useEffect(() => {
-    if (!currentServer) return;
-    
-    const fetchAndApplyTimePeriod = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: isPublicMode ? 'omit' : 'include',
-          body: JSON.stringify({ guild_id: currentServer.id })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const timeParams = applyServerTimePeriod(data);
-          // Fetch data immediately with the computed params
-          await fetchDataWithParams(timeParams);
-        } else {
-          // If settings fetch fails, still fetch data with current state
-          await fetchData();
-        }
-      } catch (e) {
-        console.error('Error fetching time period settings:', e);
-        // Fallback: fetch data with current state
-        await fetchData();
-      }
-    };
-    
-    fetchAndApplyTimePeriod();
-  }, [currentServer]);
 
   const timePeriodOptions = [
     { value: '7', label: 'Last 7 days' },
