@@ -1,7 +1,7 @@
 import os
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from datetime import datetime, timedelta, timezone
 import matplotlib.pyplot as plt
 import numpy as np
@@ -77,11 +77,18 @@ ROLE_FILTER_UNSUPPORTED = {"Joins", "Leaves", "Invites"}
 class TimezoneDistribution(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.active_sessions = {}
         self.background_image_path = BASE_DIR / "assets" / \
             "images" / "timezone chart final png.png"
         self.font_path = BASE_DIR / "assets" / "fonts" / "HorndonD.ttf"
         self.rate_limiter = get_rate_limiter()
+
+        # Start periodic GC cleanup
+        self.clean_cache_task.start()
+
+    @tasks.loop(hours=1)
+    async def clean_cache_task(self):
+        """Periodically run garbage collection to free image/array memory."""
+        gc.collect()
 
     # ------------------------------------------------------------------
     # Helper cog accessors
@@ -135,9 +142,6 @@ class TimezoneDistribution(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ------------------------------------------------------------------
-    # SERVER DEFAULT TIME RANGE
-    # ------------------------------------------------------------------
     # ------------------------------------------------------------------
     # SERVER DEFAULT TIME RANGE
     # ------------------------------------------------------------------
@@ -690,6 +694,7 @@ class TimezoneDistribution(commands.Cog):
             self.cog = cog_instance
             self.guild = guild
             self.view = view
+            self.rate_limiter = get_rate_limiter()
 
         days = discord.ui.TextInput(
             label='Enter number of days',
@@ -697,6 +702,7 @@ class TimezoneDistribution(commands.Cog):
             min_length=1, max_length=4, required=True,
         )
 
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def on_submit(self, interaction: discord.Interaction):
             try:
                 days = int(self.days.value)
@@ -727,6 +733,7 @@ class TimezoneDistribution(commands.Cog):
             self.cog = cog_instance
             self.guild = guild
             self.view = view
+            self.rate_limiter = get_rate_limiter()
 
         role_id = discord.ui.TextInput(
             label='Enter Role ID or "none"',
@@ -734,6 +741,7 @@ class TimezoneDistribution(commands.Cog):
             min_length=1, max_length=20, required=True,
         )
 
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def on_submit(self, interaction: discord.Interaction):
             try:
                 raw = self.role_id.value.strip().lower()
@@ -742,20 +750,33 @@ class TimezoneDistribution(commands.Cog):
                 else:
                     try:
                         rid = int(raw)
-                        role = self.guild.get_role(rid)
-                        if role is None:
+                        role_name = None
+                        db_cog = self.cog.get_db_cog()
+
+                        # Get role name from database instead of Discord API
+                        if db_cog and hasattr(db_cog, 'get_role_name_from_db'):
+                            role_name = await db_cog.get_role_name_from_db(self.guild.id, rid)
+
+                        # Fallback if DB lookup fails or is unavailable
+                        if not role_name:
+                            role = self.guild.get_role(rid)
+                            if role:
+                                role_name = role.name
+
+                        if not role_name:
                             await interaction.response.send_message(embed=discord.Embed(
                                 title="❌ Invalid Role ID",
-                                description="The role ID you entered is not valid.",
+                                description="The role ID you entered is not valid or not found in the database.",
                                 color=discord.Color.red()), ephemeral=True)
                             return
-                        role_name, role_filter_ids = role.name, [rid]
+                        role_filter_ids = [rid]
                     except ValueError:
                         await interaction.response.send_message(embed=discord.Embed(
                             title="❌ Invalid Input",
                             description="Please enter a valid role ID number or 'none'.",
                             color=discord.Color.red()), ephemeral=True)
                         return
+
                 await interaction.response.defer(ephemeral=False)
                 if self.view:
                     self.view.role_filter_ids = role_filter_ids
@@ -794,7 +815,9 @@ class TimezoneDistribution(commands.Cog):
                 options=options,
                 custom_id="activity_type_select",
             )
+            self.rate_limiter = get_rate_limiter()
 
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=False, thinking=False)
             self.view.activity_type = self.values[0]
@@ -835,6 +858,7 @@ class TimezoneDistribution(commands.Cog):
             self.role_filter_ids = None
             self.role_filter_name = None
             self.using_server_default = using_server_default
+            self.rate_limiter = get_rate_limiter()
             self._update_buttons()
 
         def _update_buttons(self):
@@ -893,37 +917,43 @@ class TimezoneDistribution(commands.Cog):
                 self.add_item(b_custom)
 
         def _make_preset_cb(self, days_val, display):
-            async def cb(interaction: discord.Interaction):
+            @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+            async def cb(bound_self, interaction: discord.Interaction):
                 await interaction.response.defer(ephemeral=False, thinking=False)
                 now = datetime.now(timezone.utc)
                 if days_val == 999999:
                     start_time = None
                 else:
                     start_time = now - timedelta(days=days_val)
-                self.current_start_time = start_time
-                self.current_end_time = now
-                self.current_days_back_equiv = days_val
-                self.current_display_text = display
-                self.using_server_default = False
-                self.show_time_buttons = False
-                await self.update_message(interaction)
-            return cb
+                bound_self.current_start_time = start_time
+                bound_self.current_end_time = now
+                bound_self.current_days_back_equiv = days_val
+                bound_self.current_display_text = display
+                bound_self.using_server_default = False
+                bound_self.show_time_buttons = False
+                await bound_self.update_message(interaction)
+            # Bind closure cleanly into the View to provide access to rate_limiter natively
+            return cb.__get__(self, type(self))
 
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def _refresh_cb(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=False, thinking=False)
             await self.update_message(interaction)
 
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def _time_settings_cb(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=False, thinking=False)
             self.show_time_buttons = not self.show_time_buttons
             self._update_buttons()
             await interaction.edit_original_response(view=self)
 
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def _role_filter_cb(self, interaction: discord.Interaction):
             modal = TimezoneDistribution.RoleFilterModal(
                 self.cog, self.guild, self)
             await interaction.response.send_modal(modal)
 
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def _custom_days_cb(self, interaction: discord.Interaction):
             modal = TimezoneDistribution.TimezoneTimeModal(
                 self.cog, self.guild, self)
@@ -975,6 +1005,7 @@ class TimezoneDistribution(commands.Cog):
     # SHARED SEND HELPER
     # ======================================================================
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _send_distribution(
         self,
         ctx_or_interaction,
@@ -1229,8 +1260,8 @@ class TimezoneDistribution(commands.Cog):
     # ======================================================================
 
     async def cog_unload(self):
-        self.active_sessions.clear()
-        print("TimezoneDistribution cog: Cleaned up active sessions")
+        self.clean_cache_task.cancel()
+        print("TimezoneDistribution cog: Cleaned up tasks")
 
 
 # ======================================================================

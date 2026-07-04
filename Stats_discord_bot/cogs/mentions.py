@@ -76,6 +76,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         )
         self.add_item(self.page_number)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             page = int(self.page_number.value) - 1
@@ -455,10 +456,6 @@ class MentionsImageGenerator:
         target_user: discord.Member = None,
         metric_type: str = "sent"
     ) -> io.BytesIO:
-        # NOTE: `role_id` here is used purely as the display label drawn onto
-        # the image. Callers now pass the resolved role NAME (fetched from the
-        # database) instead of the raw role ID string, so the rendered image
-        # matches what ServerStats/Distribution show.
         template_path = MentionsConfig.TEMPLATE_PATH
         try:
             image = Image.open(template_path)
@@ -515,9 +512,6 @@ class MentionsImageGenerator:
                      start_y + (i // 2) * box_spacing)
                     for i in range(len(page_data))
                 ]
-
-            total_mentions = sum(item.get('mention_count', 0)
-                                 for item in leaderboard_data) if leaderboard_data else 0
 
             for i, item in enumerate(page_data):
                 box_x, box_y = positions[i]
@@ -618,6 +612,7 @@ class MentionsTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -632,9 +627,6 @@ class MentionsTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 await interaction.followup.send("❌ Could not find the leaderboard view. Please try the command again.", ephemeral=True)
                 return
 
-            # FIX: use a timezone-aware "now" instead of naive utcnow(), so
-            # this stays consistent with get_server_default_time_range() and
-            # every other time range in this cog / the DB layer.
             now = datetime.now(timezone.utc)
             view.current_start_time = now - timedelta(days=days)
             view.current_end_time = now
@@ -658,6 +650,7 @@ class MentionsPrevButton(discord.ui.Button):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="mentions_prev")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True)
@@ -675,6 +668,7 @@ class MentionsNextButton(discord.ui.Button):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="mentions_next")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True)
@@ -691,6 +685,7 @@ class MentionsPageIndicator(discord.ui.Button):
         super().__init__(style=discord.ButtonStyle.primary,
                          label="Page 1/1", custom_id="mentions_page", disabled=False)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
 
@@ -719,6 +714,7 @@ class MentionsMetricSelect(discord.ui.Select):
         super().__init__(placeholder="Select metric type...",
                          options=options, custom_id="mentions_metric")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
@@ -744,6 +740,7 @@ class MentionsRatioOrderSelect(discord.ui.Select):
         super().__init__(placeholder="Select ratio order...",
                          options=options, custom_id="mentions_ratio_order")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
@@ -769,6 +766,7 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_id_value = self.role_id.value.strip()
@@ -781,9 +779,6 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
-            # FIX: resolve the role name via the database (matching
-            # ServerStats / TimezoneDistribution) instead of guild.get_role(),
-            # which depends on the guild's role cache being fully populated.
             db_cog = self.cog.db_cog
             role_name = None
             if db_cog and hasattr(db_cog, 'get_role_name_from_db'):
@@ -800,10 +795,6 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
             view = self.cog.active_views.get(self.original_message_id)
             if view:
                 view.selected_role_id = role_id_value
-                # FIX: store the resolved name separately from the raw ID.
-                # selected_role_id stays the filter value sent to the DB
-                # query; role_filter_name is what actually gets drawn on
-                # the leaderboard image.
                 view.role_filter_name = role_name
                 view.page = 0
                 await view.update_message(interaction)
@@ -824,6 +815,7 @@ class RoleIdButton(discord.ui.Button):
         super().__init__(style=discord.ButtonStyle.primary,
                          label="Filter By Role", custom_id="mentions_role_filter")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         if hasattr(view, 'guild'):
@@ -850,7 +842,6 @@ class MentionsLeaderboardView(discord.ui.View):
         self.metric_type = metric_type
         self.page = page
         self.selected_role_id = selected_role_id
-        # FIX: display name for the active role filter, resolved from the DB.
         self.role_filter_name = selected_role_name
         self.pool = pool
         self.using_server_default = using_server_default
@@ -911,22 +902,24 @@ class MentionsLeaderboardView(discord.ui.View):
             self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def callback(interaction: discord.Interaction):
-            # FIX: timezone-aware "now" instead of naive utcnow().
             now = datetime.now(timezone.utc)
             await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
-        # FIX: timezone-aware "now" instead of naive utcnow().
         now = datetime.now(timezone.utc)
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
@@ -934,6 +927,7 @@ class MentionsLeaderboardView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = MentionsTimeModal(self.cog, interaction.message.id, self.guild,
                                   self.target_channel, self.target_category, self.target_user)
@@ -1067,7 +1061,6 @@ class MentionsLeaderboardView(discord.ui.View):
             leaderboard_data=self.leaderboard_data,
             title=self.guild.name,
             display_text=self.current_display_text,
-            # FIX: pass the resolved role NAME for display, not the raw ID.
             role_id=self.role_filter_name,
             page=self.page,
             pool=self.pool,
@@ -1134,7 +1127,6 @@ class MentionsRatioLeaderboardView(discord.ui.View):
         self.ratio_order = ratio_order
         self.page = page
         self.selected_role_id = selected_role_id
-        # FIX: display name for the active role filter, resolved from the DB.
         self.role_filter_name = selected_role_name
         self.pool = pool
         self.using_server_default = using_server_default
@@ -1194,22 +1186,24 @@ class MentionsRatioLeaderboardView(discord.ui.View):
             self.add_item(custom)
 
     def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def callback(interaction: discord.Interaction):
-            # FIX: timezone-aware "now" instead of naive utcnow().
             now = datetime.now(timezone.utc)
             await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
-        # FIX: timezone-aware "now" instead of naive utcnow().
         now = datetime.now(timezone.utc)
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
@@ -1217,6 +1211,7 @@ class MentionsRatioLeaderboardView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = MentionsTimeModal(self.cog, interaction.message.id,
                                   self.guild, self.target_channel, self.target_category)
@@ -1321,7 +1316,6 @@ class MentionsRatioLeaderboardView(discord.ui.View):
             leaderboard_data=self.leaderboard_data,
             title=self.guild.name,
             display_text=self.current_display_text,
-            # FIX: pass the resolved role NAME for display, not the raw ID.
             role_id=self.role_filter_name,
             page=self.page,
             pool=self.pool,
@@ -1427,22 +1421,24 @@ class MentionsRatioEmbedView(discord.ui.View):
             self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def callback(interaction: discord.Interaction):
-            # FIX: timezone-aware "now" instead of naive utcnow().
             now = datetime.now(timezone.utc)
             await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
-        # FIX: timezone-aware "now" instead of naive utcnow().
         now = datetime.now(timezone.utc)
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
         await self.update_embed(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False)
@@ -1450,6 +1446,7 @@ class MentionsRatioEmbedView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = MentionsTimeModal(self.cog, interaction.message.id, self.guild)
         await interaction.response.send_modal(modal)
@@ -1777,11 +1774,6 @@ class Mentions(commands.Cog):
     # HANDLERS
     # ============================================================================
 
-    # FIX: rate limiting was imported and instantiated (self.rate_limiter)
-    # but never actually applied anywhere in this cog. @rate_limited only
-    # throttles the exact method it decorates, so it has to sit directly on
-    # each entry point. MESSAGE_WITH_HASH matches ServerStats' choice for its
-    # equivalent image-generating command handler.
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_slash_leaderboard(
         self,
@@ -1886,8 +1878,6 @@ class Mentions(commands.Cog):
         view = MentionsRatioEmbedView(
             self, interaction.guild, start_time, end_time, days_back_equiv, display_text, target_user)
 
-        # FIX: this surface never showed the retention banner even though
-        # every other command in this cog does. Now consistent.
         retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
 
         await interaction.followup.send(content=retention_alert_text, embed=embed, view=view)
@@ -2056,7 +2046,6 @@ class Mentions(commands.Cog):
         view = MentionsRatioEmbedView(
             self, ctx.guild, start_time, end_time, days_back_equiv, display_text, target_user)
 
-        # FIX: same retention-banner gap as the slash version, now fixed.
         retention_alert_text = await self.db_cog.maybe_get_retention_alert(ctx.guild.id) if self.db_cog else None
 
         await ctx.send(content=retention_alert_text, embed=embed, view=view)
