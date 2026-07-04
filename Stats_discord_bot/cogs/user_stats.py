@@ -52,8 +52,8 @@ def draw_text_centered(pilmoji_instance, text, position, font, fill, max_width=N
 
     pilmoji_instance.text((x, y), text, fill=fill, font=font)
 
-# FORMATTING
 
+# FORMATTING
 
 def format_voice_time(total_seconds):
     if total_seconds < 60:
@@ -99,6 +99,7 @@ class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.cog = cog_instance
         self.guild = guild
         self.member = member
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days (1-2000)',
@@ -108,6 +109,7 @@ class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -162,6 +164,7 @@ class UserStatsView(discord.ui.View):
         self.current_display_text = display_text
         self.current_days_back_equiv = days_back_equiv
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self.using_server_default = (
             start_time is None and end_time is None and display_text is None and days_back_equiv is None)
         self._update_buttons()
@@ -173,7 +176,7 @@ class UserStatsView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="user_stats_refresh",
             row=0
         )
@@ -182,7 +185,7 @@ class UserStatsView(discord.ui.View):
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="user_stats_time_settings",
             row=0
         )
@@ -236,9 +239,11 @@ class UserStatsView(discord.ui.View):
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=5.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         try:
             self.show_time_buttons = not self.show_time_buttons
@@ -248,21 +253,26 @@ class UserStatsView(discord.ui.View):
             logger.error(f"Error handling time settings: {e}")
             await interaction.response.send_message("❌ An error occurred while updating time settings.", ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=datetime.utcnow(), display_text="All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def days_7_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def days_14_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def days_30_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=5.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = UserStatsTimeModal(self.cog, self.guild, self.member)
         await interaction.response.send_modal(modal)
