@@ -455,6 +455,10 @@ class MentionsImageGenerator:
         target_user: discord.Member = None,
         metric_type: str = "sent"
     ) -> io.BytesIO:
+        # NOTE: `role_id` here is used purely as the display label drawn onto
+        # the image. Callers now pass the resolved role NAME (fetched from the
+        # database) instead of the raw role ID string, so the rendered image
+        # matches what ServerStats/Distribution show.
         template_path = MentionsConfig.TEMPLATE_PATH
         try:
             image = Image.open(template_path)
@@ -628,7 +632,10 @@ class MentionsTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 await interaction.followup.send("❌ Could not find the leaderboard view. Please try the command again.", ephemeral=True)
                 return
 
-            now = datetime.utcnow()
+            # FIX: use a timezone-aware "now" instead of naive utcnow(), so
+            # this stays consistent with get_server_default_time_range() and
+            # every other time range in this cog / the DB layer.
+            now = datetime.now(timezone.utc)
             view.current_start_time = now - timedelta(days=days)
             view.current_end_time = now
             view.current_days_back_equiv = days
@@ -774,8 +781,15 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
-            role = self.guild.get_role(role_id_int)
-            if not role:
+            # FIX: resolve the role name via the database (matching
+            # ServerStats / TimezoneDistribution) instead of guild.get_role(),
+            # which depends on the guild's role cache being fully populated.
+            db_cog = self.cog.db_cog
+            role_name = None
+            if db_cog and hasattr(db_cog, 'get_role_name_from_db'):
+                role_name = await db_cog.get_role_name_from_db(self.guild.id, role_id_int)
+
+            if not role_name:
                 embed = discord.Embed(
                     title="Invalid Role ID", description="The role ID you inputted is not valid in this server.", color=discord.Color.red())
                 await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -786,6 +800,11 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
             view = self.cog.active_views.get(self.original_message_id)
             if view:
                 view.selected_role_id = role_id_value
+                # FIX: store the resolved name separately from the raw ID.
+                # selected_role_id stays the filter value sent to the DB
+                # query; role_filter_name is what actually gets drawn on
+                # the leaderboard image.
+                view.role_filter_name = role_name
                 view.page = 0
                 await view.update_message(interaction)
             else:
@@ -819,7 +838,8 @@ class MentionsLeaderboardView(discord.ui.View):
                  target_channel: Union[discord.TextChannel,
                                        discord.VoiceChannel] = None,
                  target_category: discord.CategoryChannel = None,
-                 target_user: discord.Member = None):
+                 target_user: discord.Member = None,
+                 selected_role_name: str = None):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
@@ -830,6 +850,8 @@ class MentionsLeaderboardView(discord.ui.View):
         self.metric_type = metric_type
         self.page = page
         self.selected_role_id = selected_role_id
+        # FIX: display name for the active role filter, resolved from the DB.
+        self.role_filter_name = selected_role_name
         self.pool = pool
         self.using_server_default = using_server_default
         self.show_time_buttons = False
@@ -890,12 +912,14 @@ class MentionsLeaderboardView(discord.ui.View):
 
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
-            now = datetime.utcnow()
+            # FIX: timezone-aware "now" instead of naive utcnow().
+            now = datetime.now(timezone.utc)
             await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        now = datetime.utcnow()
+        # FIX: timezone-aware "now" instead of naive utcnow().
+        now = datetime.now(timezone.utc)
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
     async def refresh_callback(self, interaction: discord.Interaction):
@@ -1043,7 +1067,8 @@ class MentionsLeaderboardView(discord.ui.View):
             leaderboard_data=self.leaderboard_data,
             title=self.guild.name,
             display_text=self.current_display_text,
-            role_id=self.selected_role_id,
+            # FIX: pass the resolved role NAME for display, not the raw ID.
+            role_id=self.role_filter_name,
             page=self.page,
             pool=self.pool,
             target_user=self.target_user,
@@ -1097,7 +1122,8 @@ class MentionsRatioLeaderboardView(discord.ui.View):
                  page: int = 0, selected_role_id: str = None, pool=None, using_server_default: bool = True,
                  target_channel: Union[discord.TextChannel,
                                        discord.VoiceChannel] = None,
-                 target_category: discord.CategoryChannel = None):
+                 target_category: discord.CategoryChannel = None,
+                 selected_role_name: str = None):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
@@ -1108,6 +1134,8 @@ class MentionsRatioLeaderboardView(discord.ui.View):
         self.ratio_order = ratio_order
         self.page = page
         self.selected_role_id = selected_role_id
+        # FIX: display name for the active role filter, resolved from the DB.
+        self.role_filter_name = selected_role_name
         self.pool = pool
         self.using_server_default = using_server_default
         self.show_time_buttons = False
@@ -1167,12 +1195,14 @@ class MentionsRatioLeaderboardView(discord.ui.View):
 
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
-            now = datetime.utcnow()
+            # FIX: timezone-aware "now" instead of naive utcnow().
+            now = datetime.now(timezone.utc)
             await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        now = datetime.utcnow()
+        # FIX: timezone-aware "now" instead of naive utcnow().
+        now = datetime.now(timezone.utc)
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
     async def refresh_callback(self, interaction: discord.Interaction):
@@ -1291,7 +1321,8 @@ class MentionsRatioLeaderboardView(discord.ui.View):
             leaderboard_data=self.leaderboard_data,
             title=self.guild.name,
             display_text=self.current_display_text,
-            role_id=self.selected_role_id,
+            # FIX: pass the resolved role NAME for display, not the raw ID.
+            role_id=self.role_filter_name,
             page=self.page,
             pool=self.pool,
             target_user=None,
@@ -1397,12 +1428,14 @@ class MentionsRatioEmbedView(discord.ui.View):
 
     def create_days_callback(self, days: int):
         async def callback(interaction: discord.Interaction):
-            now = datetime.utcnow()
+            # FIX: timezone-aware "now" instead of naive utcnow().
+            now = datetime.now(timezone.utc)
             await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
         return callback
 
     async def all_time_callback(self, interaction: discord.Interaction):
-        now = datetime.utcnow()
+        # FIX: timezone-aware "now" instead of naive utcnow().
+        now = datetime.now(timezone.utc)
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
     async def refresh_callback(self, interaction: discord.Interaction):
@@ -1744,6 +1777,12 @@ class Mentions(commands.Cog):
     # HANDLERS
     # ============================================================================
 
+    # FIX: rate limiting was imported and instantiated (self.rate_limiter)
+    # but never actually applied anywhere in this cog. @rate_limited only
+    # throttles the exact method it decorates, so it has to sit directly on
+    # each entry point. MESSAGE_WITH_HASH matches ServerStats' choice for its
+    # equivalent image-generating command handler.
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_slash_leaderboard(
         self,
         interaction: discord.Interaction,
@@ -1796,6 +1835,7 @@ class Mentions(commands.Cog):
         msg = await interaction.followup.send(content=retention_alert_text, file=file, view=view)
         self.active_views[msg.id] = view
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_slash_ratio(self, interaction: discord.Interaction, target_user: discord.Member):
         if not interaction.guild:
             await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
@@ -1845,8 +1885,14 @@ class Mentions(commands.Cog):
 
         view = MentionsRatioEmbedView(
             self, interaction.guild, start_time, end_time, days_back_equiv, display_text, target_user)
-        await interaction.followup.send(embed=embed, view=view)
 
+        # FIX: this surface never showed the retention banner even though
+        # every other command in this cog does. Now consistent.
+        retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
+
+        await interaction.followup.send(content=retention_alert_text, embed=embed, view=view)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_slash_ratios_leaderboard(
         self,
         interaction: discord.Interaction,
@@ -1896,6 +1942,7 @@ class Mentions(commands.Cog):
         msg = await interaction.followup.send(content=retention_alert_text, file=file, view=view)
         self.active_views[msg.id] = view
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_prefix_leaderboard(
         self,
         ctx: commands.Context,
@@ -1953,6 +2000,7 @@ class Mentions(commands.Cog):
         msg = await ctx.send(content=retention_alert_text, file=file, view=view)
         self.active_views[msg.id] = view
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_prefix_ratio(self, ctx: commands.Context, target_user: discord.Member):
         if not ctx.guild:
             await ctx.send("❌ This command can only be used in a server.", delete_after=5)
@@ -2007,8 +2055,13 @@ class Mentions(commands.Cog):
 
         view = MentionsRatioEmbedView(
             self, ctx.guild, start_time, end_time, days_back_equiv, display_text, target_user)
-        await ctx.send(embed=embed, view=view)
 
+        # FIX: same retention-banner gap as the slash version, now fixed.
+        retention_alert_text = await self.db_cog.maybe_get_retention_alert(ctx.guild.id) if self.db_cog else None
+
+        await ctx.send(content=retention_alert_text, embed=embed, view=view)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_prefix_ratios_leaderboard(
         self,
         ctx: commands.Context,
