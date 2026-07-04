@@ -14,10 +14,24 @@ class Diagnostics(commands.Cog):
     async def cog_load(self):
         self.db_stats = self.bot.get_cog("DatabaseStats")
 
+    # =========================================================
+    # Permission check for ALL commands in this cog
+    # =========================================================
+    async def cog_check(self, ctx: commands.Context):
+        return ctx.author.id in ALLOWED_DIAG_USERS
+
+    async def cog_command_error(self, ctx, error):
+        # Swallow CheckFailure (unauthorized users) silently — no response, no traceback noise.
+        if isinstance(error, commands.CheckFailure):
+            return
+        raise error
+
     @commands.command(name="diag")
     async def diag(self, ctx):
-        if ctx.author.id not in ALLOWED_DIAG_USERS:
-            return  # silent — no error message, don't reveal the command exists
+        try:
+            await ctx.message.delete()
+        except:
+            pass
 
         latency_ms = round(self.bot.latency * 1000, 2)
         guild_count = len(self.bot.guilds)

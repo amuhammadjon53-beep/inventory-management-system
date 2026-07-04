@@ -210,11 +210,17 @@ const DistributionDashboard = () => {
   const [loadingPieChart, setLoadingPieChart] = useState(false);
   const [loadingHeatmap, setLoadingHeatmap]   = useState(false);
 
-  const rolesRef              = useRef([]);
-  const prevFiltersRef        = useRef('');
-  const prevHeatmapFiltersRef = useRef('');
-  const didInitRef            = useRef(false); // ← FIX: guards mount effect against StrictMode double-invoke
-  const NAVBAR_HEIGHT         = "80px";
+  const rolesRef                = useRef([]);
+  const prevFiltersRef          = useRef('');
+  const prevHeatmapFiltersRef   = useRef('');
+  const didInitRef              = useRef(false); // ← FIX: guards mount effect against StrictMode double-invoke
+  // FIX (gap #2): keyed on server id so the unified init effect (entity
+  // fetches + settings fetch + first stats fetch) can't double-fire for the
+  // same server if [currentServer, hasAccess] re-renders without the server
+  // actually changing (e.g. hasAccess flips true→true on an unrelated
+  // re-render). Only a genuine change to currentServer.id resets this.
+  const initialDataLoadedRef    = useRef(null);
+  const NAVBAR_HEIGHT           = "80px";
 
   useEffect(() => { rolesRef.current = roles; }, [roles]);
 
@@ -397,6 +403,10 @@ const DistributionDashboard = () => {
 
       if (PRIVILEGED_USERS.includes(authData.user.id)) {
         setHasAccess(true); setDashboardAccessLevel('Admin');
+        // FIX (gap #1): parity with Messages/Mentions — privileged users need
+        // window.accessLevel set here too, since checkServerAccess (the other
+        // place that sets it) is skipped entirely on this branch.
+        window.accessLevel = 'Admin';
       } else {
         await checkServerAccess(sel.id, sel.has_admin, sel.has_manage_server);
       }
@@ -418,6 +428,10 @@ const DistributionDashboard = () => {
       setDashboardAccessLevel(lvl);
       const access = (lvl === 'Public' || lvl === 'Member') ? true : lvl === 'Moderator' ? (hasAdmin || hasManageServer) : lvl === 'Admin' ? hasAdmin : true;
       setHasAccess(access);
+      // FIX (gap #1): parity with Messages/Mentions — set the global access
+      // level here so anything else reading window.accessLevel (sidebar,
+      // settings gating, etc.) sees the correct value for this page too.
+      window.accessLevel = lvl;
       setLoadingServers(false);
       // NOTE: no applyServerTimePeriod() and no data fetch here anymore —
       // the unified [currentServer, hasAccess] effect below owns that.
@@ -594,12 +608,19 @@ const DistributionDashboard = () => {
   // re-fetched settings + called fetchDataWithParams, and a "load entities"
   // effect) racing each other and the filter-watcher effects below.
   //
+  // FIX (gap #2): guarded on initialDataLoadedRef keyed to currentServer.id,
+  // matching Messages/Mentions, so this whole fan-out can't refire for the
+  // same server if the effect happens to re-run without hasAccess/currentServer
+  // genuinely changing to a new server.
+  //
   // Before finishing, it also syncs prevFiltersRef / prevHeatmapFiltersRef to
   // the resolved filter key, so the filter-watcher effects further down (which
   // fire on the same [currentServer, hasAccess, timePeriod, ...] change) see
   // no diff and don't fire a duplicate fetch right after this one completes.
   useEffect(() => {
     if (!currentServer || hasAccess === null) return;
+    if (initialDataLoadedRef.current === currentServer.id) return;
+    initialDataLoadedRef.current = currentServer.id;
     let cancelled = false;
 
     const initializeServerData = async () => {
@@ -1383,6 +1404,37 @@ const DistributionDashboard = () => {
     return (<><NavBar /><div className="dashboard-page"><DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} isPublicMode={false} /><main className="dashboard-main"><div className="dashboard-content"><AccessDenied accessLevel={dashboardAccessLevel} /></div><Footer /></main></div><style>{styles}</style></>);
   }
 
+  // FIX (gap #3): explicit public-mode branch, mirroring Messages/Mentions
+  // instead of folding the public banner into the shared authenticated
+  // return below. Same renderFilters()/renderContent() bodies are reused.
+  if (!isAuthenticated && isPublicMode && currentServer) {
+    return (
+      <>
+        <NavBar />
+        {retentionAlert && !retentionDismissed && (
+          <div className="retention-banner">
+            <span className="retention-banner-text">⚠️ {retentionAlert.message}</span>
+            <button className="retention-banner-close" onClick={() => setRetentionDismissed(true)} aria-label="Dismiss">✕</button>
+          </div>
+        )}
+        <div className="dashboard-page">
+          <DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} isPublicMode={true} publicGuildId={PUBLIC_GUILD_ID} />
+          <main className="dashboard-main">
+            <div className="dashboard-content">
+              <div className="public-banner">
+                <p>Viewing statistics from the <strong>StatsHQ</strong> support server — <a href={`${API_BASE_URL}/api/auth/discord`}>Login</a> to see your own server stats</p>
+              </div>
+              {renderFilters()}
+              {renderContent()}
+            </div>
+            <Footer />
+          </main>
+        </div>
+        <style>{styles}</style>
+      </>
+    );
+  }
+
   return (
     <>
       <NavBar />
@@ -1402,11 +1454,6 @@ const DistributionDashboard = () => {
         <DashboardSidebar currentServerId={currentServer?.id} topOffset={NAVBAR_HEIGHT} isPublicMode={isPublicMode} publicGuildId={PUBLIC_GUILD_ID} />
         <main className="dashboard-main">
           <div className="dashboard-content">
-            {isPublicMode && (
-              <div className="public-banner">
-                <p>Viewing statistics from the <strong>StatsHQ</strong> support server — <a href={`${API_BASE_URL}/api/auth/discord`}>Login</a> to see your own server stats</p>
-              </div>
-            )}
             {renderFilters()}
             {renderContent()}
           </div>

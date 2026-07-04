@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { useEffect, useRef, useState } from "react";
+import { Users } from "lucide-react";
 import NavBar from "../Components/NavBar.jsx";
 import Footer from "../Components/Footer.jsx";
 
@@ -168,11 +169,26 @@ const HomePage = () => {
         {/* Social Proof Bar */}
         <div className="social-proof-bar">
           <div className="social-proof-inner">
-            <span className="social-proof-live">
-              <span className="live-dot" />
-              <span className="live-dot-ring" />
-            </span>
-            <span className="social-proof-text">Tracking Statistics For More Than 100,000 Users</span>
+            <div className="stat-block">
+              <div className="stat-number-row">
+                <Users className="stat-icon" size={22} strokeWidth={2.25} />
+                <span className="stat-number">100,000+</span>
+              </div>
+              <span className="stat-label">Users Tracked</span>
+            </div>
+
+            <span className="social-proof-divider" />
+
+            <div className="stat-block">
+              <div className="stat-number-row">
+                <span className="stat-live">
+                  <span className="live-dot" />
+                  <span className="live-dot-ring" />
+                </span>
+                <span className="stat-number">99%</span>
+              </div>
+              <span className="stat-label">Uptime</span>
+            </div>
           </div>
         </div>
 
@@ -343,30 +359,69 @@ const HomePage = () => {
             background-color: #0f0f0f;
             border-bottom: 1px solid #222222;
             border-top: 1px solid #222222;
-            padding: 20px 20px;
+            padding: 36px 20px;
             text-align: center;
           }
 
           .social-proof-inner {
             display: inline-flex;
             align-items: center;
-            gap: 12px;
+            gap: 56px;
           }
 
-          .social-proof-live {
+          .stat-block {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+          }
+
+          .stat-number-row {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+          }
+
+          .stat-number {
+            font-size: 30px;
+            font-weight: 800;
+            color: #ffffff;
+            letter-spacing: -0.02em;
+            line-height: 1;
+            background: linear-gradient(180deg, #ffffff 0%, #d9d9d9 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+          }
+
+          .stat-label {
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: #777777;
+          }
+
+          .stat-icon {
+            color: #aa00ff;
+            flex-shrink: 0;
+          }
+
+          .stat-live {
             position: relative;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 16px;
-            height: 16px;
+            width: 12px;
+            height: 12px;
             flex-shrink: 0;
           }
 
           .live-dot {
             position: absolute;
-            width: 8px;
-            height: 8px;
+            width: 10px;
+            height: 10px;
             border-radius: 50%;
             background-color: #aa00ff;
             z-index: 1;
@@ -374,8 +429,8 @@ const HomePage = () => {
 
           .live-dot-ring {
             position: absolute;
-            width: 16px;
-            height: 16px;
+            width: 10px;
+            height: 10px;
             border-radius: 50%;
             background-color: #aa00ff;
             opacity: 0.4;
@@ -383,15 +438,14 @@ const HomePage = () => {
           }
 
           @keyframes ping {
-            0% { transform: scale(0.5); opacity: 0.5; }
-            100% { transform: scale(1.8); opacity: 0; }
+            0% { transform: scale(1); opacity: 0.5; }
+            100% { transform: scale(3.2); opacity: 0; }
           }
 
-          .social-proof-text {
-            font-size: 15px;
-            font-weight: 600;
-            letter-spacing: 0.04em;
-            color: #cccccc;
+          .social-proof-divider {
+            width: 1px;
+            height: 40px;
+            background: linear-gradient(to bottom, transparent, #2a2a2a, transparent);
           }
 
           .btn {
@@ -741,9 +795,21 @@ const HomePage = () => {
               font-size: 32px;
             }
 
-            .social-proof-text {
-              font-size: 13px;
-              letter-spacing: 0.03em;
+            .stat-number {
+              font-size: 22px;
+            }
+
+            .stat-label {
+              font-size: 10px;
+              letter-spacing: 0.1em;
+            }
+
+            .social-proof-inner {
+              gap: 32px;
+            }
+
+            .social-proof-divider {
+              height: 30px;
             }
           }
 
