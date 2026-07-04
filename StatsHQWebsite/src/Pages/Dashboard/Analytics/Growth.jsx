@@ -235,6 +235,8 @@ const GrowthDashboard = () => {
   const rolesRef = useRef([]);
   const fetchedRef = useRef(false);
   const initialDataLoadedRef = useRef(false);
+  const didInitRef = useRef(false);
+  const inFlightRequestsRef = useRef({});
   const prevFiltersRef = useRef(JSON.stringify({
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
     selectedRoleId
@@ -277,6 +279,8 @@ const GrowthDashboard = () => {
 
   // Load everything on mount
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     loadInitialData();
   }, []);
 
@@ -568,75 +572,85 @@ const GrowthDashboard = () => {
         }
         
         setHasAccess(hasAccessFlag);
-        const timeParams = applyServerTimePeriod(settingsData);
-        setLoading(false);
-        
-        // Fetch data immediately with the computed params
-        await fetchDataWithParams(timeParams);
+        // NOTE: time-period application and the data fetch now happen exactly
+        // once, in the unified [currentServer, hasAccess] effect below —
+        // this function's only job is to resolve access.
         
       } else {
         console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
-        setLoading(false);
       }
     } catch (error) {
       console.error('Error checking server access:', error);
       setHasAccess(false);
+    } finally {
       setLoading(false);
     }
   };
 
-  // NEW: fetchDataWithParams - uses overrides instead of state
+  // NEW: fetchDataWithParams - uses overrides instead of state, with in-flight dedup
   const fetchDataWithParams = async (overrides = {}) => {
     if (!currentServer || !hasAccess) return;
     
-    setLoading(true);
-    setApiError(null);
+    const requestKey = `${currentServer.id}:${selectedView}:${JSON.stringify(overrides)}`;
+    if (inFlightRequestsRef.current[requestKey]) {
+      // An identical request is already in flight — reuse it instead of firing another
+      return inFlightRequestsRef.current[requestKey];
+    }
     
-    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
-    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
-    const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
-    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
-    
-    let startDate = null;
-    let endDate = null;
-    let days = null;
-    
-    if (effectiveTimePeriod === "all") {
-      days = 2000;
-    } else if (effectiveTimePeriod === "custom-lookback") {
-      if (effectiveCustomDaysBack && parseInt(effectiveCustomDaysBack) > 0) {
-        days = parseInt(effectiveCustomDaysBack);
+    const promise = (async () => {
+      setLoading(true);
+      setApiError(null);
+      
+      const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+      const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+      const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+      const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+      
+      let startDate = null;
+      let endDate = null;
+      let days = null;
+      
+      if (effectiveTimePeriod === "all") {
+        days = 2000;
+      } else if (effectiveTimePeriod === "custom-lookback") {
+        if (effectiveCustomDaysBack && parseInt(effectiveCustomDaysBack) > 0) {
+          days = parseInt(effectiveCustomDaysBack);
+          endDate = new Date();
+          startDate = new Date();
+          startDate.setDate(startDate.getDate() - days);
+        }
+      } else if (effectiveTimePeriod === "custom-range") {
+        if (effectiveCustomStartDate && effectiveCustomEndDate) {
+          startDate = new Date(effectiveCustomStartDate);
+          endDate = new Date(effectiveCustomEndDate);
+          days = null;
+        }
+      } else {
+        days = parseInt(effectiveTimePeriod);
         endDate = new Date();
         startDate = new Date();
         startDate.setDate(startDate.getDate() - days);
       }
-    } else if (effectiveTimePeriod === "custom-range") {
-      if (effectiveCustomStartDate && effectiveCustomEndDate) {
-        startDate = new Date(effectiveCustomStartDate);
-        endDate = new Date(effectiveCustomEndDate);
-        days = null;
+      
+      try {
+        if (selectedView === 'server') {
+          await fetchServerDataWithDates(startDate, endDate, days);
+        } else if (selectedView === 'role' && selectedRoleId) {
+          await fetchRoleDataWithDates(startDate, endDate, days);
+        }
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        setApiError(error.message);
+      } finally {
+        setLoading(false);
+        fetchedRef.current = true;
+        delete inFlightRequestsRef.current[requestKey];
       }
-    } else {
-      days = parseInt(effectiveTimePeriod);
-      endDate = new Date();
-      startDate = new Date();
-      startDate.setDate(startDate.getDate() - days);
-    }
+    })();
     
-    try {
-      if (selectedView === 'server') {
-        await fetchServerDataWithDates(startDate, endDate, days);
-      } else if (selectedView === 'role' && selectedRoleId) {
-        await fetchRoleDataWithDates(startDate, endDate, days);
-      }
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setApiError(error.message);
-    } finally {
-      setLoading(false);
-      fetchedRef.current = true;
-    }
+    inFlightRequestsRef.current[requestKey] = promise;
+    return promise;
   };
 
   // Helper functions for fetchDataWithParams
@@ -859,42 +873,6 @@ const GrowthDashboard = () => {
     }
   };
 
-  // UPDATED: Fetch settings and apply time period, then fetch data immediately
-  useEffect(() => {
-    if (!currentServer) return;
-    
-    const fetchAndApplyTimePeriod = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: isPublicMode ? 'omit' : 'include',
-          body: JSON.stringify({ guild_id: currentServer.id })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const timeParams = applyServerTimePeriod(data);
-          await fetchDataWithParams(timeParams);
-        } else {
-          if (selectedView === 'server') {
-            await fetchServerData();
-          } else if (selectedView === 'role' && selectedRoleId) {
-            await fetchRoleData();
-          }
-        }
-      } catch (e) {
-        console.error('Error fetching time period settings:', e);
-        if (selectedView === 'server') {
-          await fetchServerData();
-        } else if (selectedView === 'role' && selectedRoleId) {
-          await fetchRoleData();
-        }
-      }
-    };
-    
-    fetchAndApplyTimePeriod();
-  }, [currentServer]);
-
   // Fetch roles from growth table
   const fetchRoles = async () => {
     if (!currentServer) return;
@@ -950,12 +928,16 @@ const GrowthDashboard = () => {
     }
   };
 
-  // Load data when server changes
+  // Load data when server changes — single unified effect owns the whole
+  // "server changed" lifecycle: reset -> fetch roles -> fetch settings ->
+  // apply time period -> fetch data with the resolved params -> sync the
+  // filter-watcher's ref so it doesn't fire a redundant extra fetch.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
     
     // Prevent re-running if already loaded for this server
     if (initialDataLoadedRef.current === currentServer.id) return;
+    initialDataLoadedRef.current = currentServer.id;
     
     fetchedRef.current = false;
     
@@ -963,7 +945,6 @@ const GrowthDashboard = () => {
     setLoadingMemberChart(true);
     setLoadingJoinsLeavesChart(true);
     setLoadingProjectedChart(true);
-    
     setLoading(true);
     
     setMemberTimeseries([]);
@@ -973,11 +954,45 @@ const GrowthDashboard = () => {
     setSelectedRoleName("");
     setRoleSearch("");
     
-    // Mark as loaded for this server
-    initialDataLoadedRef.current = currentServer.id;
+    const initializeServer = async () => {
+      // 1. roles can load in parallel, they don't gate the stats fetch
+      fetchRoles();
+      
+      // 2. get the server's configured default time period BEFORE any data fetch
+      let timeParams = {};
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          timeParams = applyServerTimePeriod(data); // sets state AND returns the values synchronously
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+      }
+      
+      // 3. sync prevFiltersRef to the resolved values BEFORE fetching, so the
+      //    filter-watcher effect sees no diff once fetchedRef flips true and
+      //    doesn't sneak in a redundant extra fetch right after init
+      const resolvedFilters = {
+        selectedView,
+        timePeriod: timeParams.timePeriod ?? timePeriod,
+        customDaysBack: timeParams.customDaysBack ?? customDaysBack,
+        customStartDate: timeParams.customStartDate ?? customStartDate,
+        customEndDate: timeParams.customEndDate ?? customEndDate,
+        selectedRoleId: ""
+      };
+      prevFiltersRef.current = JSON.stringify(resolvedFilters);
+      
+      // 4. fetch data ONCE, using the resolved params directly (not stale state)
+      await fetchDataWithParams(timeParams);
+    };
     
-    fetchRoles();
-    fetchServerData();
+    initializeServer();
   }, [currentServer, hasAccess]);
 
   // Fetch stats when filters change
@@ -1340,7 +1355,9 @@ const GrowthDashboard = () => {
     setSelectedRoleName(role.name);
     setRoleSearch(role.name);
     setShowRoleDropdown(false);
-    setTimeout(() => fetchRoleData(), 100);
+    // No manual fetch here — the filter-watcher effect below fires
+    // automatically when selectedRoleId changes. Calling fetchRoleData()
+    // here too was firing a second, redundant request on every role pick.
   };
 
   const clearRoleSelection = () => {

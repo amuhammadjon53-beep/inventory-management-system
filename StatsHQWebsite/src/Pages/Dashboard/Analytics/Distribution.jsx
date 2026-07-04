@@ -213,10 +213,18 @@ const DistributionDashboard = () => {
   const rolesRef              = useRef([]);
   const prevFiltersRef        = useRef('');
   const prevHeatmapFiltersRef = useRef('');
+  const didInitRef            = useRef(false); // ← FIX: guards mount effect against StrictMode double-invoke
   const NAVBAR_HEIGHT         = "80px";
 
   useEffect(() => { rolesRef.current = roles; }, [roles]);
-  useEffect(() => { loadInitialData(); }, []);
+
+  // ── FIX: guard against StrictMode's mount → unmount → remount, which would
+  // otherwise fire loadInitialData() (and its full fan-out of requests) twice.
+  useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+    loadInitialData();
+  }, []);
 
   // Reset stat type when view changes
   useEffect(() => {
@@ -240,9 +248,8 @@ const DistributionDashboard = () => {
     fetchTz();
   }, [currentServer, isPublicMode]);
 
-  // ── FIX: Retention alert — only fires once hasAccess is resolved (not null)
-  // This prevents the banner fetch from racing with the access check and
-  // causing the settings useEffect below to see a stale hasAccess=null.
+  // Retention alert — only fires once hasAccess is resolved (not null), so it
+  // doesn't race with the access check.
   useEffect(() => {
     if (!currentServer || isPublicMode || hasAccess === null) { setRetentionAlert(null); return; }
     let cancelled = false;
@@ -264,7 +271,7 @@ const DistributionDashboard = () => {
     };
     fetchRetentionStatus();
     return () => { cancelled = true; };
-  }, [currentServer, isPublicMode, hasAccess]); // ← hasAccess added so it waits for resolution
+  }, [currentServer, isPublicMode, hasAccess]);
 
   const applyServerTimePeriod = (settings) => {
     const mode = settings.default_time_mode || 'days_back';
@@ -397,9 +404,11 @@ const DistributionDashboard = () => {
     setLoadingServers(false);
   };
 
-  // ── FIX: checkServerAccess only sets state — does NOT call fetchDataWithParams.
-  // The settings useEffect below owns the initial data fetch and waits for
-  // hasAccess to be resolved before firing, eliminating the double-fetch race.
+  // ── FIX: checkServerAccess ONLY determines access/permissions now. It no
+  // longer calls applyServerTimePeriod (that used to duplicate the time-period
+  // logic that the unified init effect below also performs) and never
+  // triggers a data fetch itself. This removes one of the two competing
+  // "apply settings" paths that used to race each other on server load.
   const checkServerAccess = async (guildId, hasAdmin, hasManageServer) => {
     try {
       const r = await fetch(`${API_BASE_URL}/api/settings/get`, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'include', body: JSON.stringify({ guild_id: guildId }) });
@@ -409,15 +418,14 @@ const DistributionDashboard = () => {
       setDashboardAccessLevel(lvl);
       const access = (lvl === 'Public' || lvl === 'Member') ? true : lvl === 'Moderator' ? (hasAdmin || hasManageServer) : lvl === 'Admin' ? hasAdmin : true;
       setHasAccess(access);
-      applyServerTimePeriod(d); // set time period state only — fetch happens in useEffect below
       setLoadingServers(false);
+      // NOTE: no applyServerTimePeriod() and no data fetch here anymore —
+      // the unified [currentServer, hasAccess] effect below owns that.
     } catch { setHasAccess(false); }
   };
 
-  // ── FIX: fetchDataWithParams — guard moved BEFORE setLoadingPieChart so we
-  // never enter a stuck-loading state when hasAccess hasn't resolved yet.
   const fetchDataWithParams = async (overrides = {}) => {
-    if (!currentServer) return; // guard before any state mutation
+    if (!currentServer) return;
 
     setLoadingPieChart(true);
 
@@ -451,6 +459,10 @@ const DistributionDashboard = () => {
     try {
       const statConf = STAT_TYPES[selectedView]?.find(t => t.value === selectedStatType);
       if (!statConf) return;
+
+      if (selectedView === 'user'     && !selectedUserId)     { setLoadingPieChart(false); return; }
+      if (selectedView === 'channel'  && !selectedChannelId)  { setLoadingPieChart(false); return; }
+      if (selectedView === 'category' && !selectedCategoryId) { setLoadingPieChart(false); return; }
 
       const roleFilterArray = selectedRoleId && statConf.hasRoleFilter ? [String(selectedRoleId)] : null;
 
@@ -574,13 +586,35 @@ const DistributionDashboard = () => {
     }
   };
 
-  // ── FIX: Settings useEffect now depends on [currentServer, hasAccess] and
-  // guards on hasAccess === null so it never fires until the access check
-  // resolves. This is the single owner of the initial data fetch.
+  // ── FIX: this ONE effect now owns the entire "server changed" init
+  // lifecycle — entity fetches, the single settings fetch, applying the
+  // resolved time period, and the first data fetch (using the resolved
+  // params directly, not stale React state). It replaces what used to be
+  // two separate, independently-firing effects (a "settings" effect that
+  // re-fetched settings + called fetchDataWithParams, and a "load entities"
+  // effect) racing each other and the filter-watcher effects below.
+  //
+  // Before finishing, it also syncs prevFiltersRef / prevHeatmapFiltersRef to
+  // the resolved filter key, so the filter-watcher effects further down (which
+  // fire on the same [currentServer, hasAccess, timePeriod, ...] change) see
+  // no diff and don't fire a duplicate fetch right after this one completes.
   useEffect(() => {
     if (!currentServer || hasAccess === null) return;
     let cancelled = false;
-    const fetchAndApplyTimePeriod = async () => {
+
+    const initializeServerData = async () => {
+      if (!hasAccess) return;
+
+      // Entities can load in parallel — they don't gate the stats fetch.
+      profileCache.clear();
+      fetchAllUsers();
+      fetchAllChannels();
+      fetchAllCategories();
+      fetchAllRoles();
+
+      // Fetch settings ONCE and resolve the time period synchronously,
+      // rather than relying on state that hasn't re-rendered yet.
+      let timeParams = {};
       try {
         const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
           method: 'POST',
@@ -591,27 +625,54 @@ const DistributionDashboard = () => {
         if (cancelled) return;
         if (response.ok) {
           const data = await response.json();
-          const timeParams = applyServerTimePeriod(data);
-          if (!cancelled) await fetchDataWithParams(timeParams);
-        } else {
-          if (!cancelled) await fetchDistributionData();
+          timeParams = applyServerTimePeriod(data);
         }
       } catch (e) {
         console.error('Error fetching time period settings:', e);
-        if (!cancelled) await fetchDistributionData();
       }
-    };
-    fetchAndApplyTimePeriod();
-    return () => { cancelled = true; };
-  }, [currentServer, hasAccess]); // ← hasAccess added; fires once it resolves to true/false
 
-  useEffect(() => {
-    if (!currentServer || !hasAccess) return;
-    profileCache.clear();
-    fetchAllUsers(); fetchAllChannels(); fetchAllCategories(); fetchAllRoles();
+      if (cancelled) return;
+
+      // Sync the filter-watcher refs to the resolved values BEFORE firing the
+      // fetch, so those effects don't see a "changed filter" afterward and
+      // refire a duplicate request.
+      const resolvedTimePeriod      = timeParams.timePeriod      ?? timePeriod;
+      const resolvedCustomDaysBack  = timeParams.customDaysBack  ?? customDaysBack;
+      const resolvedCustomStartDate = timeParams.customStartDate ?? customStartDate;
+      const resolvedCustomEndDate   = timeParams.customEndDate   ?? customEndDate;
+
+      const resolvedFiltersKey = JSON.stringify({
+        selectedView, selectedStatType,
+        timePeriod: resolvedTimePeriod,
+        customDaysBack: resolvedCustomDaysBack,
+        customStartDate: resolvedCustomStartDate,
+        customEndDate: resolvedCustomEndDate,
+        selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId,
+        serverTimezone,
+      });
+      prevFiltersRef.current = resolvedFiltersKey;
+
+      const resolvedHeatmapKey = JSON.stringify({
+        selectedView, selectedStatType,
+        timePeriod: resolvedTimePeriod,
+        customDaysBack: resolvedCustomDaysBack,
+        customStartDate: resolvedCustomStartDate,
+        customEndDate: resolvedCustomEndDate,
+        selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId,
+        serverTimezone, activeHeatmapView,
+      });
+      prevHeatmapFiltersRef.current = resolvedHeatmapKey;
+
+      await fetchDataWithParams(timeParams);
+    };
+
+    initializeServerData();
+    return () => { cancelled = true; };
   }, [currentServer, hasAccess]);
 
-  // ── Pie chart fetch — never depends on activeHeatmapView ─────────────────
+  // ── Pie chart fetch — reacts to genuine filter changes only. Since the
+  // unified init effect above syncs prevFiltersRef to the resolved values
+  // right after server load, this effect won't duplicate that initial fetch.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
     const key = JSON.stringify({
@@ -629,7 +690,8 @@ const DistributionDashboard = () => {
     serverTimezone,
   ]);
 
-  // ── Heatmap fetch — also re-runs when activeHeatmapView changes ──────────
+  // ── Heatmap fetch — also re-runs when activeHeatmapView changes; same
+  // dedup logic as the pie chart effect above.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
     const key = JSON.stringify({

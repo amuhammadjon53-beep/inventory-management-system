@@ -572,6 +572,8 @@ const EmojiDashboard = () => {
 
   const fetchedRef = useRef(false);
   const initialDataLoadedRef = useRef(false);
+  const didInitRef = useRef(false);
+  const inFlightRequests = useRef({});
   const prevFiltersRef = useRef(JSON.stringify({
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
     selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId, usageType,
@@ -662,7 +664,12 @@ const EmojiDashboard = () => {
     return PRIVILEGED_USERS.includes(userId);
   };
 
+  // FIX (Cause 1 from doc1): guard the mount effect so StrictMode's
+  // intentional double-invoke in dev doesn't fire the whole init
+  // sequence (auth -> servers -> settings -> stats fan-out) twice.
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     loadInitialData();
   }, []);
 
@@ -689,7 +696,9 @@ const EmojiDashboard = () => {
     return () => { cancelled = true; };
   }, [currentServer, isPublicMode, hasAccess]);
 
-  // FIXED: applyServerTimePeriod now returns computed values
+  // applyServerTimePeriod returns computed values synchronously (in
+  // addition to calling setState), so callers can use the resolved
+  // values immediately instead of waiting for a re-render.
   const applyServerTimePeriod = (settings) => {
     const mode = settings.default_time_mode || 'days_back';
     const result = {};
@@ -744,11 +753,9 @@ const EmojiDashboard = () => {
       let startDate = null;
       
       if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
-        // weekday: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday
         const targetWeekday = settings.default_rolling_value;
-        const currentWeekday = today.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+        const currentWeekday = today.getDay();
         
-        // Convert to Monday-based (0=Monday, 6=Sunday)
         const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
         
         let daysToSubtract;
@@ -762,18 +769,15 @@ const EmojiDashboard = () => {
         startDate.setDate(today.getDate() - daysToSubtract);
         
       } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
-        const targetDay = settings.default_rolling_value; // 1-31
+        const targetDay = settings.default_rolling_value;
         const currentDate = today.getDate();
         
         startDate = new Date(today);
         
         if (currentDate >= targetDay) {
-          // Use this month's target day
           startDate.setDate(targetDay);
         } else {
-          // Use previous month's target day
           startDate.setMonth(today.getMonth() - 1);
-          // Handle month boundaries (e.g., Jan 31 -> Dec 31)
           const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
           startDate.setDate(Math.min(targetDay, lastDayOfMonth));
         }
@@ -788,7 +792,6 @@ const EmojiDashboard = () => {
         result.customStartDate = formattedStartDate;
         result.customEndDate = formattedToday;
       } else {
-        // Fallback to all time if rolling window calculation fails
         setTimePeriod('all');
         result.timePeriod = 'all';
       }
@@ -880,6 +883,10 @@ const EmojiDashboard = () => {
               
               if (selectedServer) {
                 setCurrentServer(selectedServer);
+                // NOTE: checkServerAccess only determines access/permissions now.
+                // It no longer fetches settings/time period or triggers a data
+                // fetch itself -- the unified [currentServer, hasAccess] effect
+                // below owns that whole lifecycle exactly once.
                 await checkServerAccess(
                   selectedServer.id,
                   selectedServer.permissions,
@@ -925,7 +932,12 @@ const EmojiDashboard = () => {
     setLoading(false);
   };
 
-  // UPDATED: checkServerAccess now uses fetchDataWithParams
+  // FIX: checkServerAccess now ONLY determines access/permissions.
+  // It used to also fetch settings a second time, apply the time period
+  // again, and kick off its own data fetch -- racing with the
+  // "fetchAndApplyTimePeriod" effect and the "load all data" effect.
+  // All of that is now owned exclusively by the single unified
+  // [currentServer, hasAccess] effect further down.
   const checkServerAccess = async (guildId, permissions, hasAdmin, hasManageServer) => {
     try {
       const settingsResponse = await fetch(`${API_BASE_URL}/api/settings/get`, {
@@ -959,42 +971,37 @@ const EmojiDashboard = () => {
         }
      
         setHasAccess(hasAccessFlag);
-        const timeParams = applyServerTimePeriod(settingsData);
-        setLoading(false);
-        
-        // Fetch data immediately with the computed params
-        await fetchDataWithParams(timeParams);
-        
+        // NOTE: no time-period application or data fetch here anymore --
+        // the unified [currentServer, hasAccess] effect below handles that.
       } else {
         console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
-        setLoading(false);
       }
     } catch (error) {
       console.error('Error checking server access:', error);
       setHasAccess(false);
+    } finally {
       setLoading(false);
     }
   };
 
-  // NEW: fetchDataWithParams - uses overrides instead of state
-  const fetchDataWithParams = async (overrides = {}) => {
-    if (!currentServer || !hasAccess) return;
-    
-    setLoading(true);
-    setApiError(null);
-    
-    // Use overrides or current state
+  // Shared helper: resolve the effective time-period params either from
+  // explicit overrides (used right after settings resolve, before state
+  // has re-rendered) or from current state (used for user-driven filter
+  // changes after init, when state is already committed). Every fetch
+  // function below goes through this instead of reading timePeriod /
+  // customDaysBack / etc directly, so there is one source of truth for
+  // "what time window are we querying".
+  const computeTimeParams = (overrides = {}) => {
     const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
     const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
     const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
     const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
-    
-    // Compute days back and date range directly
+
     let daysBack = 30;
     let startDate = null;
     let endDate = null;
-    
+
     if (effectiveTimePeriod === "all") {
       daysBack = 2000;
     } else if (effectiveTimePeriod === "custom-lookback") {
@@ -1016,69 +1023,72 @@ const EmojiDashboard = () => {
       startDate = new Date();
       startDate.setDate(startDate.getDate() - daysBack);
     }
-    
+
     const daysInPeriod = daysBack === 2000 ? 2000 : daysBack;
-    
-    try {
-      const roleFilterArray = (selectedView === 'server' || selectedView === 'channel' || selectedView === 'category') && selectedRoleId ? [String(selectedRoleId)] : null;
-      
-      const baseRequestBody = {
-        guild_id: currentServer.id,
-        role_filter_ids: roleFilterArray,
-        usage_type: usageType === 'all' ? null : usageType,
-        time_period: effectiveTimePeriod,
-        days_back: daysBack
-      };
-      
-      if (startDate) baseRequestBody.start_time = startDate.toISOString();
-      if (endDate) baseRequestBody.end_time = endDate.toISOString();
-      
-      if (selectedView === 'server') await fetchServerData(baseRequestBody, daysInPeriod);
-      else if (selectedView === 'user' && selectedUserId) await fetchUserData(baseRequestBody, daysInPeriod);
-      else if (selectedView === 'channel' && selectedChannelId) await fetchChannelData(baseRequestBody, daysInPeriod);
-      else if (selectedView === 'category' && selectedCategoryId) await fetchCategoryData(baseRequestBody, daysInPeriod);
-      
-      await fetchTimeseriesData(baseRequestBody);
-      
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setApiError(error.message);
-    } finally {
-      setLoading(false);
-      fetchedRef.current = true;
-    }
+
+    return {
+      effectiveTimePeriod,
+      effectiveCustomDaysBack,
+      effectiveCustomStartDate,
+      effectiveCustomEndDate,
+      daysBack,
+      startDate,
+      endDate,
+      daysInPeriod
+    };
   };
 
-  // UPDATED: Fetch settings and apply time period, then fetch data immediately
-  useEffect(() => {
-    if (!currentServer) return;
-    
-    const fetchAndApplyTimePeriod = async () => {
+  // fetchDataWithParams - uses overrides instead of stale state, and
+  // dedupes in-flight requests so overlapping triggers (e.g. a fast
+  // remount) reuse the same promise instead of firing twice.
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer || !hasAccess) return;
+
+    const requestKey = `${currentServer.id}:${selectedView}:${JSON.stringify(overrides)}`;
+    if (inFlightRequests.current[requestKey]) {
+      return inFlightRequests.current[requestKey];
+    }
+
+    const promise = (async () => {
+      setLoading(true);
+      setApiError(null);
+
+      const { effectiveTimePeriod, daysBack, startDate, endDate, daysInPeriod } = computeTimeParams(overrides);
+
       try {
-        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: isPublicMode ? 'omit' : 'include',
-          body: JSON.stringify({ guild_id: currentServer.id })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const timeParams = applyServerTimePeriod(data);
-          // Fetch data immediately with the computed params
-          await fetchDataWithParams(timeParams);
-        } else {
-          // If settings fetch fails, still fetch data with current state
-          await fetchData();
-        }
-      } catch (e) {
-        console.error('Error fetching time period settings:', e);
-        // Fallback: fetch data with current state
-        await fetchData();
+        const roleFilterArray = (selectedView === 'server' || selectedView === 'channel' || selectedView === 'category') && selectedRoleId ? [String(selectedRoleId)] : null;
+
+        const baseRequestBody = {
+          guild_id: currentServer.id,
+          role_filter_ids: roleFilterArray,
+          usage_type: usageType === 'all' ? null : usageType,
+          time_period: effectiveTimePeriod,
+          days_back: daysBack
+        };
+
+        if (startDate) baseRequestBody.start_time = startDate.toISOString();
+        if (endDate) baseRequestBody.end_time = endDate.toISOString();
+
+        if (selectedView === 'server') await fetchServerData(baseRequestBody, daysInPeriod);
+        else if (selectedView === 'user' && selectedUserId) await fetchUserData(baseRequestBody, daysInPeriod);
+        else if (selectedView === 'channel' && selectedChannelId) await fetchChannelData(baseRequestBody, daysInPeriod);
+        else if (selectedView === 'category' && selectedCategoryId) await fetchCategoryData(baseRequestBody, daysInPeriod);
+
+        await fetchTimeseriesData(baseRequestBody);
+
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        setApiError(error.message);
+      } finally {
+        setLoading(false);
+        fetchedRef.current = true;
+        delete inFlightRequests.current[requestKey];
       }
-    };
-    
-    fetchAndApplyTimePeriod();
-  }, [currentServer]);
+    })();
+
+    inFlightRequests.current[requestKey] = promise;
+    return promise;
+  };
 
   // ============================================
   // FETCH ALL ROLES
@@ -1163,29 +1173,25 @@ const EmojiDashboard = () => {
     }
   };
 
-  useEffect(() => {
-    if (currentServer) {
-      fetchAllRoles();
-    }
-  }, [currentServer]);
-
   // ============================================
   // FETCH ALL USERS
   // ============================================
-  const fetchAllUsers = async () => {
+  // Accepts optional time-period overrides so the unified init effect can
+  // call this with the just-resolved server settings instead of the
+  // default state (which hasn't committed yet).
+  const fetchAllUsers = async (overrides = {}) => {
     if (!currentServer) return;
     
     const isPublic = isPublicMode;
     setUsersLoaded(false);
     
-    const { startDate, endDate } = getDateRange();
-    const daysBack = getDaysBack();
+    const { effectiveTimePeriod, effectiveCustomDaysBack, effectiveCustomStartDate, effectiveCustomEndDate, daysBack, startDate, endDate } = computeTimeParams(overrides);
     
     const cacheKey = getCacheKey('emoji-users', currentServer.id, { 
-      timePeriod,
-      customDaysBack,
-      customStartDate,
-      customEndDate,
+      timePeriod: effectiveTimePeriod,
+      customDaysBack: effectiveCustomDaysBack,
+      customStartDate: effectiveCustomStartDate,
+      customEndDate: effectiveCustomEndDate,
       roleId: selectedRoleId,
       public: isPublic
     });
@@ -1272,21 +1278,21 @@ const EmojiDashboard = () => {
   // ============================================
   // FETCH ALL CHANNELS
   // ============================================
-  const fetchAllChannels = async () => {
+  // Accepts optional time-period overrides, same reasoning as fetchAllUsers.
+  const fetchAllChannels = async (overrides = {}) => {
     if (!currentServer) return;
     
     const isPublic = isPublicMode;
     setChannelsLoaded(false);
     
-    const { startDate, endDate } = getDateRange();
-    const daysBack = getDaysBack();
+    const { effectiveTimePeriod, effectiveCustomDaysBack, effectiveCustomStartDate, effectiveCustomEndDate, daysBack, startDate, endDate } = computeTimeParams(overrides);
     
     const cacheKey = getCacheKey('emoji-channels', currentServer.id, { 
       public: isPublic,
-      timePeriod,
-      customDaysBack,
-      customStartDate,
-      customEndDate 
+      timePeriod: effectiveTimePeriod,
+      customDaysBack: effectiveCustomDaysBack,
+      customStartDate: effectiveCustomStartDate,
+      customEndDate: effectiveCustomEndDate
     });
     
     const cached = serverDataCache.get(cacheKey);
@@ -1397,21 +1403,21 @@ const EmojiDashboard = () => {
   // ============================================
   // FETCH ALL CATEGORIES
   // ============================================
-  const fetchAllCategories = async () => {
+  // Accepts optional time-period overrides, same reasoning as fetchAllUsers.
+  const fetchAllCategories = async (overrides = {}) => {
     if (!currentServer) return;
     
     const isPublic = isPublicMode;
     setCategoriesLoaded(false);
     
-    const { startDate, endDate } = getDateRange();
-    const daysBack = getDaysBack();
+    const { effectiveTimePeriod, effectiveCustomDaysBack, effectiveCustomStartDate, effectiveCustomEndDate, daysBack, startDate, endDate } = computeTimeParams(overrides);
     
     const cacheKey = getCacheKey('emoji-categories', currentServer.id, { 
       public: isPublic,
-      timePeriod,
-      customDaysBack,
-      customStartDate,
-      customEndDate 
+      timePeriod: effectiveTimePeriod,
+      customDaysBack: effectiveCustomDaysBack,
+      customStartDate: effectiveCustomStartDate,
+      customEndDate: effectiveCustomEndDate
     });
     
     const cached = serverDataCache.get(cacheKey);
@@ -1619,7 +1625,20 @@ const EmojiDashboard = () => {
     return { avgPerUser, avgPerDay, avgPerMonth, avgPerYear, daysInPeriod };
   };
 
-  // Load data when server changes
+  // ============================================
+  // UNIFIED "SERVER CHANGED" LIFECYCLE
+  // ============================================
+  // This single effect owns the entire "server changed" lifecycle:
+  // reset -> fetch roles (parallel, doesn't gate anything) -> fetch
+  // settings -> apply time period -> fetch users/channels/categories AND
+  // the main dashboard data using the *resolved* time params -> sync the
+  // filter-watcher's ref -> only then flip initialLoadComplete (which is
+  // what arms the filter-watcher effect below).
+  //
+  // The old "fetchAndApplyTimePeriod" effect and the standalone
+  // "fetch roles on currentServer change" effect have been removed
+  // entirely and folded into this one, so settings are fetched exactly
+  // once per server change and there's only ever one data-fetch wave.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
     
@@ -1684,10 +1703,65 @@ const EmojiDashboard = () => {
     
     initialDataLoadedRef.current = currentServer.id;
     
-    Promise.all([fetchAllUsers(), fetchAllChannels(), fetchAllCategories()])
-      .then(() => {
-        fetchData().then(() => setInitialLoadComplete(true));
-      });
+    const initializeServer = async () => {
+      // 1. roles can load in parallel, they don't gate the stats fetch
+      fetchAllRoles();
+      
+      // 2. get the server's configured default time period BEFORE any
+      //    other data fetch, so nothing below reads the stale default
+      //    state (timePeriod: "30") instead of the real configured value.
+      let timeParams = {};
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          timeParams = applyServerTimePeriod(data); // sets state AND returns the values synchronously
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+      }
+      
+      // 3. fetch users/channels/categories AND the main dashboard data,
+      //    all using the resolved params directly (not stale state)
+      await Promise.all([
+        fetchAllUsers(timeParams),
+        fetchAllChannels(timeParams),
+        fetchAllCategories(timeParams)
+      ]);
+      
+      await fetchDataWithParams(timeParams);
+      
+      // 4. sync prevFiltersRef to the resolved values so the
+      //    filter-watcher effect below sees no diff once
+      //    initialLoadComplete flips to true, and doesn't fire a
+      //    duplicate fetch right after this one.
+      const resolvedFilters = {
+        selectedView,
+        timePeriod: timeParams.timePeriod ?? timePeriod,
+        customDaysBack: timeParams.customDaysBack ?? customDaysBack,
+        customStartDate: timeParams.customStartDate ?? customStartDate,
+        customEndDate: timeParams.customEndDate ?? customEndDate,
+        selectedUserId: "",
+        selectedChannelId: "",
+        selectedCategoryId: "",
+        selectedRoleId,
+        usageType,
+        userFilterType: "none",
+        userFilterId: ""
+      };
+      const sorted = {};
+      Object.keys(resolvedFilters).sort().forEach(k => { sorted[k] = resolvedFilters[k]; });
+      prevFiltersRef.current = JSON.stringify(sorted);
+      
+      setInitialLoadComplete(true);
+    };
+    
+    initializeServer();
   }, [currentServer, hasAccess]);
 
   useEffect(() => {
@@ -1727,7 +1801,7 @@ const EmojiDashboard = () => {
       setLoadingAverages(true);
       setLoadingChart(true);
       
-      fetchData();
+      fetchDataWithParams();
     }
   }, [
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
@@ -1813,43 +1887,6 @@ const EmojiDashboard = () => {
       ));
     }
   }, [userFilterSearch, userChannels, userCategories]);
-
-  const fetchData = async () => {
-    if (!currentServer || !hasAccess) return;
-    
-    setApiError(null);
-    const daysBack = getDaysBack();
-    const { startDate, endDate } = getDateRange();
-    const daysInPeriod = daysBack;
-    
-    try {
-      const roleFilterArray = (selectedView === 'server' || selectedView === 'channel' || selectedView === 'category') && selectedRoleId ? [String(selectedRoleId)] : null;
-      
-      const baseRequestBody = {
-        guild_id: currentServer.id,
-        role_filter_ids: roleFilterArray,
-        usage_type: usageType === 'all' ? null : usageType,
-        time_period: timePeriod,
-        days_back: daysBack
-      };
-      
-      if (startDate) baseRequestBody.start_time = startDate.toISOString();
-      if (endDate) baseRequestBody.end_time = endDate.toISOString();
-      
-      if (selectedView === 'server') await fetchServerData(baseRequestBody, daysInPeriod);
-      else if (selectedView === 'user' && selectedUserId) await fetchUserData(baseRequestBody, daysInPeriod);
-      else if (selectedView === 'channel' && selectedChannelId) await fetchChannelData(baseRequestBody, daysInPeriod);
-      else if (selectedView === 'category' && selectedCategoryId) await fetchCategoryData(baseRequestBody, daysInPeriod);
-      
-      await fetchTimeseriesData(baseRequestBody);
-      
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setApiError(error.message);
-    } finally {
-      fetchedRef.current = true;
-    }
-  };
 
   const fetchTimeseriesData = async (requestBody) => {
     if (!currentServer) return;
@@ -1940,7 +1977,7 @@ const EmojiDashboard = () => {
     }
   };
 
-  // FIX: always use /api/server/real-channels — the backend already handles
+  // FIX: always use /api/server/real-channels -- the backend already handles
   // unauthenticated StatsHQ requests, so no separate public URL is needed.
   const getChannelNamesFromRealEndpoint = async (channelIds) => {
     if (!channelIds || channelIds.length === 0) return {};
@@ -1969,7 +2006,7 @@ const EmojiDashboard = () => {
     return fallbackMap;
   };
 
-  // FIX: always use /api/server/real-categories — the backend already handles
+  // FIX: always use /api/server/real-categories -- the backend already handles
   // unauthenticated StatsHQ requests, so no separate public URL is needed.
   const getCategoryNamesFromRealEndpoint = async (categoryIds) => {
     if (!categoryIds || categoryIds.length === 0) return {};
@@ -3652,7 +3689,7 @@ const EmojiDashboard = () => {
         <div className="error-message">
           <h2>Error Loading Data</h2>
           <p>{apiError}</p>
-          <button onClick={() => { serverDataCache.clear(); fetchData(); }} className="retry-button">
+          <button onClick={() => { serverDataCache.clear(); fetchDataWithParams(); }} className="retry-button">
             Clear Cache &amp; Retry
           </button>
         </div>
@@ -4184,7 +4221,7 @@ const EmojiDashboard = () => {
               <div className="error-message">
                 <h2>Error Loading Data</h2>
                 <p>{apiError}</p>
-                <button onClick={() => { serverDataCache.clear(); fetchData(); }} className="retry-button">
+                <button onClick={() => { serverDataCache.clear(); fetchDataWithParams(); }} className="retry-button">
                   Clear Cache &amp; Retry
                 </button>
               </div>

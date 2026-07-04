@@ -441,6 +441,18 @@ const ActivityDashboard = () => {
     serverChartSort, serverLeaderboardSort, userChartSort, userLeaderboardSort
   }));
 
+  // FIX: guards the mount effect against StrictMode's mount -> unmount ->
+  // remount cycle, which would otherwise fire loadInitialData() (and its
+  // full fan-out of auth/servers/settings/stats/leaderboard requests) twice
+  // in quick succession.
+  const didInitRef = useRef(false);
+
+  // FIX: tracks the filter-combination currently being fetched by fetchData,
+  // so an overlapping trigger (fast refresh, double effect fire, rapid
+  // filter changes) reuses/skips rather than firing a parallel duplicate
+  // request burst.
+  const inFlightFetchKeyRef = useRef(null);
+
   const rolesRef = useRef([]);
 
   useEffect(() => {
@@ -521,7 +533,13 @@ const ActivityDashboard = () => {
 
   const NAVBAR_HEIGHT = "80px";
 
+  // FIX: StrictMode double-invokes mount effects (mount -> unmount -> remount)
+  // in dev. Without this guard, loadInitialData() — and every request it
+  // fans out into (auth/status, user/servers, settings/get, and then the
+  // full stats/leaderboard/timeseries fetch) — fires twice back-to-back.
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     loadInitialData();
   }, []);
 
@@ -776,7 +794,14 @@ const ActivityDashboard = () => {
     setLoading(false);
   };
 
-  // UPDATED: checkServerAccess now uses fetchDataWithParams
+  // FIX: checkServerAccess now ONLY determines access/permissions. It no
+  // longer calls applyServerTimePeriod() or fetchDataWithParams() itself —
+  // those used to race the "Load all data when server changes" effect and
+  // the (now removed) "fetchAndApplyTimePeriod" effect, causing settings to
+  // be fetched twice and data to be fetched with a stale default time period
+  // before being corrected by a second, duplicate fetch. The unified
+  // [currentServer, hasAccess] effect below is now the single owner of that
+  // whole "server changed" init sequence.
   const checkServerAccess = async (guildId, permissions, hasAdmin, hasManageServer) => {
     try {
       const settingsResponse = await fetch(`${API_BASE_URL}/api/settings/get`, {
@@ -810,27 +835,24 @@ const ActivityDashboard = () => {
         }
         
         setHasAccess(hasAccessFlag);
-        const timeParams = applyServerTimePeriod(settingsData);
-        setLoading(false);
-        
-        // Fetch data immediately with the computed params
-        await fetchDataWithParams(timeParams);
-        
+        // NOTE: no applyServerTimePeriod() and no data fetch here anymore —
+        // the unified [currentServer, hasAccess] effect below owns that.
       } else {
         console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
-        setLoading(false);
       }
     } catch (error) {
       console.error('Error checking server access:', error);
       setHasAccess(false);
+    } finally {
       setLoading(false);
     }
   };
 
-  // NEW: fetchDataWithParams - uses overrides instead of state
+  // fetchDataWithParams - uses overrides instead of state. Only called once,
+  // from the unified init effect below, with the just-resolved time period.
   const fetchDataWithParams = async (overrides = {}) => {
-    if (!currentServer || !hasAccess) return;
+    if (!currentServer) return;
     
     setLoading(true);
     setApiError(null);
@@ -897,45 +919,6 @@ const ActivityDashboard = () => {
       setInitialLoadComplete(true);
     }
   };
-
-  // UPDATED: Fetch settings and apply time period, then fetch data immediately
-  useEffect(() => {
-    if (!currentServer) return;
-    
-    const fetchAndApplyTimePeriod = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: isPublicMode ? 'omit' : 'include',
-          body: JSON.stringify({ guild_id: currentServer.id })
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const timeParams = applyServerTimePeriod(data);
-          // Fetch data immediately with the computed params
-          await fetchDataWithParams(timeParams);
-        } else {
-          // If settings fetch fails, still fetch data with current state
-          if (selectedView === 'server') {
-            await fetchServerData(null);
-          } else if (selectedView === 'user' && selectedUserId) {
-            await fetchUserData(null);
-          }
-        }
-      } catch (e) {
-        console.error('Error fetching time period settings:', e);
-        // Fallback: fetch data with current state
-        if (selectedView === 'server') {
-          await fetchServerData(null);
-        } else if (selectedView === 'user' && selectedUserId) {
-          await fetchUserData(null);
-        }
-      }
-    };
-    
-    fetchAndApplyTimePeriod();
-  }, [currentServer]);
 
   const getRoleName = (roleId) => {
     if (!roleId) return 'Unknown Role';
@@ -1028,13 +1011,6 @@ const ActivityDashboard = () => {
     }
   };
 
-  // Fetch roles whenever currentServer changes
-  useEffect(() => {
-    if (currentServer) {
-      fetchAllRoles();
-    }
-  }, [currentServer]);
-
   // ============================================
   // FETCH ALL USERS - FIXED
   // ============================================
@@ -1112,7 +1088,23 @@ const ActivityDashboard = () => {
     }
   };
 
-  // Load all data when server changes
+  // FIX: this ONE effect now owns the entire "server changed" init lifecycle
+  // — resetting state, fetching users/roles in parallel, fetching settings
+  // exactly once, resolving the time period, and firing the first data fetch
+  // with the resolved params directly (not stale React state). It replaces
+  // what used to be THREE independent, competing paths:
+  //   1. a "fetch roles whenever currentServer changes" effect
+  //   2. a "fetchAndApplyTimePeriod" effect that re-fetched settings AND
+  //      re-applied the time period AND called fetchDataWithParams again
+  //   3. this "load all data" effect, which used to call fetchData() reading
+  //      timePeriod from React state before the settings fetch had committed,
+  //      producing a default-period fetch that then got "corrected" by a
+  //      second, duplicate fetch moments later.
+  //
+  // Before finishing, it also syncs prevFiltersRef to the resolved filter
+  // key, so the filter-watcher effect further down (which fires on the same
+  // kind of [timePeriod, ...] change) sees no diff and doesn't refire a
+  // duplicate fetch right after this one completes.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
     
@@ -1162,13 +1154,49 @@ const ActivityDashboard = () => {
     clearRoleFilter();
     
     initialDataLoadedRef.current = currentServer.id;
-    
-    Promise.all([
-      fetchAllUsers(),
-      fetchAllRoles()
-    ]).then(() => {
-      fetchData();
-    });
+
+    const initializeServer = async () => {
+      // users/roles can load in parallel — they don't gate the stats fetch
+      fetchAllUsers();
+      fetchAllRoles();
+
+      // get the server's configured default time period BEFORE any data fetch
+      let timeParams = {};
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          timeParams = applyServerTimePeriod(data); // sets state AND returns the values synchronously
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+      }
+
+      // sync the filter-watcher ref to the resolved values BEFORE firing the
+      // fetch, so that effect doesn't see a "changed filter" afterward and
+      // refire a duplicate request
+      const resolvedFilters = {
+        selectedView,
+        timePeriod: timeParams.timePeriod ?? timePeriod,
+        customDaysBack: timeParams.customDaysBack ?? customDaysBack,
+        customStartDate: timeParams.customStartDate ?? customStartDate,
+        customEndDate: timeParams.customEndDate ?? customEndDate,
+        selectedUserId: "",
+        selectedRoleId: "",
+        serverChartSort, serverLeaderboardSort, userChartSort, userLeaderboardSort
+      };
+      prevFiltersRef.current = JSON.stringify(resolvedFilters);
+
+      // fetch data ONCE, using the resolved params directly (not stale state)
+      await fetchDataWithParams(timeParams);
+    };
+
+    initializeServer();
   }, [currentServer, hasAccess]);
 
   // Fetch stats when filters change
@@ -1254,8 +1282,22 @@ const ActivityDashboard = () => {
     return { startDate, endDate };
   };
 
+  // FIX: fetchData now guards against overlapping calls for the exact same
+  // filter combination (e.g. a rapid double-trigger from a fast filter
+  // change, or an overlapping effect re-run) by tracking an in-flight key.
+  // This is a defense-in-depth measure on top of the single-init-effect fix
+  // above — it stops a burst of duplicate requests even if something in the
+  // future causes this component to re-render/re-init in quick succession.
   const fetchData = async () => {
     if (!currentServer || !hasAccess) return;
+
+    const requestKey = JSON.stringify({
+      selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
+      selectedUserId, selectedRoleId,
+      serverChartSort, serverLeaderboardSort, userChartSort, userLeaderboardSort
+    });
+    if (inFlightFetchKeyRef.current === requestKey) return; // already fetching this exact combination
+    inFlightFetchKeyRef.current = requestKey;
     
     setLoading(true);
     setApiError(null);
@@ -1305,6 +1347,9 @@ const ActivityDashboard = () => {
       setLoading(false);
       fetchedRef.current = true;
       setInitialLoadComplete(true);
+      if (inFlightFetchKeyRef.current === requestKey) {
+        inFlightFetchKeyRef.current = null;
+      }
     }
   };
 
