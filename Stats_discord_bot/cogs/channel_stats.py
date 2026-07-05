@@ -82,6 +82,28 @@ def normalize_text(text: str) -> str:
     return ascii_text
 
 
+# MESSAGE COUNT FORMAT FUNCTION
+def format_message_count(count):
+    """
+    Format message counts. Numbers of 1000 or more are abbreviated with a
+    single decimal place and a "k" suffix (e.g. 31,125 -> "31.1k").
+    Numbers under 1000 are shown as plain integers (no comma separators).
+    """
+    if count is None:
+        count = 0
+
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = 0
+
+    if count >= 1000:
+        value = count / 1000
+        return f"{value:.1f}k"
+
+    return f"{count}"
+
+
 # PERMISSION CHECK FUNCTION
 async def check_command_permission(interaction_or_context, target_user_id: int = None) -> bool:
     """Check if user has permission to use the command based on guild settings."""
@@ -354,7 +376,7 @@ async def generate_channel_stats_image(guild: discord.Guild, channel: discord.Te
         pilmoji.text((105, 155), messages_per_hour_text,
                      fill="white", font=font_huge)
 
-        total_messages_text = f"{total_messages:,}"
+        total_messages_text = format_message_count(total_messages)
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:
                 if dx != 0 or dy != 0:
@@ -435,7 +457,7 @@ async def generate_channel_stats_image(guild: discord.Guild, channel: discord.Te
             pilmoji.text(username_pos, fitted_username,
                          fill="white", font=username_font)
 
-            count_text = f"{count:,}"
+            count_text = format_message_count(count)
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
                     if dx != 0 or dy != 0:
@@ -452,7 +474,7 @@ async def generate_channel_stats_image(guild: discord.Guild, channel: discord.Te
     with Pilmoji(image) as pilmoji:
         for days, position in time_positions.items():
             count = timeseries_data.get(f'{days}d', 0)
-            count_text = f"{count:,}"
+            count_text = format_message_count(count)
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
                     if dx != 0 or dy != 0:
@@ -856,7 +878,9 @@ class StatsTypeSelectMenu(discord.ui.Select):
         ]
         super().__init__(placeholder="Select stats type...", options=options,
                          custom_id="stats_type_select", min_values=1, max_values=1)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not self.values:
             await interaction.response.send_message("❌ No value selected.", ephemeral=True)
@@ -900,10 +924,12 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
         self.channel = channel
         self.stats_type = stats_type
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID', placeholder='e.g., 123456789012345678', min_length=1, max_length=20, required=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_id_input = self.role_id.value.strip()
@@ -990,10 +1016,12 @@ class ChannelTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.guild = guild
         self.channel = channel
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(label='Enter number of days',
                                 placeholder='e.g., 7, 14, 30, 90...', min_length=1, max_length=4, required=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1041,6 +1069,7 @@ class ChannelStatsView(discord.ui.View):
         self.selected_role_id = selected_role_id
         self.show_time_buttons = False
         self.using_server_default = using_server_default
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     async def update_chart(self, interaction: discord.Interaction):
@@ -1133,33 +1162,41 @@ class ChannelStatsView(discord.ui.View):
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def role_id_callback(self, interaction: discord.Interaction):
         modal = RoleIdModal(self.cog, interaction.message.id,
                             self.guild, self.channel, self.stats_type, self)
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=now, display_text="All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_7_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_14_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_30_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = ChannelTimeModal(
             self.cog, interaction.message.id, self.guild, self.channel, self)

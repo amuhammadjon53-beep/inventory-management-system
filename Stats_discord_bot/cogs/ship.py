@@ -57,6 +57,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         super().__init__(timeout=60)
         self.view = view
         self.total_pages = total_pages
+        self.rate_limiter = get_rate_limiter()
 
         self.page_number = discord.ui.TextInput(
             label=f'Enter page number (1-{total_pages})',
@@ -67,6 +68,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         )
         self.add_item(self.page_number)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             page = int(self.page_number.value) - 1
@@ -109,6 +111,7 @@ class ShipLeaderboardView(discord.ui.View):
         self.selected_role_id = selected_role_id
         self.show_time_buttons = False
         self.using_server_default = using_server_default
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -210,15 +213,18 @@ class ShipLeaderboardView(discord.ui.View):
     async def custom_days_callback(self, interaction: discord.Interaction):
         await self.handle_custom_days(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def role_input_callback(self, interaction: discord.Interaction):
         modal = ShipRoleInputModal(self, interaction.message.id)
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def handle_refresh(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def handle_time_settings(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -226,6 +232,7 @@ class ShipLeaderboardView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -238,6 +245,7 @@ class ShipLeaderboardView(discord.ui.View):
         self.page = 0
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def handle_custom_days(self, interaction: discord.Interaction):
         modal = ShipLeaderboardTimeModal(
             self.cog, interaction.message.id, self.guild, self)
@@ -302,6 +310,7 @@ class ShipLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.original_message_id = original_message_id
         self.guild = guild
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -311,6 +320,7 @@ class ShipLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -362,6 +372,7 @@ class ShipRoleInputModal(discord.ui.Modal, title='Filter by Role'):
         super().__init__(timeout=300)
         self.view = view
         self.original_message_id = original_message_id
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID (or "none" to clear filter)',
@@ -371,6 +382,7 @@ class ShipRoleInputModal(discord.ui.Modal, title='Filter by Role'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_input = self.role_id.value.strip().lower()
@@ -424,7 +436,9 @@ class PrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="ship_prev")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -443,7 +457,9 @@ class NextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="ship_next")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -461,7 +477,9 @@ class PageIndicator(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary, label="Page 1/1",
                          custom_id="ship_page", disabled=False)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
 

@@ -606,7 +606,7 @@ const DocsPage = () => {
 
             <h2 id="is-bot-free" className="docs-heading">Is the Bot free?</h2>
             <p className="docs-text">
-              Yes! Stats is currently <strong>completely free to use</strong> with only a few specific features requiring a <a href="https://statshq.xyz/Premium" className="docs-link" target="_blank" rel="noopener noreferrer">premium</a> subscription. 
+              Yes! Stats is currently <strong>completely free to use</strong> with only a few specific features requiring a <a href="https://statshq.xyz/Premium" className="docs-link" target="_blank" rel="noopener noreferrer">premium</a> subscription. We follow a monetisation model that only paywalls high cost operations which means that the average user will almost never get paywalled.
             </p>
 
             <h2 id="what-makes-different" className="docs-heading">What makes Stats different from other bots that track statistics?</h2>

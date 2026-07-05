@@ -21,6 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 class TimePeriodSelect(discord.ui.Select):
     def __init__(self, current_period: str = "day"):
+        self.rate_limiter = get_rate_limiter()
         options = [
             discord.SelectOption(
                 label="Per Day",
@@ -53,6 +54,7 @@ class TimePeriodSelect(discord.ui.Select):
             max_values=1
         )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         if hasattr(view, 'selected_period'):
@@ -103,6 +105,7 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
         self.display_text = display_text
         self.selected_period = selected_period
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     role_id_input = discord.ui.TextInput(
         label='Enter Role ID or "none"',
@@ -112,6 +115,7 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_input = self.role_id_input.value.strip()
@@ -218,6 +222,7 @@ class AverageTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.is_user_stats = is_user_stats
         self.user_id = user_id
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -227,6 +232,7 @@ class AverageTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -299,6 +305,7 @@ class AverageServerStatsView(discord.ui.View):
         self.is_user_stats = False
         self.user_id = None
         self.using_server_default = using_server_default
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -378,6 +385,7 @@ class AverageServerStatsView(discord.ui.View):
             self.add_item(days_30_button)
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def role_id_callback(self, interaction: discord.Interaction):
         try:
             modal = RoleIdModal(self.cog, self.current_start_time, self.current_end_time,
@@ -388,6 +396,7 @@ class AverageServerStatsView(discord.ui.View):
             print(f"Error handling role id button: {e}")
             await interaction.followup.send("❌ An error occurred while opening role id modal.", ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_7_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         self.current_start_time = now - timedelta(days=7)
@@ -398,6 +407,7 @@ class AverageServerStatsView(discord.ui.View):
         self.show_time_buttons = False
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_14_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         self.current_start_time = now - timedelta(days=14)
@@ -408,6 +418,7 @@ class AverageServerStatsView(discord.ui.View):
         self.show_time_buttons = False
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_30_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         self.current_start_time = now - timedelta(days=30)
@@ -418,6 +429,7 @@ class AverageServerStatsView(discord.ui.View):
         self.show_time_buttons = False
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         self.current_start_time = None
@@ -428,9 +440,11 @@ class AverageServerStatsView(discord.ui.View):
         self.show_time_buttons = False
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         try:
             self.show_time_buttons = not self.show_time_buttons
@@ -445,6 +459,7 @@ class AverageServerStatsView(discord.ui.View):
             print(f"Error handling time settings: {e}")
             await interaction.followup.send("❌ An error occurred while updating time settings.", ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         try:
             modal = AverageTimeModal(
@@ -491,6 +506,7 @@ class AverageUserStatsView(discord.ui.View):
         self.is_user_stats = True
         self.selected_role_id = None
         self.using_server_default = using_server_default
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -562,6 +578,7 @@ class AverageUserStatsView(discord.ui.View):
             self.add_item(days_30_button)
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_7_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         self.current_start_time = now - timedelta(days=7)
@@ -572,6 +589,7 @@ class AverageUserStatsView(discord.ui.View):
         self.show_time_buttons = False
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_14_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         self.current_start_time = now - timedelta(days=14)
@@ -582,6 +600,7 @@ class AverageUserStatsView(discord.ui.View):
         self.show_time_buttons = False
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_30_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         self.current_start_time = now - timedelta(days=30)
@@ -592,6 +611,7 @@ class AverageUserStatsView(discord.ui.View):
         self.show_time_buttons = False
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         self.current_start_time = None
@@ -602,9 +622,11 @@ class AverageUserStatsView(discord.ui.View):
         self.show_time_buttons = False
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.update_message(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         try:
             self.show_time_buttons = not self.show_time_buttons
@@ -619,6 +641,7 @@ class AverageUserStatsView(discord.ui.View):
             print(f"Error handling time settings: {e}")
             await interaction.followup.send("❌ An error occurred while updating time settings.", ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         try:
             modal = AverageTimeModal(
@@ -1173,6 +1196,24 @@ class AverageStats(commands.Cog):
             return f"{(daily_average * 30):.1f}/month"
         return f"{daily_average:.1f}/day"
 
+    def _format_count_k(self, value) -> str:
+        """Format a raw count for display.
+
+        Values under 1000 are shown as plain comma-separated integers.
+        Values at or above 1000 are shown in k-notation with exactly one
+        decimal place, e.g. 31512 -> "31.5k".
+        """
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+
+        if abs(value) >= 1000:
+            k_value = value / 1000
+            return f"{k_value:.1f}k"
+
+        return f"{int(round(value)):,}"
+
     # IMAGE HELPER FUNCTIONS
     def _draw_text_with_stroke(self, draw, position, text, font, fill_color, stroke_color, stroke_width=2, max_width=None):
         current_font = font
@@ -1705,11 +1746,16 @@ class AverageStats(commands.Cog):
             activity_formatted = self._format_number_for_period(
                 activity_avg, period)
 
+            # Format totals - messages, emojis, and invites use k-notation past 1000
+            total_messages_formatted = self._format_count_k(total_messages)
+            total_emojis_formatted = self._format_count_k(total_emojis)
+            total_invites_formatted = self._format_count_k(total_invites)
+
             # Messages
             self._draw_text_with_stroke(
                 draw, (25, 130), messages_formatted, font_medium, "white", "black", max_width=200)
             self._draw_text_with_stroke(
-                draw, (25, 165), f"{total_messages:,}", font_medium, "white", "black", max_width=200)
+                draw, (25, 165), total_messages_formatted, font_medium, "white", "black", max_width=200)
 
             # Voice
             self._draw_text_with_stroke(
@@ -1721,13 +1767,13 @@ class AverageStats(commands.Cog):
             self._draw_text_with_stroke(
                 draw, (515, 130), emoji_formatted, font_medium, "white", "black", max_width=200)
             self._draw_text_with_stroke(
-                draw, (515, 165), f"{total_emojis:,}", font_medium, "white", "black", max_width=200)
+                draw, (515, 165), total_emojis_formatted, font_medium, "white", "black", max_width=200)
 
             # Invites
             self._draw_text_with_stroke(
                 draw, (100, 285), invite_formatted, font_medium, "white", "black", max_width=200)
             self._draw_text_with_stroke(
-                draw, (100, 335), f"{total_invites:,}", font_medium, "white", "black", max_width=200)
+                draw, (100, 335), total_invites_formatted, font_medium, "white", "black", max_width=200)
 
             # Activities
             self._draw_text_with_stroke(

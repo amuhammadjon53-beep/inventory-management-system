@@ -1428,6 +1428,7 @@ class DeleteScheduleModal(Modal, title="Delete Reset Schedule"):
         self.schedule_id = schedule_id
         self.schedule_name = schedule_name
         self.current_view = current_view
+        self.rate_limiter = get_rate_limiter()
 
         self.confirm_input = TextInput(
             label="Enter Schedule ID to Delete",
@@ -1437,6 +1438,7 @@ class DeleteScheduleModal(Modal, title="Delete Reset Schedule"):
         )
         self.add_item(self.confirm_input)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             if self.confirm_input.value.strip() != str(self.schedule_id):
@@ -1493,6 +1495,10 @@ class DeleteScheduleModal(Modal, title="Delete Reset Schedule"):
 # SCHEDULE VIEW
 # =========================================================
 
+# =========================================================
+# SCHEDULE VIEW - FIXED
+# =========================================================
+
 class ScheduleView(View):
     def __init__(self, schedules: List[dict], db_manager, guild_id: int, user_id: int, guild: discord.Guild = None):
         super().__init__(timeout=180)
@@ -1502,6 +1508,7 @@ class ScheduleView(View):
         self.user_id = user_id
         self.guild = guild
         self.current_index = 0
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -1515,6 +1522,7 @@ class ScheduleView(View):
             row=0,
             disabled=(self.current_index == 0 or total_schedules == 0)
         )
+        prev_button.callback = self.prev_callback
 
         page_indicator = Button(
             label=f"Schedule {self.current_index + 1}/{total_schedules}" if total_schedules > 0 else "No Schedules",
@@ -1530,31 +1538,7 @@ class ScheduleView(View):
             disabled=(self.current_index >= total_schedules -
                       1 or total_schedules == 0)
         )
-
-        async def prev_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.user_id:
-                embed = discord.Embed(
-                    title="Permission Denied", description="You cannot use these buttons!", color=discord.Color.red())
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            if self.current_index > 0:
-                self.current_index -= 1
-                self._update_buttons()
-                await interaction.response.edit_message(embed=self.create_embed(), view=self)
-
-        async def next_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.user_id:
-                embed = discord.Embed(
-                    title="Permission Denied", description="You cannot use these buttons!", color=discord.Color.red())
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            if self.current_index < len(self.schedules) - 1:
-                self.current_index += 1
-                self._update_buttons()
-                await interaction.response.edit_message(embed=self.create_embed(), view=self)
-
-        prev_button.callback = prev_callback
-        next_button.callback = next_callback
+        next_button.callback = self.next_callback
 
         self.add_item(prev_button)
         self.add_item(page_indicator)
@@ -1566,28 +1550,53 @@ class ScheduleView(View):
             emoji="🗑️",
             row=1
         )
-
-        async def delete_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.user_id:
-                embed = discord.Embed(
-                    title="Permission Denied", description="You cannot use this button!", color=discord.Color.red())
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-
-            current_schedule = self.schedules[self.current_index]
-            modal = DeleteScheduleModal(
-                self.db_manager,
-                self.guild_id,
-                current_schedule['id'],
-                current_schedule.get('schedule_name'),
-                self
-            )
-            await interaction.response.send_modal(modal)
-
-        delete_button.callback = delete_callback
+        delete_button.callback = self.delete_callback
         self.add_item(delete_button)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
+    async def prev_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            embed = discord.Embed(
+                title="Permission Denied", description="You cannot use these buttons!", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        if self.current_index > 0:
+            self.current_index -= 1
+            self._update_buttons()
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
+    async def next_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            embed = discord.Embed(
+                title="Permission Denied", description="You cannot use these buttons!", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        if self.current_index < len(self.schedules) - 1:
+            self.current_index += 1
+            self._update_buttons()
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
+    async def delete_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            embed = discord.Embed(
+                title="Permission Denied", description="You cannot use this button!", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        current_schedule = self.schedules[self.current_index]
+        modal = DeleteScheduleModal(
+            self.db_manager,
+            self.guild_id,
+            current_schedule['id'],
+            current_schedule.get('schedule_name'),
+            self
+        )
+        await interaction.response.send_modal(modal)
+
     def create_embed(self) -> discord.Embed:
+        # ... (keep the existing create_embed method unchanged)
         if not self.schedules:
             embed = discord.Embed(
                 title="Reset Schedules",
@@ -1724,6 +1733,7 @@ class DateRangeModal(Modal, title="Date Range Selection"):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
         self.from_date = TextInput(
             label="From Date (Optional)",
@@ -1741,6 +1751,7 @@ class DateRangeModal(Modal, title="Date Range Selection"):
         )
         self.add_item(self.to_date)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             from_date_str = self.from_date.value.strip()
@@ -1801,6 +1812,7 @@ class TimePeriodModal(Modal, title="Days Back Selection"):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
         self.days_input = TextInput(
             label="Number of Days",
@@ -1811,6 +1823,7 @@ class TimePeriodModal(Modal, title="Days Back Selection"):
         )
         self.add_item(self.days_input)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days_str = self.days_input.value.strip()
@@ -1847,6 +1860,7 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
         self.scope_text = scope_text
         self.scope_details = scope_details
         self.time_period_text = time_period_text
+        self.rate_limiter = get_rate_limiter()
 
         self.schedule_name = TextInput(
             label="Schedule Name (Optional)",
@@ -1888,6 +1902,7 @@ class AdvancedScheduleModal(Modal, title="Schedule Reset"):
         )
         self.add_item(self.month_days)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             time_str = self.time_of_day.value.strip()
@@ -2033,6 +2048,7 @@ class IDInputModal(Modal, title="Enter Channel/Category ID"):
         super().__init__(timeout=300)
         self.scope = scope
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
         self.id_input = TextInput(
             label=f"Enter {scope.capitalize()} ID",
@@ -2042,6 +2058,7 @@ class IDInputModal(Modal, title="Enter Channel/Category ID"):
         )
         self.add_item(self.id_input)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             id_str = self.id_input.value.strip()
@@ -2098,7 +2115,6 @@ class IDInputModal(Modal, title="Enter Channel/Category ID"):
 # =========================================================
 # RESET VIEW (6 Pages)
 # =========================================================
-
 class ResetView(View):
     def __init__(self, interaction: discord.Interaction, db_manager: DatabaseManager,
                  command_type: Literal["server", "user"], target_user_id: Optional[int] = None,
@@ -2123,6 +2139,9 @@ class ResetView(View):
         self.date_range_to = None
         self.schedule_data = None
         self.schedule_description = None
+        self.confirmation_scope_text = None
+        self.confirmation_time_period_text = None
+        self.rate_limiter = get_rate_limiter()
 
     def create_embed(self, title: str, description: str, color: int = 0xff0000) -> discord.Embed:
         embed = discord.Embed(
@@ -2156,22 +2175,22 @@ class ResetView(View):
                                      description="Reset stats for a specific category")
             ]
         )
-
-        async def scope_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            self.scope = select.values[0]
-            if self.scope == "server":
-                await interaction.response.defer()
-                await self.show_page_3()
-            else:
-                await interaction.response.defer()
-                await self.show_page_2()
-
-        select.callback = scope_callback
+        select.callback = self.page1_scope_callback
         self.add_item(select)
         await self.interaction.edit_original_response(embed=embed, view=self)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page1_scope_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        self.scope = interaction.data['values'][0]
+        if self.scope == "server":
+            await interaction.response.defer()
+            await self.show_page_3()
+        else:
+            await interaction.response.defer()
+            await self.show_page_2()
 
     # PAGE 2: SELECT CHANNEL/CATEGORY
     async def show_page_2(self):
@@ -2220,52 +2239,51 @@ class ResetView(View):
 
         embed = self.create_embed(title, description)
         select = Select(placeholder=placeholder, options=options)
-
-        async def selection_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            selected_id = int(select.values[0])
-            if self.scope == "channel":
-                self.channel_id = selected_id
-                self.selected_channel = interaction.guild.get_channel(
-                    selected_id)
-            else:
-                self.category_id = selected_id
-                self.selected_category = discord.utils.get(
-                    interaction.guild.categories, id=selected_id)
-            await interaction.response.defer()
-            await self.show_page_3()
-
-        select.callback = selection_callback
+        select.callback = self.page2_selection_callback
         self.add_item(select)
 
         input_id_button = Button(
             label=input_button_label, style=discord.ButtonStyle.secondary, emoji="🔢")
-
-        async def input_id_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            modal = IDInputModal(self.scope, self)
-            await interaction.response.send_modal(modal)
-
-        input_id_button.callback = input_id_callback
+        input_id_button.callback = self.page2_input_id_callback
         self.add_item(input_id_button)
 
         back_button = Button(
             label="Back", style=discord.ButtonStyle.gray, emoji="⬅️")
-
-        async def back_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            await interaction.response.defer()
-            await self.show_page_1()
-
-        back_button.callback = back_callback
+        back_button.callback = self.page2_back_callback
         self.add_item(back_button)
         await self.interaction.edit_original_response(embed=embed, view=self)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page2_selection_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        selected_id = int(interaction.data['values'][0])
+        if self.scope == "channel":
+            self.channel_id = selected_id
+            self.selected_channel = interaction.guild.get_channel(selected_id)
+        else:
+            self.category_id = selected_id
+            self.selected_category = discord.utils.get(
+                interaction.guild.categories, id=selected_id)
+        await interaction.response.defer()
+        await self.show_page_3()
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page2_input_id_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        modal = IDInputModal(self.scope, self)
+        await interaction.response.send_modal(modal)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page2_back_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self.show_page_1()
 
     # PAGE 3: SELECT STAT TYPE
     async def show_page_3(self):
@@ -2360,34 +2378,34 @@ class ResetView(View):
                 ]
 
         select = Select(placeholder="Select stat type...", options=options)
-
-        async def stat_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            self.stat_type = select.values[0]
-            await interaction.response.defer()
-            await self.show_time_period()
-
-        select.callback = stat_callback
+        select.callback = self.page3_stat_callback
         self.add_item(select)
 
         back_button = Button(
             label="Back", style=discord.ButtonStyle.gray, emoji="⬅️")
-
-        async def back_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            await interaction.response.defer()
-            if self.scope == "server":
-                await self.show_page_1()
-            else:
-                await self.show_page_2()
-
-        back_button.callback = back_callback
+        back_button.callback = self.page3_back_callback
         self.add_item(back_button)
         await self.interaction.edit_original_response(embed=embed, view=self)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page3_stat_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        self.stat_type = interaction.data['values'][0]
+        await interaction.response.defer()
+        await self.show_time_period()
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page3_back_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        if self.scope == "server":
+            await self.show_page_1()
+        else:
+            await self.show_page_2()
 
     # PAGE 4: TIME PERIOD SELECTION
     async def show_time_period(self):
@@ -2404,59 +2422,59 @@ class ResetView(View):
         embed = self.create_embed(title, description)
 
         skip_button = Button(label="Skip", style=discord.ButtonStyle.secondary)
-
-        async def skip_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            self.time_option = 'skip'
-            self.time_period_text = "Deleting ALL stats (no time limit)"
-            await interaction.response.defer()
-            await self.show_advanced_schedule()
-
-        skip_button.callback = skip_callback
+        skip_button.callback = self.page4_skip_callback
         self.add_item(skip_button)
 
         days_button = Button(
             label="Days Back", style=discord.ButtonStyle.primary)
-
-        async def days_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            modal = TimePeriodModal(self)
-            await interaction.response.send_modal(modal)
-
-        days_button.callback = days_callback
+        days_button.callback = self.page4_days_callback
         self.add_item(days_button)
 
         range_button = Button(label="Date Range",
                               style=discord.ButtonStyle.primary)
-
-        async def range_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            modal = DateRangeModal(self)
-            await interaction.response.send_modal(modal)
-
-        range_button.callback = range_callback
+        range_button.callback = self.page4_range_callback
         self.add_item(range_button)
 
         back_button = Button(
             label="Back", style=discord.ButtonStyle.gray, emoji="⬅️")
-
-        async def back_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            await interaction.response.defer()
-            await self.show_page_3()
-
-        back_button.callback = back_callback
+        back_button.callback = self.page4_back_callback
         self.add_item(back_button)
 
         await self.interaction.edit_original_response(embed=embed, view=self)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page4_skip_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        self.time_option = 'skip'
+        self.time_period_text = "Deleting ALL stats (no time limit)"
+        await interaction.response.defer()
+        await self.show_advanced_schedule()
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page4_days_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        modal = TimePeriodModal(self)
+        await interaction.response.send_modal(modal)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page4_range_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        modal = DateRangeModal(self)
+        await interaction.response.send_modal(modal)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page4_back_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self.show_page_3()
 
     # PAGE 5: ADVANCED SCHEDULING (premium-gated)
     async def show_advanced_schedule(self):
@@ -2490,6 +2508,10 @@ class ResetView(View):
             elif self.scope == "category" and self.selected_category:
                 scope_details = f"{user_text} - {self.selected_category.name}"
 
+        # Store these for the schedule modal
+        self.schedule_scope_text = scope_text
+        self.schedule_scope_details = scope_details
+
         title = "Schedule Reset (Optional)"
         description = "**Page 5/6**\n**Do you want to schedule this reset to run automatically?**\n\n"
         description += "• **Skip:** Run the reset immediately\n"
@@ -2513,16 +2535,7 @@ class ResetView(View):
         embed = self.create_embed(title, description)
 
         skip_button = Button(label="Skip", style=discord.ButtonStyle.secondary)
-
-        async def skip_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            self.schedule_data = None
-            await interaction.response.defer()
-            await self.show_confirmation()
-
-        skip_button.callback = skip_callback
+        skip_button.callback = self.page5_skip_callback
         self.add_item(skip_button)
 
         # Schedule button — always visible, but gate the action behind premium
@@ -2531,47 +2544,60 @@ class ResetView(View):
             style=discord.ButtonStyle.primary,
             emoji="📅"
         )
-
-        async def schedule_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-
-            # Re-check premium at click time (handles subscription changes mid-session)
-            premium_now = await _guild_has_optimization(self.bot, interaction.guild.id) if self.bot else False
-            if not premium_now:
-                embed = discord.Embed(
-                    title="⭐ Optimization+ Required",
-                    description=(
-                        "Scheduling automated resets is a premium feature available exclusively "
-                        "to servers with an active **Optimization+** subscription.\n\n"
-                        "You can still run an immediate reset by pressing **Skip**."
-                    ),
-                    color=discord.Color.gold()
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-
-            modal = AdvancedScheduleModal(
-                self, scope_text, scope_details, self.time_period_text)
-            await interaction.response.send_modal(modal)
-
-        schedule_button.callback = schedule_callback
+        schedule_button.callback = self.page5_schedule_callback
         self.add_item(schedule_button)
 
         back_button = Button(
             label="Back", style=discord.ButtonStyle.gray, emoji="⬅️")
-
-        async def back_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            await interaction.response.defer()
-            await self.show_time_period()
-
-        back_button.callback = back_callback
+        back_button.callback = self.page5_back_callback
         self.add_item(back_button)
         await self.interaction.edit_original_response(embed=embed, view=self)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page5_skip_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        self.schedule_data = None
+        await interaction.response.defer()
+        await self.show_confirmation()
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page5_schedule_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+
+        # Re-check premium at click time (handles subscription changes mid-session)
+        premium_now = await _guild_has_optimization(self.bot, interaction.guild.id) if self.bot else False
+        if not premium_now:
+            embed = discord.Embed(
+                title="⭐ Optimization+ Required",
+                description=(
+                    "Scheduling automated resets is a premium feature available exclusively "
+                    "to servers with an active **Optimization+** subscription.\n\n"
+                    "You can still run an immediate reset by pressing **Skip**."
+                ),
+                color=discord.Color.gold()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        modal = AdvancedScheduleModal(
+            self,
+            self.schedule_scope_text,
+            self.schedule_scope_details,
+            self.time_period_text
+        )
+        await interaction.response.send_modal(modal)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page5_back_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self.show_time_period()
 
     # PAGE 6: CONFIRMATION
     async def show_confirmation(self):
@@ -2586,14 +2612,16 @@ class ResetView(View):
         elif self.scope == "category" and self.selected_category:
             scope_text = f"{self.selected_category.name}"
 
-        time_period_text = self.time_period_text if self.time_period_text else "Deleting ALL stats (no time limit)"
+        # Store these for use in the confirmation callback
+        self.confirmation_scope_text = scope_text
+        self.confirmation_time_period_text = self.time_period_text if self.time_period_text else "Deleting ALL stats (no time limit)"
 
         description = f"**Page 6/6 - FINAL CONFIRMATION**\n\n"
         description += f"**Reset Details:**\n"
         description += f"• **Type:** `{'Server' if self.command_type == 'server' else 'User'} Reset`\n"
-        description += f"• **Target:** {scope_text}\n"
+        description += f"• **Target:** {self.confirmation_scope_text}\n"
         description += f"• **Stat Type:** `{self.stat_type}`\n"
-        description += f"• **Time Period:** {time_period_text}\n"
+        description += f"• **Time Period:** {self.confirmation_time_period_text}\n"
 
         if self.schedule_data:
             description += f"\n**Schedule Configuration:**\n"
@@ -2609,167 +2637,170 @@ class ResetView(View):
 
         confirm_button = Button(
             label="Confirm", style=discord.ButtonStyle.danger)
-
-        async def confirm_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-
-            # If a schedule was configured, do a final premium check before saving
-            if self.schedule_data:
-                premium_now = await _guild_has_optimization(self.bot, interaction.guild.id) if self.bot else False
-                if not premium_now:
-                    embed = discord.Embed(
-                        title="⭐ Optimization+ Required",
-                        description=(
-                            "Scheduling automated resets requires an active **Optimization+** subscription.\n\n"
-                            "Go back and choose **Skip** on the scheduling page to run an immediate reset instead."
-                        ),
-                        color=discord.Color.gold()
-                    )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
-                    return
-
-            for item in self.children:
-                item.disabled = True
-            await interaction.response.edit_message(view=self)
-
-            processing_embed = self.create_embed(
-                "Processing...", "This may take a moment...")
-            await interaction.edit_original_response(embed=processing_embed)
-
-            try:
-                if self.schedule_data:
-                    schedule_id = await self.db_manager.create_advanced_reset_schedule(
-                        guild_id=interaction.guild.id,
-                        requested_by_id=interaction.user.id,
-                        reset_types=[self.stat_type],
-                        schedule_type="recurring",
-                        recurring_pattern=self.schedule_data['pattern'],
-                        recurring_weekdays=self.schedule_data.get('weekdays'),
-                        recurring_days_of_month=self.schedule_data.get(
-                            'month_days'),
-                        recurring_times=self.schedule_data.get('times'),
-                        recurring_interval_days=self.schedule_data.get(
-                            'interval_days'),
-                        time_period_days=self.time_period_days if self.time_option == 'days' else None,
-                        delete_from_date=self.date_range_from if self.time_option == 'range' else None,
-                        delete_to_date=self.date_range_to if self.time_option == 'range' else None,
-                        scope_type=self.scope,
-                        scope_details=f"{scope_text}",
-                        channel_id=self.channel_id,
-                        category_id=self.category_id,
-                        schedule_name=self.schedule_data.get('schedule_name'),
-                        enabled=True
-                    )
-
-                    embed = discord.Embed(
-                        title="Reset Scheduled!",
-                        color=discord.Color.green(),
-                        timestamp=datetime.now(timezone.utc)
-                    )
-                    embed.add_field(name="Stat Type",
-                                    value=f"`{self.stat_type}`", inline=True)
-                    embed.add_field(
-                        name="Target", value=scope_text, inline=True)
-                    embed.add_field(name="Time Period",
-                                    value=time_period_text, inline=False)
-                    embed.add_field(
-                        name="Schedule", value=self.schedule_description, inline=False)
-                    embed.add_field(name="Schedule ID",
-                                    value=f"`{schedule_id}`", inline=True)
-
-                    if self.schedule_data.get('schedule_name'):
-                        embed.add_field(
-                            name="Schedule Name", value=self.schedule_data['schedule_name'], inline=True)
-
-                    embed.add_field(
-                        name="Manage Schedules",
-                        value="Use `/reset schedules` to view and delete schedules.\nEdit everything related to the schedule through the [web dashboard](https://statshq.xyz/Dashboard/Reset/).",
-                        inline=False
-                    )
-                else:
-                    if self.command_type == "server":
-                        result = await self.db_manager.reset_server_stats(
-                            guild_id=interaction.guild.id,
-                            stat_type=self.stat_type,
-                            channel_id=self.channel_id,
-                            category_id=self.category_id,
-                            time_period_days=self.time_period_days if self.time_option == 'days' else None,
-                            delete_from_date=self.date_range_from if self.time_option == 'range' else None,
-                            delete_to_date=self.date_range_to if self.time_option == 'range' else None
-                        )
-                        if isinstance(result, dict):
-                            total = sum(int(str(count).split()[0]) if str(
-                                count).isdigit() else 0 for count in result.values())
-                        else:
-                            total = result if isinstance(result, int) else 0
-
-                        embed = self.create_embed(
-                            "Reset Successful!",
-                            f"Successfully deleted **{self.stat_type}** from **{scope_text}**!\n\n"
-                            f"**Total: {total} records deleted.**",
-                            color=0x00ff00
-                        )
-                    else:
-                        target_user = self.target_user_id if self.target_user_id else interaction.user.id
-                        result = await self.db_manager.reset_user_stats(
-                            guild_id=interaction.guild.id,
-                            user_id=target_user,
-                            stat_type=self.stat_type,
-                            channel_id=self.channel_id,
-                            category_id=self.category_id,
-                            time_period_days=self.time_period_days if self.time_option == 'days' else None,
-                            delete_from_date=self.date_range_from if self.time_option == 'range' else None,
-                            delete_to_date=self.date_range_to if self.time_option == 'range' else None
-                        )
-                        if isinstance(result, dict):
-                            total = sum(int(str(count).split()[0]) if str(
-                                count).isdigit() else 0 for count in result.values())
-                        else:
-                            total = result if isinstance(result, int) else 0
-
-                        user_text = f"<@{target_user}>" if self.target_user_id else "your"
-                        embed = self.create_embed(
-                            "Reset Successful!",
-                            f"Successfully deleted **{self.stat_type}** for {user_text} stats from **{scope_text}**!\n\n"
-                            f"**Total: {total} records deleted.**",
-                            color=0x00ff00
-                        )
-
-                await interaction.edit_original_response(embed=embed, view=None)
-
-            except Exception as e:
-                logger.error(f"Reset failed: {e}")
-                logger.error(traceback.format_exc())
-                error_embed = self.create_embed(
-                    "Reset Failed!",
-                    f"An error occurred: ```{str(e)[:1000]}```\n\nPlease try again or contact support."
-                )
-                await interaction.edit_original_response(embed=error_embed, view=None)
-
-        confirm_button.callback = confirm_callback
+        confirm_button.callback = self.page6_confirm_callback
         self.add_item(confirm_button)
 
         back_button = Button(
             label="Back", style=discord.ButtonStyle.gray, emoji="⬅️")
-
-        async def back_callback(interaction: discord.Interaction):
-            if interaction.user.id != self.interaction.user.id:
-                await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
-                return
-            await interaction.response.defer()
-            await self.show_advanced_schedule()
-
-        back_button.callback = back_callback
+        back_button.callback = self.page6_back_callback
         self.add_item(back_button)
 
         await self.interaction.edit_original_response(embed=embed, view=self)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page6_confirm_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+
+        # If a schedule was configured, do a final premium check before saving
+        if self.schedule_data:
+            premium_now = await _guild_has_optimization(self.bot, interaction.guild.id) if self.bot else False
+            if not premium_now:
+                embed = discord.Embed(
+                    title="⭐ Optimization+ Required",
+                    description=(
+                        "Scheduling automated resets requires an active **Optimization+** subscription.\n\n"
+                        "Go back and choose **Skip** on the scheduling page to run an immediate reset instead."
+                    ),
+                    color=discord.Color.gold()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        processing_embed = self.create_embed(
+            "Processing...", "This may take a moment...")
+        await interaction.edit_original_response(embed=processing_embed)
+
+        # Use stored instance variables
+        scope_text = self.confirmation_scope_text
+        time_period_text = self.confirmation_time_period_text
+
+        try:
+            if self.schedule_data:
+                schedule_id = await self.db_manager.create_advanced_reset_schedule(
+                    guild_id=interaction.guild.id,
+                    requested_by_id=interaction.user.id,
+                    reset_types=[self.stat_type],
+                    schedule_type="recurring",
+                    recurring_pattern=self.schedule_data['pattern'],
+                    recurring_weekdays=self.schedule_data.get('weekdays'),
+                    recurring_days_of_month=self.schedule_data.get(
+                        'month_days'),
+                    recurring_times=self.schedule_data.get('times'),
+                    recurring_interval_days=self.schedule_data.get(
+                        'interval_days'),
+                    time_period_days=self.time_period_days if self.time_option == 'days' else None,
+                    delete_from_date=self.date_range_from if self.time_option == 'range' else None,
+                    delete_to_date=self.date_range_to if self.time_option == 'range' else None,
+                    scope_type=self.scope,
+                    scope_details=f"{scope_text}",
+                    channel_id=self.channel_id,
+                    category_id=self.category_id,
+                    schedule_name=self.schedule_data.get('schedule_name'),
+                    enabled=True
+                )
+
+                embed = discord.Embed(
+                    title="Reset Scheduled!",
+                    color=discord.Color.green(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                embed.add_field(name="Stat Type",
+                                value=f"`{self.stat_type}`", inline=True)
+                embed.add_field(name="Target", value=scope_text, inline=True)
+                embed.add_field(name="Time Period",
+                                value=time_period_text, inline=False)
+                embed.add_field(
+                    name="Schedule", value=self.schedule_description, inline=False)
+                embed.add_field(name="Schedule ID",
+                                value=f"`{schedule_id}`", inline=True)
+
+                if self.schedule_data.get('schedule_name'):
+                    embed.add_field(
+                        name="Schedule Name", value=self.schedule_data['schedule_name'], inline=True)
+
+                embed.add_field(
+                    name="Manage Schedules",
+                    value="Use `/reset schedules` to view and delete schedules.\nEdit everything related to the schedule through the [web dashboard](https://statshq.xyz/Dashboard/Reset/).",
+                    inline=False
+                )
+            else:
+                if self.command_type == "server":
+                    result = await self.db_manager.reset_server_stats(
+                        guild_id=interaction.guild.id,
+                        stat_type=self.stat_type,
+                        channel_id=self.channel_id,
+                        category_id=self.category_id,
+                        time_period_days=self.time_period_days if self.time_option == 'days' else None,
+                        delete_from_date=self.date_range_from if self.time_option == 'range' else None,
+                        delete_to_date=self.date_range_to if self.time_option == 'range' else None
+                    )
+                    if isinstance(result, dict):
+                        total = sum(int(str(count).split()[0]) if str(
+                            count).isdigit() else 0 for count in result.values())
+                    else:
+                        total = result if isinstance(result, int) else 0
+
+                    embed = self.create_embed(
+                        "Reset Successful!",
+                        f"Successfully deleted **{self.stat_type}** from **{scope_text}**!\n\n"
+                        f"**Total: {total} records deleted.**",
+                        color=0x00ff00
+                    )
+                else:
+                    target_user = self.target_user_id if self.target_user_id else interaction.user.id
+                    result = await self.db_manager.reset_user_stats(
+                        guild_id=interaction.guild.id,
+                        user_id=target_user,
+                        stat_type=self.stat_type,
+                        channel_id=self.channel_id,
+                        category_id=self.category_id,
+                        time_period_days=self.time_period_days if self.time_option == 'days' else None,
+                        delete_from_date=self.date_range_from if self.time_option == 'range' else None,
+                        delete_to_date=self.date_range_to if self.time_option == 'range' else None
+                    )
+                    if isinstance(result, dict):
+                        total = sum(int(str(count).split()[0]) if str(
+                            count).isdigit() else 0 for count in result.values())
+                    else:
+                        total = result if isinstance(result, int) else 0
+
+                    user_text = f"<@{target_user}>" if self.target_user_id else "your"
+                    embed = self.create_embed(
+                        "Reset Successful!",
+                        f"Successfully deleted **{self.stat_type}** for {user_text} stats from **{scope_text}**!\n\n"
+                        f"**Total: {total} records deleted.**",
+                        color=0x00ff00
+                    )
+
+            await interaction.edit_original_response(embed=embed, view=None)
+
+        except Exception as e:
+            logger.error(f"Reset failed: {e}")
+            logger.error(traceback.format_exc())
+            error_embed = self.create_embed(
+                "Reset Failed!",
+                f"An error occurred: ```{str(e)[:1000]}```\n\nPlease try again or contact support."
+            )
+            await interaction.edit_original_response(embed=error_embed, view=None)
+
+    @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
+    async def page6_back_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("You cannot use this menu!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self.show_advanced_schedule()
 
 # =========================================================
 # INTERNAL FUNCTION
 # =========================================================
+
 
 @rate_limited(RateLimitType.MESSAGE, timeout=30.0)
 async def _handle_reset_command(self, ctx_or_interaction, command_type: str, target_user: Optional[discord.User] = None, is_interaction: bool = False):

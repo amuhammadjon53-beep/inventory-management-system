@@ -134,6 +134,9 @@ HISTORY_SYNC_LOGIN_URL = (
 HISTORY_SYNC_MANAGE_SERVERS_URL = "https://statshq.xyz/Manage%20Servers/"
 HISTORY_SYNC_PAGE_URL = "https://statshq.xyz/Dashboard/History%20Data%20Sync/"
 
+# Link used whenever the word "Optimization+" is referenced across the settings menus
+OPTIMIZATION_PREMIUM_URL = "https://statshq.xyz/Premium/"
+
 
 # ============================================================
 # SETTINGS COG
@@ -710,18 +713,19 @@ class Settings(commands.Cog):
 
         settings_list = [
             ("`Prefix`", "Change the bot's prefix."),
-            ("`Timezone`", "Change the timezone of the server."),
-            ("`Voice States`", "Filter out different types of voice states."),
+            ("`Default Time Period`",
+             "Change the default time period that commands on the bot use."),
             ("`Bot Filter`", "Filter out bots from being tracked in statistics."),
-            ("`Command Permission Access Level`",
-             "Choose from the 5 levels of permission access."),
-            ("`Suspicious Invite Tracking`",
-             "Set minimum account age to detect suspicious invites."),
             ("`Stat Type Toggles`",
              "Enable or disable specific stat types being tracked on this server."),
-            ("`Time Period`", "Change the default time period that commands on the bot use."),
             ("`History Data Sync`",
              "Guide for backfilling past statistics from before the bot joined."),
+            ("`Timezone`", "Change the timezone of the server."),
+            ("`Voice States`", "Filter out different types of voice states."),
+            ("`Suspicious Invite Tracking`",
+             "Set minimum account age to detect suspicious invites."),
+            ("`Command Permission Access Level`",
+             "Choose from the 5 levels of permission access."),
         ]
 
         for setting_name, description in settings_list:
@@ -885,7 +889,9 @@ class MainSettingsView(discord.ui.View):
         self.guild_id = guild_id
         self.bot = cog.bot
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -934,24 +940,25 @@ class MainSettingsView(discord.ui.View):
         options=[
             discord.SelectOption(label="Prefix", value="prefix",
                                  description="Change the bot's prefix"),
+            discord.SelectOption(label="Default Time Period", value="time_period",
+                                 description="Change the default time period"),
+            discord.SelectOption(label="Bot Filter", value="bot_filter",
+                                 description="Filter bots from statistics"),
+            discord.SelectOption(label="Stat Type Toggles", value="stat_toggles",
+                                 description="Enable or disable specific stat types"),
+            discord.SelectOption(label="History Data Sync", value="history_sync",
+                                 description="Backfill stats from before the bot joined"),
             discord.SelectOption(label="Timezone", value="timezone",
                                  description="Change server timezone"),
             discord.SelectOption(label="Voice States", value="voice_states",
                                  description="Configure voice state tracking"),
-            discord.SelectOption(label="Bot Filter", value="bot_filter",
-                                 description="Filter bots from statistics"),
-            discord.SelectOption(label="Command Permission Access Level", value="permissions",
-                                 description="Configure command permissions"),
             discord.SelectOption(label="Suspicious Invite Tracking", value="suspicious_invites",
                                  description="Configure suspicious invite detection"),
-            discord.SelectOption(label="Stat Type Toggles", value="stat_toggles",
-                                 description="Enable or disable specific stat types"),
-            discord.SelectOption(label="Time Period ⭐", value="time_period",
-                                 description="Change the default time period (Optimization+)"),
-            discord.SelectOption(label="History Data Sync", value="history_sync",
-                                 description="Backfill stats from before the bot joined"),
+            discord.SelectOption(label="Command Permission Access Level", value="permissions",
+                                 description="Configure command permissions"),
         ]
     )
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def settings_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -991,18 +998,19 @@ class MainSettingsView(discord.ui.View):
         )
         settings_list = [
             ("`Prefix`", "Change the bot's prefix."),
-            ("`Timezone`", "Change the timezone of the server."),
-            ("`Voice States`", "Filter out different types of voice states."),
+            ("`Default Time Period`",
+             "Change the default time period that commands on the bot use."),
             ("`Bot Filter`", "Filter out bots from being tracked in statistics."),
-            ("`Command Permission Access Level`",
-             "Choose from the 5 levels of permission access."),
-            ("`Suspicious Invite Tracking`",
-             "Set minimum account age to detect suspicious invites."),
             ("`Stat Type Toggles`",
              "Enable or disable specific stat types being tracked on this server."),
-            ("`Time Period`", "Change the default time period that commands on the bot use."),
             ("`History Data Sync`",
              "Guide for backfilling past statistics from before the bot joined."),
+            ("`Timezone`", "Change the timezone of the server."),
+            ("`Voice States`", "Filter out different types of voice states."),
+            ("`Suspicious Invite Tracking`",
+             "Set minimum account age to detect suspicious invites."),
+            ("`Command Permission Access Level`",
+             "Choose from the 5 levels of permission access."),
         ]
         for setting_name, description in settings_list:
             embed.add_field(name=setting_name, value=description, inline=False)
@@ -1184,9 +1192,9 @@ class MainSettingsView(discord.ui.View):
                 "**What is it?**\n"
                 "History Data Sync backfills your server's statistics from **before** Stats joined — "
                 "pulling in past messages, mentions, and emoji usage so your stats don't start at zero.\n\n"
-                "**Free vs Optimization+**\n"
+                f"**Free vs [Optimization+]({OPTIMIZATION_PREMIUM_URL})**\n"
                 "`Free` — One sync ever, one stat type at a time, up to 6 months of history.\n"
-                "`Optimization+ ⭐` — Unlimited syncs (3-month cooldown between runs), all stat types at "
+                f"**[Optimization+]({OPTIMIZATION_PREMIUM_URL}) ⭐** — Unlimited syncs (3-month cooldown between runs), all stat types at "
                 "once, and unlimited history depth.\n\n"
                 "**How to access it**\n"
                 "This feature is managed entirely on the website dashboard, not through Discord commands. "
@@ -1221,6 +1229,7 @@ class HistorySyncGuideView(discord.ui.View):
         self.guild_id = guild_id
         self.bot = cog.bot
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
         self.add_item(discord.ui.Button(
             label="Login", url=HISTORY_SYNC_LOGIN_URL,
@@ -1240,6 +1249,7 @@ class HistorySyncGuideView(discord.ui.View):
         back_button.callback = self._back_callback
         self.add_item(back_button)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             if not isinstance(item, discord.ui.Button) or item.style != discord.ButtonStyle.link:
@@ -1272,6 +1282,7 @@ class HistorySyncGuideView(discord.ui.View):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _back_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -1293,7 +1304,9 @@ class UserSettingsView(discord.ui.View):
         self.user_id = user_id
         self.bot = cog.bot
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -1309,6 +1322,7 @@ class UserSettingsView(discord.ui.View):
                                  description="Control your data privacy settings for this server")
         ]
     )
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def user_settings_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         if interaction.user.id != self.user_id:
             embed = discord.Embed(
@@ -1394,7 +1408,9 @@ class PrivacyView(discord.ui.View):
         self.bot = cog.bot
         self.privacy_enabled = privacy_enabled
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -1404,6 +1420,7 @@ class PrivacyView(discord.ui.View):
             pass
 
     @discord.ui.button(label="Toggle Privacy Mode", style=discord.ButtonStyle.primary, emoji="🔒", row=0)
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def toggle_privacy_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             embed = discord.Embed(
@@ -1462,6 +1479,7 @@ class PrivacyView(discord.ui.View):
                 "❌ Failed to update privacy settings. Please try again.", ephemeral=True)
 
     @discord.ui.button(label="↩ Back", style=discord.ButtonStyle.secondary, row=1)
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             embed = discord.Embed(
@@ -1487,7 +1505,9 @@ class PrefixView(discord.ui.View):
         self.guild_id = guild_id
         self.bot = cog.bot
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -1553,6 +1573,7 @@ class PrefixModal(discord.ui.Modal, title="Change Prefix"):
         self.cog = cog
         self.guild_id = guild_id
         self.parent_view = parent_view
+        self.rate_limiter = get_rate_limiter()
         self.prefix_input = discord.ui.TextInput(
             label="New Prefix",
             placeholder="Enter new prefix (max 10 characters)",
@@ -1561,6 +1582,7 @@ class PrefixModal(discord.ui.Modal, title="Change Prefix"):
         )
         self.add_item(self.prefix_input)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         if not await self.parent_view.check_permission(interaction):
             await self.parent_view.send_permission_error(interaction)
@@ -1600,7 +1622,9 @@ class TimezoneView(discord.ui.View):
         self.bot = cog.bot
         self.selected_timezone = None
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -1671,6 +1695,7 @@ class TimezoneView(discord.ui.View):
                 label="NZST (GMT+12)", value="NZST", description="New Zealand Standard Time"),
         ]
     )
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def timezone_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -1682,6 +1707,7 @@ class TimezoneView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
     @discord.ui.button(label="Apply Changes", style=discord.ButtonStyle.success, disabled=True, row=1)
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -1712,6 +1738,7 @@ class TimezoneView(discord.ui.View):
             await interaction.followup.send("❌ Failed to update timezone. Please try again.", ephemeral=True)
 
     @discord.ui.button(label="↩ Back", style=discord.ButtonStyle.secondary, row=1)
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -1732,6 +1759,7 @@ class VoiceStatesView(discord.ui.View):
         self.guild_id = guild_id
         self.bot = cog.bot
         self.message = None
+        self.rate_limiter = get_rate_limiter()
         self.selected_states = (current_states or []).copy()
         self.update_select_menu()
 
@@ -1805,6 +1833,7 @@ class VoiceStatesView(discord.ui.View):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def voice_states_select_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -1836,6 +1865,7 @@ class VoiceStatesView(discord.ui.View):
         )
         await interaction.edit_original_response(embed=embed, view=self)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def apply_button_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -1876,6 +1906,7 @@ class VoiceStatesView(discord.ui.View):
         else:
             await interaction.followup.send("❌ Failed to update voice states. Please try again.", ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def back_button_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -1884,6 +1915,7 @@ class VoiceStatesView(discord.ui.View):
         view = MainSettingsView(self.cog, self.guild_id)
         await view.show_main_menu(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -1905,6 +1937,7 @@ class BotFilterView(discord.ui.View):
         self.bot = cog.bot
         self.bot_filter_enabled = bot_filter_enabled
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
         if bot_filter_enabled:
             self.add_item(IncludeBotsButton())
@@ -1912,6 +1945,7 @@ class BotFilterView(discord.ui.View):
             self.add_item(FilterBotsButton())
         self.add_item(BackButton())
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -1957,7 +1991,9 @@ class BotFilterView(discord.ui.View):
 class FilterBotsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Filter Bots", style=discord.ButtonStyle.danger, emoji="🤖", row=0)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def callback(self, interaction: discord.Interaction):
         if not await self.view.check_permission(interaction):
             await self.view.send_permission_error(interaction)
@@ -1992,7 +2028,9 @@ class IncludeBotsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Include Bots",
                          style=discord.ButtonStyle.success, emoji="🤖", row=0)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def callback(self, interaction: discord.Interaction):
         if not await self.view.check_permission(interaction):
             await self.view.send_permission_error(interaction)
@@ -2026,7 +2064,9 @@ class IncludeBotsButton(discord.ui.Button):
 class BackButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="↩ Back", style=discord.ButtonStyle.secondary, row=1)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def callback(self, interaction: discord.Interaction):
         if not await self.view.check_permission(interaction):
             await self.view.send_permission_error(interaction)
@@ -2048,7 +2088,9 @@ class PermissionsView(discord.ui.View):
         self.bot = cog.bot
         self.selected_level = None
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -2105,6 +2147,7 @@ class PermissionsView(discord.ui.View):
                                  description="Only users with Manage Server permission"),
         ]
     )
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def permissions_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2116,6 +2159,7 @@ class PermissionsView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
     @discord.ui.button(label="Apply Changes", style=discord.ButtonStyle.success, disabled=True, row=1)
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2156,6 +2200,7 @@ class PermissionsView(discord.ui.View):
                 "❌ Failed to update permission level. Please try again.", ephemeral=True)
 
     @discord.ui.button(label="↩ Back", style=discord.ButtonStyle.secondary, row=1)
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2177,7 +2222,9 @@ class SuspiciousInvitesView(discord.ui.View):
         self.bot = cog.bot
         self.current_days = current_days
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -2210,6 +2257,7 @@ class SuspiciousInvitesView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Change Minimum Account Age", style=discord.ButtonStyle.primary, emoji="⚠️", row=0)
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def change_age_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2219,6 +2267,7 @@ class SuspiciousInvitesView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="↩ Back", style=discord.ButtonStyle.secondary, row=1)
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2234,6 +2283,7 @@ class SuspiciousInvitesModal(discord.ui.Modal, title="Change Minimum Account Age
         self.cog = cog
         self.guild_id = guild_id
         self.parent_view = parent_view
+        self.rate_limiter = get_rate_limiter()
         self.days_input = discord.ui.TextInput(
             label="Minimum Account Age (Days)",
             placeholder=f"Current value: {current_days} days. Enter 0 to disable.",
@@ -2244,6 +2294,7 @@ class SuspiciousInvitesModal(discord.ui.Modal, title="Change Minimum Account Age
         )
         self.add_item(self.days_input)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         if not await self.parent_view.check_permission(interaction):
             await self.parent_view.send_permission_error(interaction)
@@ -2310,6 +2361,7 @@ class StatTogglesView(discord.ui.View):
         self.guild_id = guild_id
         self.settings = settings
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
         # Build selected_toggles from current settings
         self.selected_toggles = [
@@ -2389,7 +2441,7 @@ class StatTogglesView(discord.ui.View):
         else:
             premium_note = (
                 f"⭐ **Free servers can enable up to {FREE_STAT_TOGGLE_LIMIT} stat types.** "
-                f"Upgrade to **Optimization+** to unlock all {len(STAT_TOGGLE_META)}.\n\n"
+                f"Upgrade to **[Optimization+]({OPTIMIZATION_PREMIUM_URL})** to unlock all {len(STAT_TOGGLE_META)}.\n\n"
             )
 
         embed = discord.Embed(
@@ -2431,6 +2483,7 @@ class StatTogglesView(discord.ui.View):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _select_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2443,18 +2496,23 @@ class StatTogglesView(discord.ui.View):
         # Enforce the free-tier cap at selection time so users get immediate feedback
         if not has_premium and len(chosen) > FREE_STAT_TOGGLE_LIMIT:
             chosen = chosen[:FREE_STAT_TOGGLE_LIMIT]
-            await interaction.followup.send(
-                f"⭐ Free servers can enable up to **{FREE_STAT_TOGGLE_LIMIT} stat types**. "
-                f"Only the first {FREE_STAT_TOGGLE_LIMIT} selections have been kept. "
-                f"Upgrade to **Optimization+** to unlock all {len(STAT_TOGGLE_META)}.",
-                ephemeral=True
+            embed = discord.Embed(
+                title="⭐ Optimization+ Required",
+                description=(
+                    f"Free servers can enable up to **{FREE_STAT_TOGGLE_LIMIT} stat types**. "
+                    f"Only the first {FREE_STAT_TOGGLE_LIMIT} selections have been kept.\n\n"
+                    f"Upgrade to **[Optimization+]({OPTIMIZATION_PREMIUM_URL})** to unlock all {len(STAT_TOGGLE_META)}."
+                ),
+                color=discord.Color.gold()
             )
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         self.selected_toggles = chosen
         self._rebuild()
         await interaction.edit_original_response(
             embed=self.build_embed(has_premium=has_premium), view=self)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _apply_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2467,11 +2525,16 @@ class StatTogglesView(discord.ui.View):
         if not has_premium and len(self.selected_toggles) > FREE_STAT_TOGGLE_LIMIT:
             self.selected_toggles = self.selected_toggles[:FREE_STAT_TOGGLE_LIMIT]
             self._rebuild()
-            await interaction.followup.send(
-                f"⭐ Free servers can enable up to **{FREE_STAT_TOGGLE_LIMIT} stat types**. "
-                f"Your selection has been trimmed. Upgrade to **Optimization+** to unlock all {len(STAT_TOGGLE_META)}.",
-                ephemeral=True
+            embed = discord.Embed(
+                title="⭐ Optimization+ Required",
+                description=(
+                    f"Free servers can enable up to **{FREE_STAT_TOGGLE_LIMIT} stat types**. "
+                    f"Your selection has been trimmed to fit within the free limit.\n\n"
+                    f"Upgrade to **[Optimization+]({OPTIMIZATION_PREMIUM_URL})** to unlock all {len(STAT_TOGGLE_META)} stat types."
+                ),
+                color=discord.Color.gold()
             )
+            await interaction.followup.send(embed=embed, ephemeral=True)
             await interaction.edit_original_response(
                 embed=self.build_embed(has_premium=has_premium), view=self)
             return
@@ -2497,11 +2560,13 @@ class StatTogglesView(discord.ui.View):
             await interaction.followup.send(
                 "❌ Failed to update stat toggles. Please try again.", ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _back_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         view = MainSettingsView(self.cog, self.guild_id)
         await view.show_main_menu(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -2524,6 +2589,7 @@ class TimePeriodView(discord.ui.View):
         self.pending_mode = pending_mode
         self.pending_data = pending_data or {}
         self.message = None
+        self.rate_limiter = get_rate_limiter()
 
         if pending_mode is None:
             self._add_selection_buttons()
@@ -2604,7 +2670,6 @@ class TimePeriodView(discord.ui.View):
             title="Time Period Settings",
             description=(
                 f"**Current Setting:** `{current}`\n\n"
-                "⭐ **Changing the default time period requires Optimization+.**\n\n\n"
                 "**All Time**\n"
                 "Shows all data with no time filter applied.\n\n"
                 "**Days Back**\n"
@@ -2617,7 +2682,8 @@ class TimePeriodView(discord.ui.View):
                 "**Rolling Window**\n"
                 "Shows data within a recurring window. Set either a day of the week (e.g. every "
                 "Monday resets the window through to the following Monday) or a day of the month "
-                "(e.g. the 1st of each month starts a new window).\n\n\n"
+                "(e.g. the 1st of each month starts a new window).\n\n"
+                f"⭐ **Changing the default time period requires the [Optimization+]({OPTIMIZATION_PREMIUM_URL}) module.**\n\n"
                 "Select a type below to update the server default."
             ),
             color=discord.Color.purple()
@@ -2662,12 +2728,12 @@ class TimePeriodView(discord.ui.View):
                 f"**Current Setting:** `{current}`\n"
                 f"**New Setting:** `{pending}`\n\n"
                 "Press **Apply** to save this change, or **Cancel** to go back.\n\n"
-                "⭐ **Saving requires an active Optimization+ subscription.**"
             ),
             color=discord.Color.purple()
         )
         return embed
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _all_time_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2680,6 +2746,7 @@ class TimePeriodView(discord.ui.View):
         await interaction.edit_original_response(
             embed=confirm_view.build_confirmation_embed(), view=confirm_view)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _days_back_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2687,6 +2754,7 @@ class TimePeriodView(discord.ui.View):
         modal = DaysBackModal(self.cog, self.guild_id, self.settings)
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _date_range_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2694,6 +2762,7 @@ class TimePeriodView(discord.ui.View):
         modal = DateRangePeriodModal(self.cog, self.guild_id, self.settings)
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _rolling_window_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2701,6 +2770,7 @@ class TimePeriodView(discord.ui.View):
         modal = RollingWindowModal(self.cog, self.guild_id, self.settings)
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _apply_callback(self, interaction: discord.Interaction):
         if not await self.check_permission(interaction):
             await self.send_permission_error(interaction)
@@ -2714,8 +2784,8 @@ class TimePeriodView(discord.ui.View):
                 title="⭐ Optimization+ Required",
                 description=(
                     "Changing the default time period is a premium feature available exclusively "
-                    "to servers with an active **Optimization+** subscription.\n\n"
-                    "You can browse the available options, but saving requires Optimization+."
+                    f"to servers with an active **[Optimization+]({OPTIMIZATION_PREMIUM_URL})** subscription.\n\n"
+                    f"You can browse the available options, but saving requires [Optimization+]({OPTIMIZATION_PREMIUM_URL})."
                 ),
                 color=discord.Color.gold()
             )
@@ -2745,17 +2815,20 @@ class TimePeriodView(discord.ui.View):
             await interaction.followup.send(
                 "❌ Failed to update the time period setting. Please try again.", ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _cancel_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         selection_view = TimePeriodView(self.cog, self.guild_id, self.settings)
         await interaction.edit_original_response(
             embed=selection_view.build_selection_embed(), view=selection_view)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def _back_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         view = MainSettingsView(self.cog, self.guild_id)
         await view.show_main_menu(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -2775,6 +2848,7 @@ class DaysBackModal(discord.ui.Modal, title="Set Days Back"):
         self.cog = cog
         self.guild_id = guild_id
         self.settings = settings
+        self.rate_limiter = get_rate_limiter()
 
         self.days_input = discord.ui.TextInput(
             label="Number of Days",
@@ -2784,6 +2858,7 @@ class DaysBackModal(discord.ui.Modal, title="Set Days Back"):
         )
         self.add_item(self.days_input)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
         raw = self.days_input.value.strip()
@@ -2813,6 +2888,7 @@ class DateRangePeriodModal(discord.ui.Modal, title="Set Date Range"):
         self.cog = cog
         self.guild_id = guild_id
         self.settings = settings
+        self.rate_limiter = get_rate_limiter()
 
         self.from_date_input = discord.ui.TextInput(
             label="From Date (DD-MM-YYYY)",
@@ -2829,6 +2905,7 @@ class DateRangePeriodModal(discord.ui.Modal, title="Set Date Range"):
         self.add_item(self.from_date_input)
         self.add_item(self.to_date_input)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
         from_raw = self.from_date_input.value.strip()
@@ -2878,6 +2955,7 @@ class RollingWindowModal(discord.ui.Modal, title="Set Rolling Window"):
         self.cog = cog
         self.guild_id = guild_id
         self.settings = settings
+        self.rate_limiter = get_rate_limiter()
 
         self.weekday_input = discord.ui.TextInput(
             label="Day of Week",
@@ -2894,6 +2972,7 @@ class RollingWindowModal(discord.ui.Modal, title="Set Rolling Window"):
         self.add_item(self.weekday_input)
         self.add_item(self.day_of_month_input)
 
+    @rate_limited(RateLimitType.MESSAGE, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
         weekday_raw = self.weekday_input.value.strip()

@@ -82,6 +82,27 @@ def format_voice_hours_per_hour(voice_hours_per_hour):
         return f"{time_str}"
 
 
+def format_message_count(count):
+    """
+    Format message counts. Numbers of 1000 or more are abbreviated with a
+    single decimal place and a "k" suffix (e.g. 31,125 -> "31.1k").
+    Numbers under 1000 are shown as plain integers (no comma separators).
+    """
+    if count is None:
+        count = 0
+
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = 0
+
+    if count >= 1000:
+        value = count / 1000
+        return f"{value:.1f}k"
+
+    return f"{count}"
+
+
 # UNICODE NORMALIZATION
 
 def normalize_text(text):
@@ -979,7 +1000,6 @@ class UserStats(commands.Cog):
 
     # IMAGE GENERATION
 
-    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=25.0)
     async def _generate_user_stats_image(self, guild: discord.Guild, member: discord.Member, start_time: datetime = None, end_time: datetime = None, display_text: str = None, days_back_equiv: int = None):
         # If no time parameters provided, use server default
         if start_time is None and end_time is None and display_text is None and days_back_equiv is None:
@@ -1348,8 +1368,7 @@ class UserStats(commands.Cog):
                            font_horndon_xlarge, "white", max_width=150)
 
         # TOTALS
-        total_messages_text = str(
-            data['total_messages']) if data['total_messages'] > 0 else "0"
+        total_messages_text = format_message_count(data['total_messages'])
         draw_text_centered(pilmoji, total_messages_text, (450, 155),
                            font_horndon_xlarge, "white", max_width=150)
 
@@ -1420,7 +1439,7 @@ class UserStats(commands.Cog):
                     pilmoji.text((placeholder_x, placeholder_y), "-",
                                  fill="white", font=placeholder_font)
 
-                draw_text_centered(pilmoji, str(channel.get('activity_count', 0) or 0),
+                draw_text_centered(pilmoji, format_message_count(channel.get('activity_count', 0)),
                                    text_message_positions[i], font_horndon_xlarge, "white", max_width=80)
             else:
                 placeholder_font = font_horndon_xlarge
@@ -1512,7 +1531,7 @@ class UserStats(commands.Cog):
 
         for period, position in message_time_positions.items():
             count = data['message_periods'].get(period, 0) or 0
-            draw_text_centered(pilmoji, str(count), position,
+            draw_text_centered(pilmoji, format_message_count(count), position,
                                font_horndon_xlarge, "white", max_width=80)
 
         # VOICE TIME OVER TIME

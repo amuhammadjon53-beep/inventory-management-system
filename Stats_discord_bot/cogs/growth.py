@@ -284,6 +284,7 @@ class GrowthPageJumpModal(discord.ui.Modal, title='Jump to Day'):
         super().__init__(timeout=60)
         self.view = view
         self.total_days = total_days
+        self.rate_limiter = get_rate_limiter()
 
         self.day_number = discord.ui.TextInput(
             label=f'Enter day number (1-{total_days})',
@@ -294,6 +295,7 @@ class GrowthPageJumpModal(discord.ui.Modal, title='Jump to Day'):
         )
         self.add_item(self.day_number)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             day = int(self.day_number.value) - 1
@@ -330,6 +332,7 @@ class GrowthTimeModal(discord.ui.Modal, title='Custom Time Period'):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -339,6 +342,7 @@ class GrowthTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -407,7 +411,9 @@ class GrowthSelectMenu(discord.ui.Select):
             row=0,
             disabled=(growth_type != "member")
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         try:
             view = self.view
@@ -444,6 +450,7 @@ class GrowthView(discord.ui.View):
         self.using_server_default = using_server_default
         self.message_id = None
         self.forecast_data = None
+        self.rate_limiter = get_rate_limiter()
 
         self._update_buttons()
 
@@ -522,28 +529,35 @@ class GrowthView(discord.ui.View):
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=now, display_text="All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_7_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_14_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_30_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         if not self.guild:
             await interaction.response.send_message("❌ Could not find guild information.", ephemeral=True)
@@ -616,13 +630,17 @@ class GrowthView(discord.ui.View):
                 )
                 total_joins_pred = sum(forecast.get('joins_forecast', []))
                 total_leaves_pred = sum(forecast.get('leaves_forecast', []))
-                label = f"Predicted Joins: {int(total_joins_pred)} | Predicted Leaves: {int(total_leaves_pred)}"
+                label = (
+                    f"Predicted Joins: {self.cog.format_number(total_joins_pred)} | "
+                    f"Predicted Leaves: {self.cog.format_number(total_leaves_pred)}"
+                )
             elif self.growth_type == "member_count" and self.chart_type == "member":
                 chart_img, timestamps, y_labels = self.cog.generate_member_count_chart(
                     data, self.current_days_back_equiv
                 )
                 counts = data.get('counts', [])
-                current_count = str(counts[-1]['count']) if counts else "0"
+                current_count = self.cog.format_number(
+                    counts[-1]['count']) if counts else "0"
                 label = current_count
             else:
                 chart_img, timestamps, y_labels = self.cog.generate_growth_chart(
@@ -665,12 +683,18 @@ class GrowthView(discord.ui.View):
     def create_member_label(self, data: Dict) -> str:
         total_joins = data.get('total_joins', 0)
         total_leaves = data.get('total_leaves', 0)
-        return f"Joins: {total_joins} | Leaves: {total_leaves}"
+        return (
+            f"Joins: {self.cog.format_number(total_joins)} | "
+            f"Leaves: {self.cog.format_number(total_leaves)}"
+        )
 
     def create_role_label(self, data: Dict) -> str:
         total_added = data.get('total_joins', 0)
         total_removed = data.get('total_leaves', 0)
-        return f"Added: {total_added} | Removed: {total_removed}"
+        return (
+            f"Added: {self.cog.format_number(total_added)} | "
+            f"Removed: {self.cog.format_number(total_removed)}"
+        )
 
     async def fetch_member_growth_data(self) -> Dict:
         if self.growth_type in ("joins_leaves", "forecast"):
@@ -1738,6 +1762,16 @@ class GrowthSystem(commands.Cog):
             return img, [f"Day {i+1}" for i in range(8)], [(0, "0")]
 
     def format_number(self, num: float) -> str:
+        """
+        Format a number for display:
+        - >= 1000: one decimal place followed by 'k' (e.g. 31512 -> "31.5k")
+        - < 1000: plain integer
+        """
+        try:
+            num = float(num)
+        except (TypeError, ValueError):
+            return str(num)
+
         if num >= 1000:
             return f"{num/1000:.1f}k"
         return str(int(num))
@@ -2344,7 +2378,8 @@ class GrowthSystem(commands.Cog):
                 chart_img, timestamps, y_labels = self.generate_member_count_chart(
                     data, days_back_equiv)
                 counts = data.get('counts', [])
-                current_count = str(counts[-1]['count']) if counts else "0"
+                current_count = self.format_number(
+                    counts[-1]['count']) if counts else "0"
                 label = current_count
             else:
                 data = await view.fetch_member_growth_data()

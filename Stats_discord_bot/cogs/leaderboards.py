@@ -56,6 +56,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         super().__init__(timeout=60)
         self.view = view
         self.total_pages = total_pages
+        self.rate_limiter = get_rate_limiter()
 
         self.page_number = discord.ui.TextInput(
             label=f'Enter page number (1-{total_pages})',
@@ -66,6 +67,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         )
         self.add_item(self.page_number)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             page = int(self.page_number.value) - 1
@@ -118,6 +120,16 @@ def format_voice_time(seconds):
         days = seconds // 86400
         hours = (seconds % 86400) // 3600
         return f"{int(days)}d {int(hours)}h"
+
+
+def format_count_with_k(value):
+    """Format a count, abbreviating thousands as e.g. 31.512 -> '31.5k' (max 1 decimal)."""
+    try:
+        if value >= 1000:
+            return f"{value / 1000:.1f}k"
+        return f"{value:,}"
+    except Exception:
+        return str(value)
 
 
 class ImageGenerator:
@@ -684,7 +696,7 @@ async def generate_message_leaderboard_image(
             ImageGenerator.draw_rounded_rectangle(draw, [box_x, box_y, box_x + placement_width, box_y + box_height],
                                                   radius=8, fill=placement_color, outline=None)
 
-            value_text = f"{value:,}"
+            value_text = format_count_with_k(value)
 
             if total_value and total_value > 0:
                 perc = (value / total_value) * 100
@@ -1207,6 +1219,7 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.guild = guild
         self.channel = channel
         self.leaderboard_type = leaderboard_type
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -1216,6 +1229,7 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1267,6 +1281,8 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
                     img_bytes = await view.generate_image()
 
+                    view._update_buttons()
+
                     for child in view.children:
                         if isinstance(child, PageIndicator):
                             child.label = f"Page {view.page + 1}/{total_pages}"
@@ -1276,8 +1292,6 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                         elif isinstance(child, NextButton):
                             child.disabled = (
                                 view.page >= total_pages - 1 or total_pages <= 1)
-
-                    view._update_buttons()
 
                     file = discord.File(
                         img_bytes, filename="channel_leaderboard.png")
@@ -1301,6 +1315,7 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -1310,6 +1325,7 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1356,6 +1372,8 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
                     img_bytes = await view.generate_image()
 
+                    view._update_buttons()
+
                     for child in view.children:
                         if isinstance(child, PageIndicator):
                             child.label = f"Page {view.page + 1}/{total_pages}"
@@ -1365,8 +1383,6 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                         elif isinstance(child, NextButton):
                             child.disabled = (
                                 view.page >= total_pages - 1 or total_pages <= 1)
-
-                    view._update_buttons()
 
                     file = discord.File(
                         img_bytes, filename="server_leaderboard.png")
@@ -1391,6 +1407,7 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
         self.original_message_id = original_message_id
         self.guild = guild
         self.category = category
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -1400,6 +1417,7 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1443,6 +1461,8 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
 
                     img_bytes = await view.generate_image()
 
+                    view._update_buttons()
+
                     for child in view.children:
                         if isinstance(child, PageIndicator):
                             child.label = f"Page {view.page + 1}/{total_pages}"
@@ -1452,8 +1472,6 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
                         elif isinstance(child, NextButton):
                             child.disabled = (
                                 view.page >= total_pages - 1 or total_pages <= 1)
-
-                    view._update_buttons()
 
                     file = discord.File(
                         img_bytes, filename="category_leaderboard.png")
@@ -1478,6 +1496,7 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.original_message_id = original_message_id
         self.guild = guild
         self.target = target
+        self.rate_limiter = get_rate_limiter()
 
         self.channel = target if isinstance(
             target, (discord.TextChannel, discord.VoiceChannel)) else None
@@ -1492,6 +1511,7 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1532,6 +1552,8 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
                     img_bytes = await view.generate_image()
 
+                    view._update_buttons()
+
                     for child in view.children:
                         if isinstance(child, PageIndicator):
                             child.label = f"Page {view.page + 1}/{total_pages}"
@@ -1541,8 +1563,6 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                         elif isinstance(child, NextButton):
                             child.disabled = (
                                 view.page >= total_pages - 1 or total_pages <= 1)
-
-                    view._update_buttons()
 
                     file = discord.File(
                         img_bytes, filename="role_leaderboard.png")
@@ -1566,6 +1586,7 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID',
@@ -1575,6 +1596,7 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_id_value = self.role_id.value.strip()
@@ -1629,7 +1651,9 @@ class RoleIdButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
                          label="Filter By Role", custom_id="input_role_id")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         if hasattr(view, 'guild'):
@@ -1641,7 +1665,9 @@ class PrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="leaderboard_prev")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1660,7 +1686,9 @@ class NextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="leaderboard_next")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1678,7 +1706,9 @@ class PageIndicator(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
                          label="Page 1/1", custom_id="leaderboard_page", disabled=False)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
 
@@ -1730,7 +1760,9 @@ class ChannelLeaderboardTypeSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select leaderboard type...",
                          options=options, custom_id="channel_leaderboard_type")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -1763,7 +1795,9 @@ class ServerLeaderboardTypeSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select leaderboard type...",
                          options=options, custom_id="server_leaderboard_type")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -1792,7 +1826,9 @@ class CategoryLeaderboardTypeSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select leaderboard type...",
                          options=options, custom_id="category_leaderboard_type")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -1823,7 +1859,9 @@ class RoleLeaderboardTypeSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select leaderboard type...",
                          options=options, custom_id="role_leaderboard_type")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -1853,6 +1891,7 @@ class ChannelLeaderboardView(discord.ui.View):
         self.selected_role_id = selected_role_id
         self.using_server_default = using_server_default
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
 
         if isinstance(channel, discord.TextChannel):
             self.channel_type = "text"
@@ -1931,21 +1970,26 @@ class ChannelLeaderboardView(discord.ui.View):
             self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
-        async def callback(interaction: discord.Interaction):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+        async def callback(bound_self, interaction: discord.Interaction):
             now = datetime.utcnow()
-            await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
-        return callback
+            await bound_self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
+        return callback.__get__(self, type(self))
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = ChannelLeaderboardTimeModal(
             self.cog, interaction.message.id, self.guild, self.channel, self.leaderboard_type)
@@ -2112,6 +2156,13 @@ class ChannelLeaderboardView(discord.ui.View):
 
             img_bytes = await self.generate_image()
 
+            # NOTE: rebuild the view FIRST (so the Select's `default=` reflects
+            # the current leaderboard_type), THEN apply the freshly-computed
+            # pagination labels/disabled state to the NEW children. Doing this
+            # in the opposite order (old behavior) meant _update_buttons()
+            # silently threw away the label/disabled updates every time.
+            self._update_buttons()
+
             for child in self.children:
                 if isinstance(child, PageIndicator):
                     child.label = f"Page {self.page + 1}/{total_pages}"
@@ -2120,8 +2171,6 @@ class ChannelLeaderboardView(discord.ui.View):
                 elif isinstance(child, NextButton):
                     child.disabled = (
                         self.page >= total_pages - 1 or total_pages <= 1)
-
-            self._update_buttons()
 
             file = discord.File(img_bytes, filename="channel_leaderboard.png")
 
@@ -2160,6 +2209,7 @@ class ServerLeaderboardView(discord.ui.View):
         self.pool = pool
         self.using_server_default = using_server_default
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -2223,21 +2273,26 @@ class ServerLeaderboardView(discord.ui.View):
             self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
-        async def callback(interaction: discord.Interaction):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+        async def callback(bound_self, interaction: discord.Interaction):
             now = datetime.utcnow()
-            await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
-        return callback
+            await bound_self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
+        return callback.__get__(self, type(self))
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = ServerLeaderboardTimeModal(
             self.cog, interaction.message.id, self.guild)
@@ -2407,6 +2462,15 @@ class ServerLeaderboardView(discord.ui.View):
             if self.page >= total_pages:
                 self.page = max(0, total_pages - 1)
 
+            # FIX: this view was previously missing the _update_buttons() call
+            # entirely, which is why the "Top Message/Voice Users/etc" dropdown
+            # always reverted to the default option instead of showing your
+            # actual selection - the Select's `default=` flags never got
+            # rebuilt against the new leaderboard_type. Rebuild FIRST, then
+            # stamp the freshly-created Prev/Next/PageIndicator with the
+            # correct pagination state.
+            self._update_buttons()
+
             for child in self.children:
                 if isinstance(child, PageIndicator):
                     child.label = f"Page {self.page + 1}/{total_pages}"
@@ -2453,6 +2517,7 @@ class CategoryLeaderboardView(discord.ui.View):
         self.pool = pool
         self.using_server_default = using_server_default
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -2516,21 +2581,26 @@ class CategoryLeaderboardView(discord.ui.View):
             self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
-        async def callback(interaction: discord.Interaction):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+        async def callback(bound_self, interaction: discord.Interaction):
             now = datetime.utcnow()
-            await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
-        return callback
+            await bound_self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
+        return callback.__get__(self, type(self))
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = CategoryLeaderboardTimeModal(
             self.cog, interaction.message.id, self.guild, self.category)
@@ -2674,6 +2744,8 @@ class CategoryLeaderboardView(discord.ui.View):
 
             img_bytes = await self.generate_image()
 
+            self._update_buttons()
+
             for child in self.children:
                 if isinstance(child, PageIndicator):
                     child.label = f"Page {self.page + 1}/{total_pages}"
@@ -2682,8 +2754,6 @@ class CategoryLeaderboardView(discord.ui.View):
                 elif isinstance(child, NextButton):
                     child.disabled = (
                         self.page >= total_pages - 1 or total_pages <= 1)
-
-            self._update_buttons()
 
             file = discord.File(img_bytes, filename="category_leaderboard.png")
 
@@ -2729,6 +2799,7 @@ class RoleLeaderboardView(discord.ui.View):
             target, discord.CategoryChannel) else None
 
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -2795,21 +2866,26 @@ class RoleLeaderboardView(discord.ui.View):
             self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
-        async def callback(interaction: discord.Interaction):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+        async def callback(bound_self, interaction: discord.Interaction):
             now = datetime.utcnow()
-            await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
-        return callback
+            await bound_self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
+        return callback.__get__(self, type(self))
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = RoleLeaderboardTimeModal(
             self.cog, interaction.message.id, self.guild, self.target)
@@ -2921,6 +2997,8 @@ class RoleLeaderboardView(discord.ui.View):
 
             img_bytes = await self.generate_image()
 
+            self._update_buttons()
+
             for child in self.children:
                 if isinstance(child, PageIndicator):
                     child.label = f"Page {self.page + 1}/{total_pages}"
@@ -2929,8 +3007,6 @@ class RoleLeaderboardView(discord.ui.View):
                 elif isinstance(child, NextButton):
                     child.disabled = (
                         self.page >= total_pages - 1 or total_pages <= 1)
-
-            self._update_buttons()
 
             file = discord.File(img_bytes, filename="role_leaderboard.png")
 
@@ -3255,8 +3331,13 @@ class Leaderboards(commands.Cog):
                 role_id_int = int(role_id)
                 role_filter_ids = [role_id_int]
 
-            top_users = await self.db_cog.q_server_top3_users_messages(
+            # FIX: was calling q_server_top3_users_messages (hard-capped at 3,
+            # no `limit` param) instead of a proper limited leaderboard query.
+            # Now uses q_leaderboard_server_top_users_messages with limit=100,
+            # matching every other leaderboard query in this cog.
+            top_users = await self.db_cog.q_leaderboard_server_top_users_messages(
                 guild_id=guild_id_int,
+                limit=100,
                 role_filter_ids=role_filter_ids,
                 start_time=start_time,
                 end_time=end_time
@@ -3326,8 +3407,13 @@ class Leaderboards(commands.Cog):
                 role_id_int = int(role_id)
                 role_filter_ids = [role_id_int]
 
-            top_users = await self.db_cog.q_server_top3_users_voice(
+            # FIX: was calling q_server_top3_users_voice (hard-capped at 3,
+            # no `limit` param) instead of a proper limited leaderboard query.
+            # Now uses q_leaderboard_server_top_users_voice with limit=100,
+            # matching every other leaderboard query in this cog.
+            top_users = await self.db_cog.q_leaderboard_server_top_users_voice(
                 guild_id=guild_id_int,
+                limit=100,
                 role_filter_ids=role_filter_ids,
                 start_time=start_time,
                 end_time=end_time

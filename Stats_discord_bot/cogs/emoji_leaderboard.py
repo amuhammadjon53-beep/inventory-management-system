@@ -32,7 +32,17 @@ def get_ordinal(n: int) -> str:
     return {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
 
 
+def format_count_with_k(value):
+    """Format a count, abbreviating thousands as e.g. 31.5k (one decimal max)."""
+    try:
+        if value >= 1000:
+            return f"{value / 1000:.1f}k"
+        return f"{value:,}"
+    except Exception:
+        return str(value)
+
 # CONFIGURATION
+
 
 class EmojiConfig:
 
@@ -63,6 +73,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         super().__init__(timeout=60)
         self.view = view
         self.total_pages = total_pages
+        self.rate_limiter = get_rate_limiter()
 
         self.page_number = discord.ui.TextInput(
             label=f'Enter page number (1-{total_pages})',
@@ -73,6 +84,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         )
         self.add_item(self.page_number)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             page = int(self.page_number.value) - 1
@@ -534,7 +546,7 @@ async def generate_emoji_leaderboard_image(
                 total_uses = sum(count for _, count, _, _ in leaderboard_data)
                 percentage = (total_count / total_uses) * \
                     100 if total_uses > 0 else 0
-                value_text = f"{total_count:,} uses ({percentage:.1f}%)"
+                value_text = f"{format_count_with_k(total_count)} uses ({percentage:.1f}%)"
 
                 rank_text = f"#{global_rank}"
                 rank_bbox = draw.textbbox((0, 0), rank_text, font=font_medium)
@@ -742,7 +754,7 @@ async def generate_user_emoji_leaderboard_image(
                 total_uses = sum(count for _, count, _, _ in user_data)
                 percentage = (total_count / total_uses) * \
                     100 if total_uses > 0 else 0
-                value_text = f"{total_count:,} uses ({percentage:.1f}%)"
+                value_text = f"{format_count_with_k(total_count)} uses ({percentage:.1f}%)"
 
                 rank_text = f"#{global_rank}"
                 rank_bbox = draw.textbbox((0, 0), rank_text, font=font_medium)
@@ -987,7 +999,9 @@ class UsageTypeSelectMenu(discord.ui.Select):
             min_values=1,
             max_values=1
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False, thinking=False)
         view = self.view
@@ -1006,7 +1020,9 @@ class RoleInputButton(discord.ui.Button):
             label="Filter By Role",
             custom_id="role_input_button"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         modal = RoleInputModal(self.view)
         await interaction.response.send_modal(modal)
@@ -1016,6 +1032,7 @@ class RoleInputModal(discord.ui.Modal, title="Enter Role ID"):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
         self.role_id_input = discord.ui.TextInput(
             label="Role ID",
@@ -1027,6 +1044,7 @@ class RoleInputModal(discord.ui.Modal, title="Enter Role ID"):
         )
         self.add_item(self.role_id_input)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_id = self.role_id_input.value.strip()
@@ -1076,7 +1094,9 @@ class EmojiPrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="emoji_leaderboard_prev")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1095,7 +1115,9 @@ class EmojiNextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="emoji_leaderboard_next")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1113,7 +1135,9 @@ class EmojiPageIndicator(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
                          label="Page 1/1", custom_id="emoji_leaderboard_page", disabled=False)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
 
@@ -1153,7 +1177,9 @@ class RefreshButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743), custom_id="emoji_stats_refresh")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         await self.view.update_message(interaction)
@@ -1163,7 +1189,9 @@ class TimeSettingsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867), custom_id="emoji_stats_time_settings")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         self.view.show_time_buttons = not self.view.show_time_buttons
@@ -1176,7 +1204,9 @@ class AllTimeButton(discord.ui.Button):
             style=discord.ButtonStyle.secondary,
             label="All Time", custom_id="emoji_stats_all_time"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         now = datetime.now(timezone.utc)
@@ -1196,7 +1226,9 @@ class Days7Button(discord.ui.Button):
             style=discord.ButtonStyle.secondary,
             label="7 Days", custom_id="emoji_stats_days_7"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         now = datetime.now(timezone.utc)
@@ -1216,7 +1248,9 @@ class Days14Button(discord.ui.Button):
             style=discord.ButtonStyle.secondary,
             label="14 Days", custom_id="emoji_stats_days_14"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         now = datetime.now(timezone.utc)
@@ -1236,7 +1270,9 @@ class Days30Button(discord.ui.Button):
             style=discord.ButtonStyle.secondary,
             label="30 Days", custom_id="emoji_stats_days_30"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         now = datetime.now(timezone.utc)
@@ -1256,7 +1292,9 @@ class DaysCustomButton(discord.ui.Button):
             style=discord.ButtonStyle.success,
             label="Custom", custom_id="emoji_stats_days_custom"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         modal = CustomDaysModal(self.view)
         await interaction.response.send_modal(modal)
@@ -1266,6 +1304,7 @@ class CustomDaysModal(discord.ui.Modal, title="Custom Time Range"):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
         self.days_input = discord.ui.TextInput(
             label="Number of Days",
@@ -1278,6 +1317,7 @@ class CustomDaysModal(discord.ui.Modal, title="Custom Time Range"):
         )
         self.add_item(self.days_input)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days_input.value)

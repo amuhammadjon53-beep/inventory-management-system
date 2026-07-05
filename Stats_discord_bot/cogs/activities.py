@@ -101,6 +101,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         super().__init__(timeout=60)
         self.view = view
         self.total_pages = total_pages
+        self.rate_limiter = get_rate_limiter()
 
         self.page_number = discord.ui.TextInput(
             label=f'Enter page number (1-{total_pages})',
@@ -111,6 +112,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         )
         self.add_item(self.page_number)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             page = int(self.page_number.value) - 1
@@ -2279,7 +2281,9 @@ class SortBySelect(discord.ui.Select):
             ]
         super().__init__(placeholder="Sort by...",
                          options=options, custom_id="sort_by_select")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -2308,7 +2312,9 @@ class CategorySelect(discord.ui.Select):
         ]
         super().__init__(placeholder="Filter category...",
                          options=options, custom_id="category_select")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -2326,6 +2332,11 @@ class RoleInputModal(discord.ui.Modal, title='Filter By Role'):
         required=True
     )
 
+    def __init__(self):
+        super().__init__()
+        self.rate_limiter = get_rate_limiter()
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         view = self.view
@@ -2367,6 +2378,11 @@ class TimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    def __init__(self):
+        super().__init__()
+        self.rate_limiter = get_rate_limiter()
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -2393,7 +2409,9 @@ class PrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="leaderboard_prev")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -2407,7 +2425,9 @@ class NextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="leaderboard_next")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -2421,7 +2441,9 @@ class PageNumberButton(discord.ui.Button):
         super().__init__(style=discord.ButtonStyle.primary,
                          label=f"Page {page + 1}/{total_pages}",
                          custom_id="page_number", disabled=False)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         total_items = len(view.last_stats) if hasattr(
@@ -2466,6 +2488,7 @@ class ActivityView(discord.ui.View):
         self.show_time_buttons = False
         self.using_server_default = using_server_default
         self.last_stats = []
+        self.rate_limiter = get_rate_limiter()
         self._update_components()
 
     def _update_components(self):
@@ -2546,16 +2569,20 @@ class ActivityView(discord.ui.View):
                 self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def callback(interaction: discord.Interaction):
             await self.handle_button_click(interaction, days=days)
         return callback
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, days=999999)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -2563,16 +2590,19 @@ class ActivityView(discord.ui.View):
         self._update_components()
         await interaction.edit_original_response(view=self)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def role_button_callback(self, interaction: discord.Interaction):
         modal = RoleInputModal()
         modal.view = self
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = TimeModal()
         modal.view = self
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def handle_button_click(self, interaction: discord.Interaction, days: int = None):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -2720,6 +2750,7 @@ class WhosView(discord.ui.View):
         self.page = page
         self.role_id = "none"
         self.users_per_page = 10
+        self.rate_limiter = get_rate_limiter()
         self._update_components()
 
     def _update_components(self):
@@ -2748,11 +2779,13 @@ class WhosView(discord.ui.View):
         refresh_button.callback = self.refresh_callback
         self.add_item(refresh_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def role_button_callback(self, interaction: discord.Interaction):
         modal = RoleInputModal()
         modal.view = self
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.update_message(interaction)
 
@@ -2875,6 +2908,7 @@ class WhosView(discord.ui.View):
 
         await interaction.edit_original_response(embed=embed, view=self)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def handle_button_click(self, interaction: discord.Interaction):
         await interaction.response.defer()
         await self.update_message(interaction)

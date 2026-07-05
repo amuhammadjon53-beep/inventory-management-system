@@ -76,7 +76,24 @@ def format_voice_time(total_seconds):
 
 
 def format_message_count(count):
-    return f"{count:,}"
+    """
+    Format message counts. Numbers of 1000 or more are abbreviated with a
+    single decimal place and a "k" suffix (e.g. 31,125 -> "31.1k").
+    Numbers under 1000 are shown as plain integers (no comma separators).
+    """
+    if count is None:
+        count = 0
+
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = 0
+
+    if count >= 1000:
+        value = count / 1000
+        return f"{value:.1f}k"
+
+    return f"{count}"
 
 
 # FONTS
@@ -361,7 +378,7 @@ async def generate_category_message_stats_image(bot: commands.Bot, guild: discor
 
     total_messages = message_data.get('total_messages', 0) or 0
     draw_text_with_stroke(
-        draw, format_message_count(total_messages), (380, 160), font_huge
+        draw, format_message_count(total_messages), (365, 160), font_huge
     )
 
     current_date = datetime.now().strftime("%B %d, %Y")
@@ -388,7 +405,7 @@ async def generate_category_message_stats_image(bot: commands.Bot, guild: discor
         (20, 320), (20, 375), (20, 430), (20, 485), (20, 535)
     ]
     message_positions = [
-        (195, 320), (195, 375), (195, 430), (195, 485), (195, 535)
+        (180, 320), (180, 375), (180, 430), (180, 485), (180, 535)
     ]
 
     for i, ((user_id, message_count), (user_x, user_y), (msg_x, msg_y)) in enumerate(zip(top_users, user_positions, message_positions)):
@@ -428,7 +445,7 @@ async def generate_category_message_stats_image(bot: commands.Bot, guild: discor
         (280, 320), (280, 375), (280, 430), (280, 485), (280, 535)
     ]
     channel_message_positions = [
-        (450, 320), (450, 375), (450, 430), (450, 485), (450, 535)
+        (435, 320), (435, 375), (435, 430), (435, 485), (435, 535)
     ]
 
     for i, ((channel_id, message_count), (chan_x, chan_y), (msg_x, msg_y)) in enumerate(zip(top_channels, channel_positions, channel_message_positions)):
@@ -603,7 +620,7 @@ async def generate_category_voice_stats_image(bot: commands.Bot, guild: discord.
     total_voice_text = format_voice_time(total_seconds)
 
     draw_text_with_stroke(
-        draw, total_voice_text, (380, 160), font_huge
+        draw, total_voice_text, (365, 160), font_huge
     )
 
     current_date = datetime.now().strftime("%B %d, %Y")
@@ -630,7 +647,7 @@ async def generate_category_voice_stats_image(bot: commands.Bot, guild: discord.
         (20, 320), (20, 375), (20, 430), (20, 485), (20, 535)
     ]
     voice_time_positions = [
-        (195, 320), (195, 375), (195, 430), (195, 485), (195, 535)
+        (180, 320), (180, 375), (180, 430), (180, 485), (180, 535)
     ]
 
     for i, ((user_id, user_seconds), (user_x, user_y), (time_x, time_y)) in enumerate(zip(top_users, user_positions, voice_time_positions)):
@@ -670,7 +687,7 @@ async def generate_category_voice_stats_image(bot: commands.Bot, guild: discord.
         (280, 320), (280, 375), (280, 430), (280, 485), (280, 535)
     ]
     channel_voice_positions = [
-        (450, 320), (450, 375), (450, 430), (450, 485), (450, 535)
+        (435, 320), (435, 375), (435, 430), (435, 485), (435, 535)
     ]
 
     for i, ((channel_id, channel_seconds), (chan_x, chan_y), (time_x, time_y)) in enumerate(zip(top_channels, channel_positions, channel_voice_positions)):
@@ -769,7 +786,9 @@ class StatsTypeSelectMenu(discord.ui.Select):
             max_values=1,
             row=0
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not self.values:
             await interaction.response.send_message("❌ No statistics type selected.", ephemeral=True)
@@ -839,6 +858,7 @@ class CategoryRoleIDModal(discord.ui.Modal, title='Filter By Role'):
         self.category = category
         self.stats_type = stats_type
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID',
@@ -848,6 +868,7 @@ class CategoryRoleIDModal(discord.ui.Modal, title='Filter By Role'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_id = self.role_id.value.strip()
@@ -965,6 +986,7 @@ class CategoryStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.category = category
         self.stats_type = stats_type
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -974,6 +996,7 @@ class CategoryStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1066,6 +1089,7 @@ class CategoryStatsView(discord.ui.View):
         self.selected_role_id = selected_role_id
         self.show_time_buttons = False
         self.using_server_default = using_server_default
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -1146,34 +1170,42 @@ class CategoryStatsView(discord.ui.View):
             self.add_item(days_30_button)
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def input_role_callback(self, interaction: discord.Interaction):
         modal = CategoryRoleIDModal(
             self.cog, interaction.message.id, self.guild, self.category, self.stats_type, self
         )
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=now, display_text="All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_7_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_14_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_30_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = CategoryStatsTimeModal(
             self.cog, interaction.message.id, self.guild, self.category, self.stats_type, self

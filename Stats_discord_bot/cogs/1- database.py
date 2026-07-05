@@ -10645,6 +10645,298 @@ class DatabaseStats(commands.Cog):
                     original=e
                 )
             raise
+        
+    async def q_leaderboard_server_top_users_messages(self, guild_id: int,
+                                                    limit: int = 100000000000,
+                                                    role_filter_ids: Optional[List[int]] = None,
+                                                    start_time: Optional[datetime] = None,
+                                                    end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Get server-wide leaderboard of top users by messages using hourly aggregated table."""
+        if not self.pool:
+            return []
+    
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+    
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+    
+            async with self.pool.acquire() as conn:
+                total_query = '''
+                    SELECT COALESCE(SUM(message_count), 0) as total_messages
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1
+                '''
+                total_params = [guild_id]
+    
+                if start_time:
+                    total_query += f" AND hour >= ${len(total_params) + 1}"
+                    total_params.append(start_time)
+                if end_time:
+                    total_query += f" AND hour <= ${len(total_params) + 1}"
+                    total_params.append(end_time)
+    
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        total_query += f" AND user_id = ANY(${len(total_params) + 1}::bigint[])"
+                        total_params.append(user_ids)
+                    else:
+                        return []
+    
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'message_tracking_hourly')
+    
+                total_query, total_params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, total_query, total_params, 'message_tracking_hourly',
+                    include_users=True, include_channels=True
+                )
+    
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_messages = total_row['total_messages'] or 0
+    
+                if total_messages == 0:
+                    return []
+    
+                query = '''
+                    SELECT
+                        user_id,
+                        COALESCE(SUM(message_count), 0) as message_count,
+                        COALESCE(SUM(total_chars), 0) as total_chars,
+                        COALESCE(SUM(total_chars) / NULLIF(SUM(message_count), 0), 0) as avg_chars
+                    FROM message_tracking_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+    
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+    
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return []
+    
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
+    
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'message_tracking_hourly',
+                    include_users=True, include_channels=True
+                )
+    
+                query += f'''
+                    GROUP BY user_id
+                    HAVING SUM(message_count) > 0
+                    ORDER BY message_count DESC
+                    LIMIT {limit}
+                '''
+    
+                rows = await conn.fetch(query, *params)
+    
+                result = []
+                for row in rows:
+                    user_messages = row['message_count'] or 0
+                    percentage = (user_messages / total_messages *
+                                100) if total_messages > 0 else 0
+    
+                    result.append({
+                        'user_id': row['user_id'],
+                        'message_count': user_messages,
+                        'total_chars': row['total_chars'] or 0,
+                        'avg_chars': round(row['avg_chars'] or 0, 2),
+                        'percentage': round(percentage, 1)
+                    })
+    
+                return result
+    
+        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+            raise DatabaseConnectionError(
+                "Database connection does not exist while fetching server top users messages leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while fetching server top users messages leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.QueryCanceledError as e:
+            raise DatabaseTimeoutError(
+                "Database operation timed out while fetching server top users messages leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Database error fetching server top users messages leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except Exception as e:
+            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+                raise DatabaseQueryError(
+                    "Unexpected error fetching server top users messages leaderboard",
+                    context={'guild_id': guild_id},
+                    original=e
+                )
+            raise
+    
+    
+    async def q_leaderboard_server_top_users_voice(self, guild_id: int,
+                                                    limit: int = 100000000000,
+                                                    role_filter_ids: Optional[List[int]] = None,
+                                                    start_time: Optional[datetime] = None,
+                                                    end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Get server-wide leaderboard of top users by voice time using hourly aggregated table."""
+        if not self.pool:
+            return []
+    
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return []
+    
+        try:
+            start_time = ensure_aware(start_time)
+            end_time = ensure_aware(end_time)
+            state_flags_filter = await self._get_voice_state_filter_value(guild_id)
+    
+            async with self.pool.acquire() as conn:
+                query = '''
+                    SELECT
+                        user_id,
+                        COALESCE(SUM(total_seconds), 0) as total_seconds,
+                        COALESCE(SUM(session_count), 0) as session_count,
+                        COALESCE(SUM(total_seconds) / NULLIF(SUM(session_count), 0), 0) as avg_session
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1
+                '''
+                params = [guild_id]
+    
+                if state_flags_filter is not None:
+                    query += f" AND state_flags = ${len(params) + 1}"
+                    params.append(state_flags_filter)
+    
+                if start_time:
+                    query += f" AND hour >= ${len(params) + 1}"
+                    params.append(start_time)
+                if end_time:
+                    query += f" AND hour <= ${len(params) + 1}"
+                    params.append(end_time)
+    
+                query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
+    
+                user_ids = None
+                if role_filter_ids:
+                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+                    if user_ids:
+                        query += f" AND user_id = ANY(${len(params) + 1}::bigint[])"
+                        params.append(user_ids)
+                    else:
+                        return []
+    
+                query, params = await self._apply_comprehensive_blacklist_filters(
+                    guild_id, guild, query, params, 'voice_session_history_hourly',
+                    include_users=True, include_channels=True
+                )
+    
+                query += '''
+                    GROUP BY user_id
+                    HAVING SUM(total_seconds) > 0
+                    ORDER BY total_seconds DESC
+                '''
+    
+                if limit:
+                    query += f" LIMIT ${len(params) + 1}"
+                    params.append(limit)
+    
+                rows = await conn.fetch(query, *params)
+    
+                total_query = '''
+                    SELECT COALESCE(SUM(total_seconds), 0) as total_seconds
+                    FROM voice_session_history_hourly
+                    WHERE guild_id = $1
+                '''
+                total_params = [guild_id]
+    
+                if state_flags_filter is not None:
+                    total_query += f" AND state_flags = ${len(total_params) + 1}"
+                    total_params.append(state_flags_filter)
+    
+                if start_time:
+                    total_query += f" AND hour >= ${len(total_params) + 1}"
+                    total_params.append(start_time)
+                if end_time:
+                    total_query += f" AND hour <= ${len(total_params) + 1}"
+                    total_params.append(end_time)
+    
+                total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'voice_session_history_hourly')
+    
+                if role_filter_ids and user_ids:
+                    total_query += f" AND user_id = ANY(${len(total_params) + 1}::bigint[])"
+                    total_params.append(user_ids)
+    
+                total_row = await conn.fetchrow(total_query, *total_params)
+                total_seconds = total_row['total_seconds'] if total_row else 0
+    
+                result = []
+                for row in rows:
+                    user_seconds = row['total_seconds'] or 0
+                    percentage = (user_seconds / total_seconds *
+                                100) if total_seconds > 0 else 0
+    
+                    result.append({
+                        'user_id': row['user_id'],
+                        'total_seconds': user_seconds,
+                        'total_hours': round(user_seconds / 3600, 2),
+                        'session_count': row['session_count'] or 0,
+                        'avg_session': round(row['avg_session'] or 0, 2),
+                        'percentage': round(percentage, 1)
+                    })
+    
+                return result
+    
+        except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+            raise DatabaseConnectionError(
+                "Database connection does not exist while fetching server top users voice leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            raise DatabaseConnectionError(
+                "Database connection failed while fetching server top users voice leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.QueryCanceledError as e:
+            raise DatabaseTimeoutError(
+                "Database operation timed out while fetching server top users voice leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except asyncpg.exceptions.PostgresError as e:
+            raise DatabaseQueryError(
+                "Database error fetching server top users voice leaderboard",
+                context={'guild_id': guild_id},
+                original=e
+            )
+        except Exception as e:
+            if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+                raise DatabaseQueryError(
+                    "Unexpected error fetching server top users voice leaderboard",
+                    context={'guild_id': guild_id},
+                    original=e
+                )
+            raise
+
 
     async def q_leaderboard_server_top_categories_messages(self, guild_id: int,
                                                            limit: int = 100000000000,
@@ -12873,8 +13165,30 @@ class DatabaseStats(commands.Cog):
             end_time = ensure_aware(end_time)
 
             async with self.pool.acquire() as conn:
-                # Get all users with mention activity
-                query = '''
+                params = [guild_id]
+                param_index = 1
+                start_param = end_param = None
+
+                if start_time:
+                    param_index += 1
+                    start_param = param_index
+                    params.append(start_time)
+                if end_time:
+                    param_index += 1
+                    end_param = param_index
+                    params.append(end_time)
+
+                param_index += 1
+                min_param = param_index
+                params.append(min_mentions_sent)
+
+                time_clause = ""
+                if start_param:
+                    time_clause += f" AND hour >= ${start_param}"
+                if end_param:
+                    time_clause += f" AND hour <= ${end_param}"
+
+                query = f'''
                     SELECT 
                         COALESCE(sent.mentioner_user_id, recv.mentioned_user_id) as user_id,
                         COALESCE(sent.mentions_sent, 0) as mentions_sent,
@@ -12882,43 +13196,17 @@ class DatabaseStats(commands.Cog):
                     FROM (
                         SELECT mentioner_user_id, SUM(mention_count) as mentions_sent
                         FROM user_mentions_hourly
-                        WHERE guild_id = $1
-                    ''' + (f" AND hour >= ${2}" if start_time else "") + (f" AND hour <= ${3}" if end_time else "") + '''
+                        WHERE guild_id = $1{time_clause}
                         GROUP BY mentioner_user_id
                     ) sent
                     FULL OUTER JOIN (
                         SELECT mentioned_user_id, SUM(mention_count) as mentions_received
                         FROM user_mentions_hourly
-                        WHERE guild_id = $1
-                    ''' + (f" AND hour >= ${4}" if start_time else "") + (f" AND hour <= ${5}" if end_time else "") + '''
+                        WHERE guild_id = $1{time_clause}
                         GROUP BY mentioned_user_id
                     ) recv ON sent.mentioner_user_id = recv.mentioned_user_id
-                    WHERE COALESCE(sent.mentions_sent, 0) >= $6 OR COALESCE(recv.mentions_received, 0) > 0
+                    WHERE COALESCE(sent.mentions_sent, 0) >= ${min_param} OR COALESCE(recv.mentions_received, 0) > 0
                 '''
-
-                params = [guild_id]
-                param_index = 2
-
-                if start_time:
-                    params.append(start_time)
-                    param_index += 1
-                if end_time:
-                    params.append(end_time)
-                    param_index += 1
-                if start_time and end_time:
-                    params.append(start_time)
-                    params.append(end_time)
-                    param_index = 6
-                elif start_time:
-                    params.append(start_time)
-                    param_index = 5
-                elif end_time:
-                    params.append(end_time)
-                    param_index = 5
-                else:
-                    param_index = 4
-
-                params.append(min_mentions_sent)
 
                 rows = await conn.fetch(query, *params)
 
@@ -12988,51 +13276,48 @@ class DatabaseStats(commands.Cog):
             end_time = ensure_aware(end_time)
 
             async with self.pool.acquire() as conn:
-                query = '''
-                    SELECT 
-                        COALESCE(sent.mentioner_user_id, recv.mentioned_user_id) as user_id,
-                        COALESCE(sent.mentions_sent, 0) as mentions_sent,
-                        COALESCE(recv.mentions_received, 0) as mentions_received
-                    FROM (
-                        SELECT mentioner_user_id, SUM(mention_count) as mentions_sent
-                        FROM user_mentions_hourly
-                        WHERE guild_id = $1 AND channel_id = $2
-                    ''' + (f" AND hour >= ${3}" if start_time else "") + (f" AND hour <= ${4}" if end_time else "") + '''
-                        GROUP BY mentioner_user_id
-                    ) sent
-                    FULL OUTER JOIN (
-                        SELECT mentioned_user_id, SUM(mention_count) as mentions_received
-                        FROM user_mentions_hourly
-                        WHERE guild_id = $1 AND channel_id = $2
-                    ''' + (f" AND hour >= ${5}" if start_time else "") + (f" AND hour <= ${6}" if end_time else "") + '''
-                        GROUP BY mentioned_user_id
-                    ) recv ON sent.mentioner_user_id = recv.mentioned_user_id
-                    WHERE COALESCE(sent.mentions_sent, 0) >= $7 OR COALESCE(recv.mentions_received, 0) > 0
-                '''
-
                 params = [guild_id, channel_id]
-                param_index = 3
+                param_index = 2
+                start_param = end_param = None
 
                 if start_time:
-                    params.append(start_time)
                     param_index += 1
+                    start_param = param_index
+                    params.append(start_time)
                 if end_time:
-                    params.append(end_time)
                     param_index += 1
-                if start_time and end_time:
-                    params.append(start_time)
+                    end_param = param_index
                     params.append(end_time)
-                    param_index = 7
-                elif start_time:
-                    params.append(start_time)
-                    param_index = 6
-                elif end_time:
-                    params.append(end_time)
-                    param_index = 6
-                else:
-                    param_index = 5
 
+                param_index += 1
+                min_param = param_index
                 params.append(min_mentions_sent)
+
+                time_clause = ""
+                if start_param:
+                    time_clause += f" AND hour >= ${start_param}"
+                if end_param:
+                    time_clause += f" AND hour <= ${end_param}"
+
+                query = f'''
+                        SELECT 
+                            COALESCE(sent.mentioner_user_id, recv.mentioned_user_id) as user_id,
+                            COALESCE(sent.mentions_sent, 0) as mentions_sent,
+                            COALESCE(recv.mentions_received, 0) as mentions_received
+                        FROM (
+                            SELECT mentioner_user_id, SUM(mention_count) as mentions_sent
+                            FROM user_mentions_hourly
+                            WHERE guild_id = $1 AND channel_id = $2{time_clause}
+                            GROUP BY mentioner_user_id
+                        ) sent
+                        FULL OUTER JOIN (
+                            SELECT mentioned_user_id, SUM(mention_count) as mentions_received
+                            FROM user_mentions_hourly
+                            WHERE guild_id = $1 AND channel_id = $2{time_clause}
+                            GROUP BY mentioned_user_id
+                        ) recv ON sent.mentioner_user_id = recv.mentioned_user_id
+                        WHERE COALESCE(sent.mentions_sent, 0) >= ${min_param} OR COALESCE(recv.mentions_received, 0) > 0
+                    '''
 
                 rows = await conn.fetch(query, *params)
 
@@ -13099,51 +13384,48 @@ class DatabaseStats(commands.Cog):
             end_time = ensure_aware(end_time)
 
             async with self.pool.acquire() as conn:
-                query = '''
-                    SELECT 
-                        COALESCE(sent.mentioner_user_id, recv.mentioned_user_id) as user_id,
-                        COALESCE(sent.mentions_sent, 0) as mentions_sent,
-                        COALESCE(recv.mentions_received, 0) as mentions_received
-                    FROM (
-                        SELECT mentioner_user_id, SUM(mention_count) as mentions_sent
-                        FROM user_mentions_hourly
-                        WHERE guild_id = $1 AND category_id = $2
-                    ''' + (f" AND hour >= ${3}" if start_time else "") + (f" AND hour <= ${4}" if end_time else "") + '''
-                        GROUP BY mentioner_user_id
-                    ) sent
-                    FULL OUTER JOIN (
-                        SELECT mentioned_user_id, SUM(mention_count) as mentions_received
-                        FROM user_mentions_hourly
-                        WHERE guild_id = $1 AND category_id = $2
-                    ''' + (f" AND hour >= ${5}" if start_time else "") + (f" AND hour <= ${6}" if end_time else "") + '''
-                        GROUP BY mentioned_user_id
-                    ) recv ON sent.mentioner_user_id = recv.mentioned_user_id
-                    WHERE COALESCE(sent.mentions_sent, 0) >= $7 OR COALESCE(recv.mentions_received, 0) > 0
-                '''
-
                 params = [guild_id, category_id]
-                param_index = 3
+                param_index = 2
+                start_param = end_param = None
 
                 if start_time:
-                    params.append(start_time)
                     param_index += 1
+                    start_param = param_index
+                    params.append(start_time)
                 if end_time:
-                    params.append(end_time)
                     param_index += 1
-                if start_time and end_time:
-                    params.append(start_time)
+                    end_param = param_index
                     params.append(end_time)
-                    param_index = 7
-                elif start_time:
-                    params.append(start_time)
-                    param_index = 6
-                elif end_time:
-                    params.append(end_time)
-                    param_index = 6
-                else:
-                    param_index = 5
 
+                param_index += 1
+                min_param = param_index
                 params.append(min_mentions_sent)
+
+                time_clause = ""
+                if start_param:
+                    time_clause += f" AND hour >= ${start_param}"
+                if end_param:
+                    time_clause += f" AND hour <= ${end_param}"
+
+                query = f'''
+                        SELECT 
+                            COALESCE(sent.mentioner_user_id, recv.mentioned_user_id) as user_id,
+                            COALESCE(sent.mentions_sent, 0) as mentions_sent,
+                            COALESCE(recv.mentions_received, 0) as mentions_received
+                        FROM (
+                            SELECT mentioner_user_id, SUM(mention_count) as mentions_sent
+                            FROM user_mentions_hourly
+                            WHERE guild_id = $1 AND category_id = $2{time_clause}
+                            GROUP BY mentioner_user_id
+                        ) sent
+                        FULL OUTER JOIN (
+                            SELECT mentioned_user_id, SUM(mention_count) as mentions_received
+                            FROM user_mentions_hourly
+                            WHERE guild_id = $1 AND category_id = $2{time_clause}
+                            GROUP BY mentioned_user_id
+                        ) recv ON sent.mentioner_user_id = recv.mentioned_user_id
+                        WHERE COALESCE(sent.mentions_sent, 0) >= ${min_param} OR COALESCE(recv.mentions_received, 0) > 0
+                    '''
 
                 rows = await conn.fetch(query, *params)
 

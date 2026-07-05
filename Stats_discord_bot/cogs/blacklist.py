@@ -18,6 +18,7 @@ class BlacklistView(View):
         self.cog = cog
         self.guild_id = guild_id
         self.initial_type = initial_type
+        self.rate_limiter = get_rate_limiter()
 
     async def on_timeout(self):
         for item in self.children:
@@ -34,6 +35,7 @@ class TypeSelect(Select):
     def __init__(self, cog, guild_id, current_type="user"):
         self.cog = cog
         self.guild_id = guild_id
+        self.rate_limiter = get_rate_limiter()
         options = [
             discord.SelectOption(
                 label="Users", description="Show blacklisted users", emoji="👤", value="user"),
@@ -51,6 +53,7 @@ class TypeSelect(Select):
         super().__init__(
             placeholder=f"Type: {current_type.capitalize()}s", options=options, min_values=1, max_values=1)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
@@ -93,6 +96,7 @@ class BlacklistIntroView(View):
         super().__init__(timeout=300)
         self.cog = cog
         self.guild_id = guild_id
+        self.rate_limiter = get_rate_limiter()
 
     async def on_timeout(self):
         for item in self.children:
@@ -108,7 +112,9 @@ class BlacklistIntroView(View):
 class AddButton(Button):
     def __init__(self):
         super().__init__(label="Add", style=discord.ButtonStyle.success, emoji="➕")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
@@ -125,7 +131,9 @@ class AddButton(Button):
 class RemoveButton(Button):
     def __init__(self):
         super().__init__(label="Remove", style=discord.ButtonStyle.danger, emoji="➖")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
@@ -145,6 +153,7 @@ class BlacklistTypeSelectView(View):
         self.cog = cog
         self.guild_id = guild_id
         self.action = action
+        self.rate_limiter = get_rate_limiter()
         self.add_item(TypeSelectionDropdown(action))
 
     async def on_timeout(self):
@@ -161,6 +170,7 @@ class BlacklistTypeSelectView(View):
 class TypeSelectionDropdown(Select):
     def __init__(self, action):
         self.action = action
+        self.rate_limiter = get_rate_limiter()
         options = [
             discord.SelectOption(label="User", value="user", emoji="👤"),
             discord.SelectOption(label="Channel", value="channel", emoji="📝"),
@@ -171,6 +181,7 @@ class TypeSelectionDropdown(Select):
         placeholder = f"Choose what to {action}..." if action == "add" else f"Choose what to {action} from blacklist..."
         super().__init__(placeholder=placeholder, options=options, min_values=1, max_values=1)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
@@ -192,6 +203,7 @@ class BlacklistMenuStep2(View):
         self.entity_type = entity_type
         self.action = action
         self.selected_ids = selected_ids or []
+        self.rate_limiter = get_rate_limiter()
 
         self.add_item(TargetSelect(entity_type, guild, action))
         self.add_item(InputIdButton(entity_type, action))
@@ -212,6 +224,7 @@ class TargetSelect(Select):
         self.entity_type = entity_type
         self.guild = guild
         self.action = action
+        self.rate_limiter = get_rate_limiter()
 
         options = self.get_options()
 
@@ -280,6 +293,7 @@ class TargetSelect(Select):
 
         return options
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         # Handle the "none" option
         if self.values[0] == "none":
@@ -310,7 +324,9 @@ class InputIdButton(Button):
         super().__init__(label=label, style=discord.ButtonStyle.secondary, emoji="🔢")
         self.entity_type = entity_type
         self.action = action
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         # Check permission based on settings
         if not await self.view.cog.check_blacklist_permission(interaction):
@@ -328,6 +344,7 @@ class InputIdModal(Modal):
         self.entity_type = entity_type
         self.parent_view = parent_view
         self.action = action
+        self.rate_limiter = get_rate_limiter()
 
         self.id_input = TextInput(
             label=f"{entity_type.capitalize()} ID",
@@ -337,6 +354,7 @@ class InputIdModal(Modal):
         )
         self.add_item(self.id_input)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
@@ -369,7 +387,9 @@ class InputIdModal(Modal):
 class BackToTypeSelectionButton(Button):
     def __init__(self):
         super().__init__(label="Back", style=discord.ButtonStyle.secondary, emoji="⬅️")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
@@ -389,7 +409,9 @@ class NextButton(Button):
         emoji = "➡️"
         super().__init__(label=label, style=discord.ButtonStyle.primary, emoji=emoji)
         self.action = action
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
@@ -414,6 +436,7 @@ class BlacklistMenuStep3(View):
         self.entity_type = entity_type
         self.selected_ids = selected_ids
         self.action = action
+        self.rate_limiter = get_rate_limiter()
 
         self.add_item(ApplyButton(action))
         self.add_item(BackToStep2Button())
@@ -433,7 +456,9 @@ class ApplyButton(Button):
         emoji = "✅"
         super().__init__(label=label, style=discord.ButtonStyle.success, emoji=emoji)
         self.action = action
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
@@ -450,7 +475,9 @@ class ApplyButton(Button):
 class BackToStep2Button(Button):
     def __init__(self):
         super().__init__(label="Back", style=discord.ButtonStyle.secondary, emoji="⬅️")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
@@ -467,7 +494,9 @@ class BackToStep2Button(Button):
 class ViewBlacklistButton(Button):
     def __init__(self):
         super().__init__(label="View Blacklist", style=discord.ButtonStyle.primary, emoji="📋")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 

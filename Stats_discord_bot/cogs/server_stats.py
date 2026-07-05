@@ -1966,6 +1966,7 @@ class ServerRoleModal(discord.ui.Modal, title='Input Role ID'):
         self.original_message_id = original_message_id
         self.guild = guild
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID',
@@ -1975,6 +1976,7 @@ class ServerRoleModal(discord.ui.Modal, title='Input Role ID'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_id_str = self.role_id.value.strip()
@@ -2058,6 +2060,7 @@ class ServerTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.original_message_id = original_message_id
         self.guild = guild
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -2067,6 +2070,7 @@ class ServerTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -2135,6 +2139,7 @@ class ServerStatsView(discord.ui.View):
         self.current_stat_type = stat_type
         self.show_time_buttons = False
         self.using_server_default = using_server_default
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -2237,6 +2242,7 @@ class ServerStatsView(discord.ui.View):
         self.current_stat_type = interaction.data['values'][0]
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def input_role_callback(self, interaction: discord.Interaction):
         modal = ServerRoleModal(
             self.cog, interaction.message.id, self.guild, self)
@@ -2245,6 +2251,7 @@ class ServerStatsView(discord.ui.View):
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         self.show_time_buttons = not self.show_time_buttons
@@ -2267,11 +2274,13 @@ class ServerStatsView(discord.ui.View):
         now = datetime.utcnow()
         await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = ServerTimeModal(
             self.cog, interaction.message.id, self.guild, self)
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, days_back_equiv: int = None, start_time: datetime = None, end_time: datetime = None, display_text: str = None):
         try:
             if interaction.response.is_done():

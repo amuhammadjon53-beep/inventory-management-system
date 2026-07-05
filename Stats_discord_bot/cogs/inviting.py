@@ -37,6 +37,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         super().__init__(timeout=60)
         self.view = view
         self.total_pages = total_pages
+        self.rate_limiter = get_rate_limiter()
 
         self.page_number = discord.ui.TextInput(
             label=f'Enter page number (1-{total_pages})',
@@ -47,6 +48,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         )
         self.add_item(self.page_number)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             page = int(self.page_number.value) - 1
@@ -774,6 +776,7 @@ class InviteLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.current_view = current_view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -783,6 +786,7 @@ class InviteLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -826,6 +830,7 @@ class InviteRoleInputModal(discord.ui.Modal, title='Filter By Role'):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.current_view = current_view
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID',
@@ -835,6 +840,7 @@ class InviteRoleInputModal(discord.ui.Modal, title='Filter By Role'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         role_id_input = self.role_id.value.strip().lower()
 
@@ -873,6 +879,7 @@ class InviteRoleInputModal(discord.ui.Modal, title='Filter By Role'):
 class InviteTypeFilterSelect(discord.ui.Select):
     def __init__(self, current_value: str = "all"):
         self.current_value = current_value
+        self.rate_limiter = get_rate_limiter()
 
         options = [
             discord.SelectOption(
@@ -909,9 +916,10 @@ class InviteTypeFilterSelect(discord.ui.Select):
             placeholder="Filter by invite type...",
             options=options,
             custom_id="invite_type_filter",
-            row=2
+            row=0
         )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -928,8 +936,10 @@ class InviteTypeFilterSelect(discord.ui.Select):
 class InvitePrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="invite_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="invite_prev", row=1)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
 
         if self.disabled:
@@ -948,8 +958,10 @@ class InvitePrevButton(discord.ui.Button):
 class InviteNextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="invite_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="invite_next", row=1)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
 
         if self.disabled:
@@ -967,8 +979,10 @@ class InviteNextButton(discord.ui.Button):
 class InvitePageIndicator(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary, label="Page 1/1",
-                         custom_id="invite_page", disabled=False)
+                         custom_id="invite_page", disabled=False, row=1)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
 
@@ -987,8 +1001,10 @@ class InvitePageIndicator(discord.ui.Button):
 class InviteRoleInputButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary, label="Filter By Role",
-                         custom_id="invite_role_input", row=3)
+                         custom_id="invite_role_input", row=2)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if interaction.response.is_done():
             return
@@ -1015,23 +1031,29 @@ class InviteLeaderboardView(discord.ui.View):
         self.current_invite_type = invite_type_filter
         self.using_server_default = using_server_default
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
 
         self.clear_items()
 
+        # Row 0: dropdown
+        self.add_item(InviteTypeFilterSelect(self.current_invite_type))
+
+        # Row 1: prev / page / next
         self.add_item(InvitePrevButton())
         self.add_item(InvitePageIndicator())
         self.add_item(InviteNextButton())
+
+        # Row 2: remaining buttons
         self.add_item(InviteRoleInputButton())
-        self.add_item(InviteTypeFilterSelect(self.current_invite_type))
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
             emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="invite_refresh",
-            row=3
+            row=2
         )
         refresh_button.callback = self.refresh_callback
 
@@ -1039,7 +1061,7 @@ class InviteLeaderboardView(discord.ui.View):
             style=discord.ButtonStyle.secondary,
             emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="invite_time_settings",
-            row=3
+            row=2
         )
         time_settings_button.callback = self.time_settings_callback
 
@@ -1047,7 +1069,7 @@ class InviteLeaderboardView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
-            row = 4
+            row = 3
             all_time_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
                 label="All Time",
@@ -1077,21 +1099,26 @@ class InviteLeaderboardView(discord.ui.View):
             self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def callback(interaction: discord.Interaction):
             now = datetime.utcnow()
             await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
-        return callback
+        return callback.__get__(self, type(self))
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.utcnow()
         await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = InviteLeaderboardTimeModal(self.cog, self)
         await interaction.response.send_modal(modal)

@@ -69,6 +69,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Interval'):
         super().__init__(timeout=60)
         self.view = view
         self.total_intervals = total_intervals
+        self.rate_limiter = get_rate_limiter()
 
         self.interval_number = discord.ui.TextInput(
             label=f'Enter interval number (1-{total_intervals})',
@@ -79,6 +80,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Interval'):
         )
         self.add_item(self.interval_number)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             interval = int(self.interval_number.value) - 1
@@ -111,6 +113,7 @@ class RoleInputModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID or "none" for no filter',
@@ -120,6 +123,7 @@ class RoleInputModal(discord.ui.Modal, title='Filter By Role'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_input = self.role_id.value.strip()
@@ -180,6 +184,7 @@ class ChartTimeModal(discord.ui.Modal, title='Custom Time Period'):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -189,6 +194,7 @@ class ChartTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -237,7 +243,9 @@ class ChartSelectMenu(discord.ui.Select):
             min_values=1,
             max_values=1
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         view.current_selection = self.values[0]
@@ -267,6 +275,7 @@ class ChartView(discord.ui.View):
         self.ctx = ctx
         self.message = None
         self.using_server_default = using_server_default
+        self.rate_limiter = get_rate_limiter()
 
         if chart_type == "user" or chart_type == "server":
             self.chart_options = ["Messages", "Voice Activity", "Invites"]
@@ -382,6 +391,7 @@ class ChartView(discord.ui.View):
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def role_input_callback(self, interaction: discord.Interaction):
         if not self.guild:
             embed = discord.Embed(
@@ -394,28 +404,35 @@ class ChartView(discord.ui.View):
         modal = RoleInputModal(self)
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def all_time_callback(self, interaction: discord.Interaction):
         now = datetime.now(pytz.UTC)
         await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=now, display_text="All Time")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_7_callback(self, interaction: discord.Interaction):
         now = datetime.now(pytz.UTC)
         await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_14_callback(self, interaction: discord.Interaction):
         now = datetime.now(pytz.UTC)
         await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_30_callback(self, interaction: discord.Interaction):
         now = datetime.now(pytz.UTC)
         await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         if not self.guild:
             await interaction.response.send_message("❌ Could not find guild information.", ephemeral=True)
@@ -613,19 +630,43 @@ class ChartView(discord.ui.View):
                 min_date = None
                 max_date = None
 
+                # IMPORTANT: this must look at the table that actually backs
+                # what's being charted. This used to always query
+                # activity_sessions_hourly (Discord "Activity"/game-presence
+                # tracking) no matter the chart type, which is frequently a
+                # much shorter, sparser history than message or voice
+                # tracking. That silently shrank the "All Time" window and
+                # dropped older data from the sum, which is exactly why
+                # "All Time" chart totals could read far lower than the
+                # Server Stats command (which queries message_tracking_hourly
+                # directly over the true full range).
+                earliest_table_map = {
+                    'messages': 'message_tracking_hourly',
+                    'voice_activity': 'voice_session_history_hourly',
+                }
+                earliest_table = earliest_table_map.get(
+                    chart_type, 'message_tracking_hourly')
+
                 try:
                     async with db_stats.pool.acquire() as conn:
-                        # Get earliest recorded date for this guild (or user if user chart)
+                        # Get earliest recorded date for this guild, scoped
+                        # to the relevant target (user/channel/category) so
+                        # the window reflects the actual history of the
+                        # stat being viewed.
+                        earliest_query = f"SELECT MIN(hour) FROM {earliest_table} WHERE guild_id = $1"
+                        earliest_params = [self.guild_id]
+
                         if self.chart_type == "user":
-                            earliest = await conn.fetchval("""
-                                SELECT MIN(hour) FROM activity_sessions_hourly 
-                                WHERE guild_id = $1 AND user_id = $2
-                            """, self.guild_id, self.target_id)
-                        else:
-                            earliest = await conn.fetchval("""
-                                SELECT MIN(hour) FROM activity_sessions_hourly 
-                                WHERE guild_id = $1
-                            """, self.guild_id)
+                            earliest_query += " AND user_id = $2"
+                            earliest_params.append(self.target_id)
+                        elif self.chart_type == "channel":
+                            earliest_query += " AND channel_id = $2"
+                            earliest_params.append(self.target_id)
+                        elif self.chart_type == "category":
+                            earliest_query += " AND category_id = $2"
+                            earliest_params.append(self.target_id)
+
+                        earliest = await conn.fetchval(earliest_query, *earliest_params)
 
                         if earliest:
                             min_date = earliest.replace(tzinfo=None)
@@ -692,6 +733,20 @@ class ChartView(discord.ui.View):
                     if interval_start < start_time_naive:
                         interval_start = start_time_naive
 
+                # IMPORTANT: the underlying q_* queries filter with an
+                # inclusive `hour >= start_time AND hour <= end_time`. Since
+                # interval i's start is exactly interval (i+1)'s end, the
+                # hourly bucket sitting exactly on that shared boundary would
+                # otherwise get pulled into BOTH intervals and counted twice.
+                # That's what made this chart's totals drift away from the
+                # single ranged query the Server Stats command uses. Only the
+                # most recent interval (i == 0) needs the true, unmodified
+                # end_time; every older interval gets its end nudged back by
+                # a microsecond so the shared boundary bucket is only ever
+                # counted once (by the newer interval's inclusive start).
+                query_end = interval_end if i == 0 else interval_end - \
+                    timedelta(microseconds=1)
+
                 # Create date object for display
                 if days_back_equiv == 999999:
                     date_obj = interval_start.date()
@@ -707,7 +762,7 @@ class ChartView(discord.ui.View):
                             user_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_messages', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -719,7 +774,7 @@ class ChartView(discord.ui.View):
                             user_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         seconds = result.get('total_seconds', 0)
                         points.append(
@@ -731,7 +786,7 @@ class ChartView(discord.ui.View):
                             guild_id=self.guild_id,
                             user_id=self.target_id,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_invites', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -743,7 +798,7 @@ class ChartView(discord.ui.View):
                             guild_id=self.guild_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_messages', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -754,7 +809,7 @@ class ChartView(discord.ui.View):
                             guild_id=self.guild_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         seconds = result.get('total_seconds', 0)
                         points.append(
@@ -767,7 +822,7 @@ class ChartView(discord.ui.View):
                             limit=100,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = sum(item.get('valid_invites', 0)
                                     for item in leaderboard)
@@ -781,7 +836,7 @@ class ChartView(discord.ui.View):
                             channel_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_messages', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -793,7 +848,7 @@ class ChartView(discord.ui.View):
                             channel_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         seconds = result.get('total_seconds', 0)
                         points.append(
@@ -807,7 +862,7 @@ class ChartView(discord.ui.View):
                             category_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_messages', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -819,7 +874,7 @@ class ChartView(discord.ui.View):
                             category_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         seconds = result.get('total_seconds', 0)
                         points.append(
@@ -1094,21 +1149,22 @@ class ChartSystem(commands.Cog):
                         timestamps.append(f"{display_time.hour:02d}:00")
             return timestamps
 
-        elif total_days <= 30:
+        # NOTE: We always resolve to a real calendar date/format here rather
+        # than an ambiguous "Week N" label. "Week N" was especially
+        # misleading for "All Time" charts, which can easily span more than
+        # 30 days of history and would otherwise show week numbers instead
+        # of actual dates.
+        elif total_days <= 60:
             fmt = "%b %d"
-        elif total_days <= 180:
-            fmt = "Week %W"
+        elif total_days <= 730:
+            fmt = "%b %d, %Y"
         else:
             fmt = "%b %Y"
 
         timestamps = []
         for i in range(8):
             t = start_time + (delta * (i / 7))
-            if fmt == "Week %W":
-                week_num = t.isocalendar()[1]
-                timestamps.append(f"Week {week_num}")
-            else:
-                timestamps.append(t.strftime(fmt))
+            timestamps.append(t.strftime(fmt))
 
         return timestamps
 

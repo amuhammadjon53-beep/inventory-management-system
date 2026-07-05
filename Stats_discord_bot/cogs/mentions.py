@@ -55,10 +55,7 @@ class UnicodeNormalizer:
 def format_mention_count(count: int) -> str:
     if count < 1000:
         return str(count)
-    elif count < 10000:
-        return f"{count / 1000:.1f}k".rstrip('0').rstrip('.')
-    else:
-        return f"{count // 1000}k"
+    return f"{count / 1000:.1f}k"
 
 
 class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
@@ -66,6 +63,7 @@ class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
         super().__init__(timeout=60)
         self.view = view
         self.total_pages = total_pages
+        self.rate_limiter = get_rate_limiter()
 
         self.page_number = discord.ui.TextInput(
             label=f'Enter page number (1-{total_pages})',
@@ -603,6 +601,7 @@ class MentionsTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.target_channel = target_channel
         self.target_category = target_category
         self.target_user = target_user
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -649,6 +648,7 @@ class MentionsPrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="mentions_prev")
+        self.rate_limiter = get_rate_limiter()
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
@@ -667,6 +667,7 @@ class MentionsNextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
                          emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="mentions_next")
+        self.rate_limiter = get_rate_limiter()
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
@@ -684,6 +685,7 @@ class MentionsPageIndicator(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
                          label="Page 1/1", custom_id="mentions_page", disabled=False)
+        self.rate_limiter = get_rate_limiter()
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
@@ -713,6 +715,7 @@ class MentionsMetricSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select metric type...",
                          options=options, custom_id="mentions_metric")
+        self.rate_limiter = get_rate_limiter()
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
@@ -739,6 +742,7 @@ class MentionsRatioOrderSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select ratio order...",
                          options=options, custom_id="mentions_ratio_order")
+        self.rate_limiter = get_rate_limiter()
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
@@ -757,6 +761,7 @@ class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID',
@@ -814,6 +819,7 @@ class RoleIdButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
                          label="Filter By Role", custom_id="mentions_role_filter")
+        self.rate_limiter = get_rate_limiter()
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
@@ -850,6 +856,7 @@ class MentionsLeaderboardView(discord.ui.View):
         self.target_channel = target_channel
         self.target_category = target_category
         self.target_user = target_user
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -1134,6 +1141,7 @@ class MentionsRatioLeaderboardView(discord.ui.View):
         self.leaderboard_data = []
         self.target_channel = target_channel
         self.target_category = target_category
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -1377,6 +1385,7 @@ class MentionsRatioEmbedView(discord.ui.View):
         self.current_display_text = display_text
         self.target_user = target_user
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
