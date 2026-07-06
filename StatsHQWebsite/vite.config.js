@@ -23,7 +23,7 @@ export default defineConfig({
         commands: path.resolve(__dirname, 'Commands/index.html'),
         server: path.resolve(__dirname, 'Manage Servers/index.html'),
         docs: path.resolve(__dirname, 'docs/index.html'),
-        cart: path.resolve(__dirname, 'Cart/index.html'),
+        cart: path.resolve(__dirname, 'My Cart/index.html'),
         mySubscriptions: path.resolve(__dirname, 'My Subscriptions/index.html'),
         premium: path.resolve(__dirname, 'Premium/index.html'),
         messages: path.resolve(__dirname, 'Dashboard/Messages/index.html'),
