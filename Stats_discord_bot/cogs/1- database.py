@@ -188,7 +188,7 @@ class DatabaseStats(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         print("=" * 50)
-        print("DATABASE STATS COG LOADED - VERSION WITH ENCRYPTED_USERNAME FIX")
+        print("DATABASE STATS COG LOADED")
         print("=" * 50)
         self.bot = bot
         self.pool: Optional[asyncpg.Pool] = None
@@ -337,7 +337,7 @@ class DatabaseStats(commands.Cog):
         self.reconcile_subs_cron = aiocron.crontab(
             '0 20 * * 5',  # 20:00 (8 PM) every Friday
             func=self.reconcile_expired_subscriptions, tz=ZoneInfo('UTC'))
-        print("⏱️CRON JOBS")
+        print("⏱️ CRON JOBS")
         print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, 6 month retention check every friday at 12:00 UTC, reconcile expired subs every friday at 20:00 UTC.")
         print("✅ Periodic tasks: Reset Scheduler every 30 minutes, Server count message every 3 hours.")
 
@@ -798,8 +798,6 @@ class DatabaseStats(commands.Cog):
                             ) AS latest_counts
                         """)
                         total_users = total_users_result or 0
-                        print(
-                            f"📊 Database user total: {total_users:,} users across {total_servers} servers")
                 except Exception as e:
                     print(f"⚠️ Could not get total users from database: {e}")
                     total_users = sum(guild.member_count or len(
@@ -858,8 +856,7 @@ class DatabaseStats(commands.Cog):
             embed.set_footer(text="StatsHQ • Server Count Update")
 
             await channel.send(embed=embed)
-            print(
-                f"📊 Sent server count message: {total_servers:,} servers, {total_users:,} users reported at {current_time}")
+           
 
             # =========================================================
             # UPDATE TOP.GG
@@ -10645,24 +10642,24 @@ class DatabaseStats(commands.Cog):
                     original=e
                 )
             raise
-        
+
     async def q_leaderboard_server_top_users_messages(self, guild_id: int,
-                                                    limit: int = 100000000000,
-                                                    role_filter_ids: Optional[List[int]] = None,
-                                                    start_time: Optional[datetime] = None,
-                                                    end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+                                                      limit: int = 100000000000,
+                                                      role_filter_ids: Optional[List[int]] = None,
+                                                      start_time: Optional[datetime] = None,
+                                                      end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Get server-wide leaderboard of top users by messages using hourly aggregated table."""
         if not self.pool:
             return []
-    
+
         guild = self.bot.get_guild(guild_id)
         if not guild:
             return []
-    
+
         try:
             start_time = ensure_aware(start_time)
             end_time = ensure_aware(end_time)
-    
+
             async with self.pool.acquire() as conn:
                 total_query = '''
                     SELECT COALESCE(SUM(message_count), 0) as total_messages
@@ -10670,14 +10667,14 @@ class DatabaseStats(commands.Cog):
                     WHERE guild_id = $1
                 '''
                 total_params = [guild_id]
-    
+
                 if start_time:
                     total_query += f" AND hour >= ${len(total_params) + 1}"
                     total_params.append(start_time)
                 if end_time:
                     total_query += f" AND hour <= ${len(total_params) + 1}"
                     total_params.append(end_time)
-    
+
                 if role_filter_ids:
                     user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
                     if user_ids:
@@ -10685,20 +10682,20 @@ class DatabaseStats(commands.Cog):
                         total_params.append(user_ids)
                     else:
                         return []
-    
+
                 total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'message_tracking_hourly')
-    
+
                 total_query, total_params = await self._apply_comprehensive_blacklist_filters(
                     guild_id, guild, total_query, total_params, 'message_tracking_hourly',
                     include_users=True, include_channels=True
                 )
-    
+
                 total_row = await conn.fetchrow(total_query, *total_params)
                 total_messages = total_row['total_messages'] or 0
-    
+
                 if total_messages == 0:
                     return []
-    
+
                 query = '''
                     SELECT
                         user_id,
@@ -10709,14 +10706,14 @@ class DatabaseStats(commands.Cog):
                     WHERE guild_id = $1
                 '''
                 params = [guild_id]
-    
+
                 if start_time:
                     query += f" AND hour >= ${len(params) + 1}"
                     params.append(start_time)
                 if end_time:
                     query += f" AND hour <= ${len(params) + 1}"
                     params.append(end_time)
-    
+
                 if role_filter_ids:
                     user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
                     if user_ids:
@@ -10724,29 +10721,29 @@ class DatabaseStats(commands.Cog):
                         params.append(user_ids)
                     else:
                         return []
-    
+
                 query, params = await self._apply_bot_filter(query, params, guild_id, 'message_tracking_hourly')
-    
+
                 query, params = await self._apply_comprehensive_blacklist_filters(
                     guild_id, guild, query, params, 'message_tracking_hourly',
                     include_users=True, include_channels=True
                 )
-    
+
                 query += f'''
                     GROUP BY user_id
                     HAVING SUM(message_count) > 0
                     ORDER BY message_count DESC
                     LIMIT {limit}
                 '''
-    
+
                 rows = await conn.fetch(query, *params)
-    
+
                 result = []
                 for row in rows:
                     user_messages = row['message_count'] or 0
                     percentage = (user_messages / total_messages *
-                                100) if total_messages > 0 else 0
-    
+                                  100) if total_messages > 0 else 0
+
                     result.append({
                         'user_id': row['user_id'],
                         'message_count': user_messages,
@@ -10754,9 +10751,9 @@ class DatabaseStats(commands.Cog):
                         'avg_chars': round(row['avg_chars'] or 0, 2),
                         'percentage': round(percentage, 1)
                     })
-    
+
                 return result
-    
+
         except asyncpg.exceptions.ConnectionDoesNotExistError as e:
             raise DatabaseConnectionError(
                 "Database connection does not exist while fetching server top users messages leaderboard",
@@ -10789,26 +10786,25 @@ class DatabaseStats(commands.Cog):
                     original=e
                 )
             raise
-    
-    
+
     async def q_leaderboard_server_top_users_voice(self, guild_id: int,
-                                                    limit: int = 100000000000,
-                                                    role_filter_ids: Optional[List[int]] = None,
-                                                    start_time: Optional[datetime] = None,
-                                                    end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+                                                   limit: int = 100000000000,
+                                                   role_filter_ids: Optional[List[int]] = None,
+                                                   start_time: Optional[datetime] = None,
+                                                   end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Get server-wide leaderboard of top users by voice time using hourly aggregated table."""
         if not self.pool:
             return []
-    
+
         guild = self.bot.get_guild(guild_id)
         if not guild:
             return []
-    
+
         try:
             start_time = ensure_aware(start_time)
             end_time = ensure_aware(end_time)
             state_flags_filter = await self._get_voice_state_filter_value(guild_id)
-    
+
             async with self.pool.acquire() as conn:
                 query = '''
                     SELECT
@@ -10820,20 +10816,20 @@ class DatabaseStats(commands.Cog):
                     WHERE guild_id = $1
                 '''
                 params = [guild_id]
-    
+
                 if state_flags_filter is not None:
                     query += f" AND state_flags = ${len(params) + 1}"
                     params.append(state_flags_filter)
-    
+
                 if start_time:
                     query += f" AND hour >= ${len(params) + 1}"
                     params.append(start_time)
                 if end_time:
                     query += f" AND hour <= ${len(params) + 1}"
                     params.append(end_time)
-    
+
                 query, params = await self._apply_bot_filter(query, params, guild_id, 'voice_session_history_hourly')
-    
+
                 user_ids = None
                 if role_filter_ids:
                     user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
@@ -10842,57 +10838,57 @@ class DatabaseStats(commands.Cog):
                         params.append(user_ids)
                     else:
                         return []
-    
+
                 query, params = await self._apply_comprehensive_blacklist_filters(
                     guild_id, guild, query, params, 'voice_session_history_hourly',
                     include_users=True, include_channels=True
                 )
-    
+
                 query += '''
                     GROUP BY user_id
                     HAVING SUM(total_seconds) > 0
                     ORDER BY total_seconds DESC
                 '''
-    
+
                 if limit:
                     query += f" LIMIT ${len(params) + 1}"
                     params.append(limit)
-    
+
                 rows = await conn.fetch(query, *params)
-    
+
                 total_query = '''
                     SELECT COALESCE(SUM(total_seconds), 0) as total_seconds
                     FROM voice_session_history_hourly
                     WHERE guild_id = $1
                 '''
                 total_params = [guild_id]
-    
+
                 if state_flags_filter is not None:
                     total_query += f" AND state_flags = ${len(total_params) + 1}"
                     total_params.append(state_flags_filter)
-    
+
                 if start_time:
                     total_query += f" AND hour >= ${len(total_params) + 1}"
                     total_params.append(start_time)
                 if end_time:
                     total_query += f" AND hour <= ${len(total_params) + 1}"
                     total_params.append(end_time)
-    
+
                 total_query, total_params = await self._apply_bot_filter(total_query, total_params, guild_id, 'voice_session_history_hourly')
-    
+
                 if role_filter_ids and user_ids:
                     total_query += f" AND user_id = ANY(${len(total_params) + 1}::bigint[])"
                     total_params.append(user_ids)
-    
+
                 total_row = await conn.fetchrow(total_query, *total_params)
                 total_seconds = total_row['total_seconds'] if total_row else 0
-    
+
                 result = []
                 for row in rows:
                     user_seconds = row['total_seconds'] or 0
                     percentage = (user_seconds / total_seconds *
-                                100) if total_seconds > 0 else 0
-    
+                                  100) if total_seconds > 0 else 0
+
                     result.append({
                         'user_id': row['user_id'],
                         'total_seconds': user_seconds,
@@ -10901,9 +10897,9 @@ class DatabaseStats(commands.Cog):
                         'avg_session': round(row['avg_session'] or 0, 2),
                         'percentage': round(percentage, 1)
                     })
-    
+
                 return result
-    
+
         except asyncpg.exceptions.ConnectionDoesNotExistError as e:
             raise DatabaseConnectionError(
                 "Database connection does not exist while fetching server top users voice leaderboard",
@@ -10936,7 +10932,6 @@ class DatabaseStats(commands.Cog):
                     original=e
                 )
             raise
-
 
     async def q_leaderboard_server_top_categories_messages(self, guild_id: int,
                                                            limit: int = 100000000000,
@@ -14923,9 +14918,7 @@ class DatabaseStats(commands.Cog):
                     LIMIT {limit}
                 '''
 
-                print(f"Query: {query}")
-                print(f"Params count: {len(params)}")
-                print(f"Params: {params}")
+               
 
                 rows = await conn.fetch(query, *params)
 
@@ -20965,8 +20958,6 @@ class DatabaseStats(commands.Cog):
 
     async def sync_user_servers_on_ready(self):
         """When bot starts, sync all servers for all logged-in users."""
-        # ✅ Remove decorator - we'll add internal rate limiting
-
         if not self.pool:
             return
 
@@ -20987,9 +20978,10 @@ class DatabaseStats(commands.Cog):
                 for record in logged_in_users:
                     user_id = int(record['discord_id'])
                     user_servers = []
+                    current_guild_ids = []
 
                     for guild in self.bot.guilds:
-                        # ✅ Rate limit before checking each guild
+                        # Rate limit before checking each guild
                         if not await self.rate_limiter.acquire(RateLimitType.API, timeout=30.0):
                             print(
                                 f"  ⚠️ Rate limited for user {user_id}, waiting...")
@@ -20998,40 +20990,63 @@ class DatabaseStats(commands.Cog):
 
                         member = guild.get_member(user_id)
                         if member:
+                            current_guild_ids.append(str(guild.id))
                             user_servers.append({
                                 'guild_id': str(guild.id),
                                 'guild_name': guild.name,
                                 'guild_icon': guild.icon.key if guild.icon else None,
-                                'member_count': guild.member_count
+                                'member_count': guild.member_count,
+                                # ✅ capture live permissions instead of dropping them
+                                'permissions': str(member.guild_permissions.value)
                             })
                         await asyncio.sleep(0.05)  # Small delay between guilds
 
+                    # ✅ Only remove servers the user is no longer a member of,
+                    # instead of wiping the whole row set (which was destroying
+                    # permissions data every time this job ran).
                     try:
-                        await conn.execute("""
-                            DELETE FROM user_servers WHERE discord_id = $1
-                        """, str(user_id))
+                        if current_guild_ids:
+                            await conn.execute("""
+                                DELETE FROM user_servers
+                                WHERE discord_id = $1 AND guild_id != ALL($2::text[])
+                            """, str(user_id), current_guild_ids)
+                        else:
+                            # User isn't in any guilds the bot can see anymore
+                            await conn.execute("""
+                                DELETE FROM user_servers WHERE discord_id = $1
+                            """, str(user_id))
                     except asyncpg.exceptions.PostgresError as e:
                         raise DatabaseQueryError(
-                            "Failed to clear user servers",
+                            "Failed to clear stale user servers",
                             context={'user_id': user_id},
                             original=e
                         )
 
+                    # ✅ Upsert instead of blind insert, so re-running this job
+                    # doesn't clobber permissions with stale/duplicate rows.
                     for server in user_servers:
                         try:
                             await conn.execute("""
-                                INSERT INTO user_servers (discord_id, guild_id, guild_name, guild_icon, member_count)
-                                VALUES ($1, $2, $3, $4, $5)
+                                INSERT INTO user_servers
+                                    (discord_id, guild_id, guild_name, guild_icon, member_count, permissions)
+                                VALUES ($1, $2, $3, $4, $5, $6)
+                                ON CONFLICT (discord_id, guild_id)
+                                DO UPDATE SET
+                                    guild_name = EXCLUDED.guild_name,
+                                    guild_icon = EXCLUDED.guild_icon,
+                                    member_count = EXCLUDED.member_count,
+                                    permissions = EXCLUDED.permissions
                             """,
                                                str(user_id),
                                                server['guild_id'],
                                                server['guild_name'],
                                                server['guild_icon'],
-                                               server['member_count']
+                                               server['member_count'],
+                                               server['permissions']
                                                )
                         except asyncpg.exceptions.PostgresError as e:
                             raise DatabaseQueryError(
-                                "Failed to insert user server during sync",
+                                "Failed to upsert user server during sync",
                                 context={'user_id': user_id,
                                          'guild_id': server['guild_id']},
                                 original=e
@@ -21072,62 +21087,51 @@ class DatabaseStats(commands.Cog):
 
     async def sync_user_permissions(self):
         """Sync user roles and permissions for all authenticated users"""
-        # ✅ Remove decorator - we'll add internal rate limiting
-
         if not self.db_connected or not self.pool:
             return
-
         try:
             print(f"\n{'='*60}")
             print(
                 f"🔄 Starting user permission sync at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
             print(f"{'='*60}")
-
             async with self.pool.acquire() as conn:
                 users = await conn.fetch("SELECT discord_id FROM users")
-
                 if not users:
                     print("No users found in database")
                     return
-
                 print(f"📊 Syncing permissions for {len(users)} users")
-
                 for user_record in users:
                     user_id = int(user_record['discord_id'])
-
                     for guild in self.bot.guilds:
-                        # ✅ Rate limit before each guild check
+                        # Rate limit before each guild check
                         if not await self.rate_limiter.acquire(RateLimitType.API, timeout=30.0):
                             print(
                                 f"  ⚠️ Rate limited for user {user_id} on guild {guild.name}, waiting...")
                             await asyncio.sleep(5)
                             continue
-
                         member = guild.get_member(user_id)
                         if not member:
                             continue
 
-                        # Update user_servers with current member info
+                        # ✅ actually sync permissions here, alongside member_count
+                        permissions_value = str(member.guild_permissions.value)
                         await conn.execute("""
                             UPDATE user_servers 
-                            SET member_count = $1, last_updated = NOW()
-                            WHERE discord_id = $2 AND guild_id = $3
-                        """, guild.member_count, str(user_id), str(guild.id))
+                            SET member_count = $1, last_updated = NOW(), permissions = $2
+                            WHERE discord_id = $3 AND guild_id = $4
+                        """, guild.member_count, permissions_value, str(user_id), str(guild.id))
 
-                        # Sync current role memberships
+                        # Sync current role memberships (unchanged)
                         for role in member.roles:
                             if role.is_default():
                                 continue
                             await self.redis_batch_write('role_members', {
                                 'params': [guild.id, member.id, role.id, role.name, role.color.value, datetime.now(timezone.utc), member.bot]
                             })
-
                         await asyncio.sleep(0.05)  # Small delay between guilds
-
             print(
                 f"✅ Permission sync completed at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
             print(f"{'='*60}\n")
-
         except Exception as e:
             print(f"❌ Error in permission sync: {e}")
             import traceback
@@ -23092,6 +23096,90 @@ class DatabaseStats(commands.Cog):
             print(f"❌ Failed guild setup for {guild.name}: {e}")
             import traceback
             traceback.print_exc()
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
+        """Insert a newly created channel/category into discord_channels."""
+        if not self.pool or self.shutting_down:
+            return
+
+        channel_type, category_id = self._classify_channel(channel)
+        if channel_type is None:
+            return
+
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO discord_channels (
+                        guild_id, channel_id, channel_name, channel_type,
+                        category_id, is_deleted, last_synced, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, FALSE, NOW(), NOW())
+                    ON CONFLICT (channel_id) DO UPDATE SET
+                        channel_name = EXCLUDED.channel_name,
+                        channel_type = EXCLUDED.channel_type,
+                        category_id = EXCLUDED.category_id,
+                        is_deleted = FALSE,
+                        last_synced = NOW()
+                """, channel.guild.id, channel.id, channel.name, channel_type, category_id)
+        except Exception as e:
+            print(f"❌ Error inserting new channel {channel.id}: {e}")
+
+    @commands.Cog.listener()
+    async def on_guild_channel_update(self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel):
+        """Keep name/category_id in sync on rename or category move."""
+        if not self.pool or self.shutting_down:
+            return
+
+        if before.name == after.name and getattr(before, 'category_id', None) == getattr(after, 'category_id', None):
+            return
+
+        channel_type, category_id = self._classify_channel(after)
+        if channel_type is None:
+            return
+
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE discord_channels
+                    SET channel_name = $2,
+                        category_id = $3,
+                        last_synced = NOW()
+                    WHERE channel_id = $1
+                """, after.id, after.name, category_id)
+        except Exception as e:
+            print(f"❌ Error updating channel {after.id}: {e}")
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
+        """Mark a deleted channel/category as deleted rather than removing the row."""
+        if not self.pool or self.shutting_down:
+            return
+
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE discord_channels
+                    SET is_deleted = TRUE, last_synced = NOW()
+                    WHERE channel_id = $1
+                """, channel.id)
+        except Exception as e:
+            print(f"❌ Error marking channel {channel.id} deleted: {e}")
+
+    def _classify_channel(self, channel):
+        """Shared classification logic, factored out of sync_guild_channels so
+        both the full sync and the per-event listeners stay consistent."""
+        if isinstance(channel, discord.CategoryChannel):
+            return 'category', None
+        elif isinstance(channel, discord.TextChannel):
+            return 'text', channel.category.id if channel.category else None
+        elif isinstance(channel, discord.VoiceChannel):
+            return 'voice', channel.category.id if channel.category else None
+        elif isinstance(channel, discord.StageChannel):
+            return 'stage', channel.category.id if channel.category else None
+        elif isinstance(channel, discord.ForumChannel):
+            return 'forum', channel.category.id if channel.category else None
+        else:
+            return None, None
 
     # ======================================================================
     # METRICS - UNCHANGED

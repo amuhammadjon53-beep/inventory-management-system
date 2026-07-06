@@ -811,13 +811,6 @@ class Blacklist(commands.Cog):
             guild_id = ctx_or_interaction.guild.id
             blacklist_items = await self.get_blacklist(guild_id)
 
-            # Debug print to see what's being returned
-            print(
-                f"Blacklist items for guild {guild_id}: {len(blacklist_items)} items")
-            # Print first 5 items for debugging
-            for item in blacklist_items[:5]:
-                print(f"  Item: {item}")
-
             if not blacklist_items:
                 embed = discord.Embed(
                     title="🛑 Blacklist",
@@ -840,13 +833,12 @@ class Blacklist(commands.Cog):
                 if count > 0 and initial_type == "user":
                     initial_type = t
 
-            print(f"Type counts: {type_counts}")
-            print(f"Initial type selected: {initial_type}")
+            
 
             filtered_items = [
                 item for item in blacklist_items if item.get('type') == initial_type]
 
-            print(f"Filtered items for {initial_type}: {len(filtered_items)}")
+          
 
             type_display = {'user': 'Users', 'channel': 'Channels',
                             'category': 'Categories', 'role': 'Roles'}

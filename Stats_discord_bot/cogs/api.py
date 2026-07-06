@@ -2599,8 +2599,7 @@ class DiscordAPI:
             await asyncio.sleep(0.05)
 
         present_count = sum(1 for v in result.values() if v is not None)
-        print(
-            f"✅ Guild Bulk check complete: Bot present in {present_count}/{len(guild_ids)} guilds")
+        
 
         return result
 
@@ -4820,7 +4819,6 @@ class DatabaseStatsAPI:
     async def get_decrypted_username_from_mentions(self, guild_id: int, user_id: int) -> Optional[str]:
         """Get decrypted username from user_mentions_hourly table."""
         if not self.pool:
-            print(f"DEBUG: No pool for user {user_id}")
             return None
 
         try:
@@ -4830,8 +4828,7 @@ class DatabaseStatsAPI:
                 user_id_int = int(user_id) if not isinstance(
                     user_id, int) else user_id
 
-                print(
-                    f"DEBUG: Querying mentions table for user {user_id_int} in guild {guild_id_int}")
+        
 
                 # First try to get as mentioner (user who sent mentions)
                 row = await conn.fetchrow("""
@@ -4845,19 +4842,12 @@ class DatabaseStatsAPI:
                 """, guild_id_int, user_id_int)
 
                 if row:
-                    print(
-                        f"DEBUG: Found row as mentioner, encrypted_username length: {len(row['encrypted_username']) if row['encrypted_username'] else 0}")
+                    
                     decrypted = self.decrypt_username(
                         row['encrypted_username'])
                     if decrypted:
-                        print(
-                            f"DEBUG: Successfully decrypted as mentioner: {decrypted}")
+                        
                         return decrypted
-                    else:
-                        print(
-                            f"DEBUG: Failed to decrypt mentioner username, raw encrypted: {row['encrypted_username'][:50]}...")
-                else:
-                    print(f"DEBUG: No row found as mentioner")
 
                 # Then try as mentioned user (user who received mentions)
                 row = await conn.fetchrow("""
@@ -4871,19 +4861,12 @@ class DatabaseStatsAPI:
                 """, guild_id_int, user_id_int)
 
                 if row:
-                    print(
-                        f"DEBUG: Found row as mentioned, encrypted_username length: {len(row['encrypted_username']) if row['encrypted_username'] else 0}")
+                    
                     decrypted = self.decrypt_username(
                         row['encrypted_username'])
                     if decrypted:
-                        print(
-                            f"DEBUG: Successfully decrypted as mentioned: {decrypted}")
+                        
                         return decrypted
-                    else:
-                        print(
-                            f"DEBUG: Failed to decrypt mentioned username, raw encrypted: {row['encrypted_username'][:50]}...")
-                else:
-                    print(f"DEBUG: No row found as mentioned")
 
                 # Check if user exists at all in this guild's mentions
                 check_row = await conn.fetchrow("""
@@ -4897,11 +4880,7 @@ class DatabaseStatsAPI:
                     WHERE guild_id = $1 AND (mentioner_user_id = $2 OR mentioned_user_id = $2)
                 """, guild_id_int, user_id_int)
 
-                print(f"DEBUG: User stats - total rows: {check_row['total']}, "
-                      f"as mentioner: {check_row['as_mentioner']}, "
-                      f"as mentioned: {check_row['as_mentioned']}, "
-                      f"has encrypted_username: {check_row['has_mentioner_enc']}, "
-                      f"has encrypted_mentioned_username: {check_row['has_mentioned_enc']}")
+           
 
                 return None
         except Exception as e:
@@ -4911,18 +4890,25 @@ class DatabaseStatsAPI:
             return None
 
     async def get_decrypted_username_from_invites(self, guild_id: int, user_id: int) -> Optional[str]:
-        """Get decrypted username from invite_tracking table."""
+        """Get decrypted username from invite_tracking table.
+
+        NOTE: encrypted_username on this table is NOT always "this user's name" -
+        _buffer_invite_event only ever encrypts ONE side of the join event:
+        the inviter's name when inviter_id != 0, or the invitee's name when
+        inviter_id == 0 (unknown inviter). So when querying by invitee_id, we
+        can only trust encrypted_username on rows where inviter_id = 0 - any
+        row with a known inviter has the INVITER's name in that column, not
+        the invitee's.
+        """
         if not self.pool:
             return None
 
         try:
             async with self.pool.acquire() as conn:
-                guild_id_int = int(guild_id) if not isinstance(
-                    guild_id, int) else guild_id
-                user_id_int = int(user_id) if not isinstance(
-                    user_id, int) else user_id
+                guild_id_int = int(guild_id) if not isinstance(guild_id, int) else guild_id
+                user_id_int = int(user_id) if not isinstance(user_id, int) else user_id
 
-                # Try as inviter first
+                # As inviter: encrypted_username reliably holds THIS user's name
                 row = await conn.fetchrow("""
                     SELECT encrypted_username
                     FROM invite_tracking
@@ -4933,20 +4919,26 @@ class DatabaseStatsAPI:
                 """, guild_id_int, user_id_int)
 
                 if row and row['encrypted_username']:
-                    return self.decrypt_username(row['encrypted_username'])
+                    decrypted = self.decrypt_username(row['encrypted_username'])
+                    if decrypted:
+                        return decrypted
 
-                # Try as invitee if not found as inviter
+                # As invitee: only trust encrypted_username when inviter_id = 0,
+                # since that's the only branch where it was encrypted as the
+                # invitee's own name rather than the inviter's.
                 row = await conn.fetchrow("""
                     SELECT encrypted_username
                     FROM invite_tracking
-                    WHERE guild_id = $1 AND invitee_id = $2
+                    WHERE guild_id = $1 AND invitee_id = $2 AND inviter_id = 0
                     AND encrypted_username IS NOT NULL
                     ORDER BY created_at DESC
                     LIMIT 1
                 """, guild_id_int, user_id_int)
 
                 if row and row['encrypted_username']:
-                    return self.decrypt_username(row['encrypted_username'])
+                    decrypted = self.decrypt_username(row['encrypted_username'])
+                    if decrypted:
+                        return decrypted
 
                 return None
         except Exception as e:
@@ -5102,29 +5094,26 @@ class DatabaseStatsAPI:
     async def get_decrypted_username_any_table(self, guild_id: int, user_id: int, priority_tables: List[str] = None) -> Optional[str]:
         """
         Get decrypted username from any table that has it, in priority order.
-        For mentions, we prioritize the mentions table since we're in the mentions dashboard.
+        Defaults to checking the most frequently-updated tables first (messages,
+        voice, activity) so we surface the freshest name, falling back to
+        sparser event tables (mentions, invites, member_joins/leaves, role_growth)
+        only if the user has no message/voice/activity history at all.
         """
-        # Convert IDs to int at the start
-        guild_id_int = int(guild_id) if not isinstance(
-            guild_id, int) else guild_id
+        guild_id_int = int(guild_id) if not isinstance(guild_id, int) else guild_id
         user_id_int = int(user_id) if not isinstance(user_id, int) else user_id
 
         if priority_tables is None:
-            # Prioritize mentions table first for the mentions dashboard
             priority_tables = [
-                'mentions',   # First try mentions table
                 'messages',
                 'voice',
-                'emojis',
-                'invites',
                 'activity',
+                'emojis',
+                'mentions',
+                'invites',
                 'member_joins',
                 'member_leaves',
                 'role_growth'
             ]
-
-        print(
-            f"DEBUG: Looking for username for user {user_id_int} in guild {guild_id_int}")
 
         for table in priority_tables:
             username = None
@@ -5148,10 +5137,8 @@ class DatabaseStatsAPI:
                 username = await self.get_decrypted_username_from_role_growth(guild_id_int, user_id_int)
 
             if username:
-                print(f"DEBUG: Found username in {table} table: {username}")
                 return username
 
-        print(f"DEBUG: No username found for user {user_id_int} in any table")
         return None
 
     async def batch_get_decrypted_usernames_from_messages(self, guild_id: int, user_ids: List[int]) -> Dict[int, str]:
@@ -5214,7 +5201,10 @@ class DatabaseStatsAPI:
         if not self.pool or not user_ids:
             return {uid: f"User {uid}" for uid in user_ids}
 
-        # Define table-specific queries with proper type casting
+        # Define table-specific queries with proper type casting.
+        # 'mentions' and 'invites' are handled separately below since they need
+        # a two-sided lookup (mentioner/mentioned, inviter/invitee) with priority
+        # ordering, not a single flat query.
         queries = {
             'messages': """
                 SELECT DISTINCT ON (user_id) user_id, encrypted_username
@@ -5236,20 +5226,6 @@ class DatabaseStatsAPI:
                 WHERE guild_id = $1 AND user_id = ANY($2::bigint[])
                 AND encrypted_username IS NOT NULL
                 ORDER BY user_id, hour DESC
-            """,
-            'mentions': """
-                SELECT DISTINCT ON (mentioner_user_id) mentioner_user_id as user_id, encrypted_username
-                FROM user_mentions_hourly
-                WHERE guild_id = $1 AND mentioner_user_id = ANY($2::bigint[])
-                AND encrypted_username IS NOT NULL
-                ORDER BY mentioner_user_id, hour DESC
-            """,
-            'invites': """
-                SELECT DISTINCT ON (inviter_id) inviter_id as user_id, encrypted_username
-                FROM invite_tracking
-                WHERE guild_id = $1 AND inviter_id = ANY($2::bigint[])
-                AND encrypted_username IS NOT NULL
-                ORDER BY inviter_id, created_at DESC
             """,
             'activity': """
                 SELECT DISTINCT ON (user_id) user_id, encrypted_username
@@ -5281,35 +5257,96 @@ class DatabaseStatsAPI:
             """
         }
 
-        if table_name not in queries:
+        if table_name not in queries and table_name not in ('mentions', 'invites'):
             return {uid: f"User {uid}" for uid in user_ids}
 
         try:
             async with self.pool.acquire() as conn:
-                # Convert guild_id to int
-                guild_id_int = int(guild_id) if not isinstance(
-                    guild_id, int) else guild_id
-
-                # Convert all user_ids to integers
-                user_ids_int = [int(uid) if not isinstance(
-                    uid, int) else uid for uid in user_ids]
-
-                rows = await conn.fetch(queries[table_name], guild_id_int, user_ids_int)
+                guild_id_int = int(guild_id) if not isinstance(guild_id, int) else guild_id
+                user_ids_int = [int(uid) if not isinstance(uid, int) else uid for uid in user_ids]
 
                 result = {}
-                for row in rows:
-                    user_id_val = row['user_id']
-                    encrypted = row['encrypted_username']
-                    if encrypted:
-                        decrypted = self.decrypt_username(encrypted)
-                        if decrypted:
-                            result[user_id_val] = decrypted
-                        else:
-                            result[user_id_val] = f"User {user_id_val}"
-                    else:
-                        result[user_id_val] = f"User {user_id_val}"
 
-                # Fill in any missing user_ids
+                if table_name == 'mentions':
+                    # FIX: previously only checked mentioner_user_id, so a user who
+                    # has only ever been @mentioned (never mentioned anyone else)
+                    # fell through to "User {id}" here even though the single-item
+                    # getter (get_decrypted_username_from_mentions) would have found
+                    # their real name via encrypted_mentioned_username. Priority
+                    # matches that single-item getter: mentioner match wins first,
+                    # then mentioned match fills in whoever's still missing.
+                    mentioner_rows = await conn.fetch("""
+                        SELECT DISTINCT ON (mentioner_user_id) mentioner_user_id as user_id, encrypted_username
+                        FROM user_mentions_hourly
+                        WHERE guild_id = $1 AND mentioner_user_id = ANY($2::bigint[])
+                        AND encrypted_username IS NOT NULL
+                        ORDER BY mentioner_user_id, hour DESC
+                    """, guild_id_int, user_ids_int)
+
+                    for row in mentioner_rows:
+                        decrypted = self.decrypt_username(row['encrypted_username'])
+                        if decrypted:
+                            result[row['user_id']] = decrypted
+
+                    still_missing = [uid for uid in user_ids_int if uid not in result]
+                    if still_missing:
+                        mentioned_rows = await conn.fetch("""
+                            SELECT DISTINCT ON (mentioned_user_id) mentioned_user_id as user_id, encrypted_mentioned_username
+                            FROM user_mentions_hourly
+                            WHERE guild_id = $1 AND mentioned_user_id = ANY($2::bigint[])
+                            AND encrypted_mentioned_username IS NOT NULL
+                            ORDER BY mentioned_user_id, hour DESC
+                        """, guild_id_int, still_missing)
+
+                        for row in mentioned_rows:
+                            decrypted = self.decrypt_username(row['encrypted_mentioned_username'])
+                            if decrypted:
+                                result[row['user_id']] = decrypted
+
+                elif table_name == 'invites':
+                    # Mirrors get_decrypted_username_from_invites: encrypted_username
+                    # only reliably names THIS user when they're the inviter, or
+                    # when they're the invitee AND inviter_id = 0 (unknown inviter -
+                    # the only branch where the invitee's own name gets encrypted).
+                    inviter_rows = await conn.fetch("""
+                        SELECT DISTINCT ON (inviter_id) inviter_id as user_id, encrypted_username
+                        FROM invite_tracking
+                        WHERE guild_id = $1 AND inviter_id = ANY($2::bigint[])
+                        AND encrypted_username IS NOT NULL
+                        ORDER BY inviter_id, created_at DESC
+                    """, guild_id_int, user_ids_int)
+
+                    for row in inviter_rows:
+                        decrypted = self.decrypt_username(row['encrypted_username'])
+                        if decrypted:
+                            result[row['user_id']] = decrypted
+
+                    still_missing = [uid for uid in user_ids_int if uid not in result]
+                    if still_missing:
+                        invitee_rows = await conn.fetch("""
+                            SELECT DISTINCT ON (invitee_id) invitee_id as user_id, encrypted_username
+                            FROM invite_tracking
+                            WHERE guild_id = $1 AND invitee_id = ANY($2::bigint[]) AND inviter_id = 0
+                            AND encrypted_username IS NOT NULL
+                            ORDER BY invitee_id, created_at DESC
+                        """, guild_id_int, still_missing)
+
+                        for row in invitee_rows:
+                            decrypted = self.decrypt_username(row['encrypted_username'])
+                            if decrypted:
+                                result[row['user_id']] = decrypted
+
+                else:
+                    rows = await conn.fetch(queries[table_name], guild_id_int, user_ids_int)
+                    for row in rows:
+                        user_id_val = row['user_id']
+                        encrypted = row['encrypted_username']
+                        if encrypted:
+                            decrypted = self.decrypt_username(encrypted)
+                            if decrypted:
+                                result[user_id_val] = decrypted
+
+                # Fill in any missing user_ids with the fallback
                 for user_id_val in user_ids_int:
                     if user_id_val not in result:
                         result[user_id_val] = f"User {user_id_val}"
@@ -12949,17 +12986,15 @@ class DatabaseStatsAPI:
     def decrypt_username(self, encrypted: Optional[str]) -> Optional[str]:
         """Decrypt username if possible."""
         if not encrypted or not self.fernet:
-            print(
-                f"DEBUG decrypt_username: encrypted={encrypted[:50] if encrypted else 'None'}, fernet={self.fernet is not None}")
+            
             return encrypted if encrypted else None
 
         try:
             decrypted = self.fernet.decrypt(encrypted.encode()).decode()
-            print(
-                f"DEBUG decrypt_username: SUCCESS - decrypted to '{decrypted[:20]}...'")
+            
             return decrypted
         except Exception as e:
-            print(f"DEBUG decrypt_username: FAILED - {e}")
+       
             return None
 
     # Replace the standalone get_decrypted_username_from_db function with this:
@@ -20519,13 +20554,21 @@ class DatabaseStatsAPI:
             user_id = message.author.id
             is_bot = message.author.bot
 
+            # FIX: previously only encrypted the mentioned user's name and
+            # stored it under 'encrypted_username', which _bulk_upsert_mention_buckets
+            # wrote into the column meant for the MENTIONER's name - swapping
+            # the two identities for every mention synced via history sync.
+            # Now we capture both names explicitly under their own keys.
+            encrypted_mentioner_username = self.encrypt_username(str(message.author))
+
             for mentioned_user in message.mentions:
                 if mentioned_user.id == user_id:
                     continue
                 mkey = (hour, mentioned_user.id, user_id)
                 mb = mention_buckets.setdefault(mkey, {
                     'mention_count': 0, 'is_bot': is_bot,
-                    'encrypted_username': self.encrypt_username(str(mentioned_user)),
+                    'encrypted_mentioner_username': encrypted_mentioner_username,
+                    'encrypted_mentioned_username': self.encrypt_username(str(mentioned_user)),
                 })
                 mb['mention_count'] += 1
 
@@ -26470,7 +26513,9 @@ async def get_server_real_channels(
     guild_id: str,
     user: Optional[Dict] = Depends(get_current_user)
 ):
-    """Get real channels with blacklist filtering - works for authenticated users or public StatsHQ"""
+    """Get real channels from the discord_channels table with blacklist
+    filtering - works for authenticated users or public StatsHQ. No Discord
+    API calls."""
 
     try:
         try:
@@ -26492,30 +26537,42 @@ async def get_server_real_channels(
                 detail="Authentication required for non-public guilds"
             )
 
-        # Get channels from database cache
-        channels = await db_stats.get_all_channels_for_guild(guild_id_int)
+        # Get channels directly from discord_channels table
+        try:
+            async with db_stats.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT channel_id, channel_name, channel_type, category_id
+                    FROM discord_channels
+                    WHERE guild_id = $1
+                    AND is_deleted = FALSE
+                    AND channel_type != 'category'
+                    ORDER BY channel_name
+                """, guild_id_int)
+        except asyncpg.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch channels from discord_channels",
+                context={'guild_id': guild_id},
+                original=e
+            )
 
-        # Get blacklisted channels for this guild (skip for public? or include?)
+        # Get blacklisted channels for this guild
         blacklists = await db_stats._get_cached_blacklists(guild_id_int)
         blacklisted_channel_ids = set(blacklists['channels'])
 
         # Format response - filter out blacklisted channels
         result = []
-        for ch in channels:
-            channel_id_str = str(ch['channel_id'])
+        for row in rows:
+            channel_id_str = str(row['channel_id'])
 
-            # Skip blacklisted channels
             if channel_id_str in blacklisted_channel_ids:
-
                 continue
 
-            if ch['channel_type'] != 'category':  # Only return actual channels, not categories
-                result.append({
-                    "id": channel_id_str,
-                    "name": ch['channel_name'],
-                    "type": ch['channel_type'],
-                    "category_id": str(ch['category_id']) if ch.get('category_id') else None,
-                })
+            result.append({
+                "id": channel_id_str,
+                "name": row['channel_name'],
+                "type": row['channel_type'],
+                "category_id": str(row['category_id']) if row['category_id'] else None,
+            })
 
         return result
 
@@ -26536,47 +26593,14 @@ async def get_server_real_channels(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@fastapi_rate_limited(RateLimitType.API, timeout=30.0)
-async def get_server_real_channels_fallback(guild_id: str, user: Optional[Dict]):
-    """Fallback: Get channels directly from Discord API"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {'Authorization': f'Bot {DISCORD_TOKEN}'}
-            url = f"{DISCORD_API_BASE}/guilds/{guild_id}/channels"
-
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    return []
-
-                channels_data = await resp.json()
-
-                # Categorize channels by type
-                channels = []
-                for channel in channels_data:
-                    channel_type = db_stats.classify_channel_type(
-                        channel['type'])
-
-                    if channel_type != "category":  # Skip categories
-                        channels.append({
-                            "id": str(channel['id']),
-                            "name": channel['name'],
-                            "type": channel_type,
-                            "category_id": str(channel.get('parent_id')) if channel.get('parent_id') else None,
-                            "position": channel.get('position', 0)
-                        })
-
-                return channels
-    except Exception as e:
-        logger.error(f"Error in channels fallback: {e}")
-        return []
-
-
 @app.get("/api/server/real-categories")
 async def get_server_real_categories(
     guild_id: str,
     user: Optional[Dict] = Depends(get_current_user)
 ):
-    """Get real categories with blacklist filtering - works for authenticated users or public StatsHQ"""
+    """Get real categories from the discord_channels table with blacklist
+    filtering - works for authenticated users or public StatsHQ. No Discord
+    API calls."""
 
     try:
         try:
@@ -26598,8 +26622,23 @@ async def get_server_real_categories(
                 detail="Authentication required for non-public guilds"
             )
 
-        # Get categories from database cache
-        categories = await db_stats.get_all_categories_for_guild(guild_id_int)
+        # Get categories directly from discord_channels table
+        try:
+            async with db_stats.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT channel_id, channel_name
+                    FROM discord_channels
+                    WHERE guild_id = $1
+                    AND is_deleted = FALSE
+                    AND channel_type = 'category'
+                    ORDER BY channel_name
+                """, guild_id_int)
+        except asyncpg.PostgresError as e:
+            raise DatabaseQueryError(
+                "Failed to fetch categories from discord_channels",
+                context={'guild_id': guild_id},
+                original=e
+            )
 
         # Get blacklisted categories
         blacklists = await db_stats._get_cached_blacklists(guild_id_int)
@@ -26607,17 +26646,15 @@ async def get_server_real_categories(
 
         # Format response - filter out blacklisted categories
         result = []
-        for cat in categories:
-            category_id_str = str(cat['category_id'])
+        for row in rows:
+            category_id_str = str(row['channel_id'])
 
-            # Skip blacklisted categories
             if category_id_str in blacklisted_category_ids:
-
                 continue
 
             result.append({
                 "id": category_id_str,
-                "name": cat['category_name'],
+                "name": row['channel_name'],
                 "position": 0
             })
 
@@ -26640,36 +26677,6 @@ async def get_server_real_categories(
         logger.error(
             f"Unexpected error in get_server_real_categories: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@fastapi_rate_limited(RateLimitType.API, timeout=30.0)
-async def get_server_real_categories_fallback(guild_id: str, user: Optional[Dict]):
-    """Fallback: Get categories directly from Discord API"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {'Authorization': f'Bot {DISCORD_TOKEN}'}
-            url = f"{DISCORD_API_BASE}/guilds/{guild_id}/channels"
-
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    return []
-
-                channels_data = await resp.json()
-
-                # Filter only categories (type 4)
-                categories = []
-                for channel in channels_data:
-                    if channel['type'] == 4:  # Category type
-                        categories.append({
-                            "id": str(channel['id']),
-                            "name": channel['name'],
-                            "position": channel.get('position', 0)
-                        })
-
-                return categories
-    except Exception as e:
-        logger.error(f"Error in categories fallback: {e}")
-        return []
 
 
 @app.get("/api/server/real-roles")
@@ -42299,16 +42306,21 @@ async def activity_server_timeseries(request: ActivityTimeseriesRequest):
     """
     Get daily timeseries data for top activities in a server with timezone support.
     Returns data points for each day in the range, with values for each activity.
-    Perfect for multi-line charts showing activity trends over time.
     """
     try:
         guild_id_int = int(request.guild_id)
-
-        # Get timezone from request or default to UTC
         timezone_str = getattr(request, 'timezone_str', 'UTC')
 
         async with db_stats.pool.acquire() as conn:
-            # Step 1: Get the top activities overall (to determine which lines to show)
+            user_ids = None
+            if request.role_filter_ids:
+                user_ids = await db_stats._get_users_with_roles(request.guild_id, request.role_filter_ids)
+                if not user_ids:
+                    return []
+
+            # ------------------------------------------------------------
+            # Step 1: Top activities overall (determines which lines to show)
+            # ------------------------------------------------------------
             top_activities_query = """
                 SELECT
                     display_name,
@@ -42322,21 +42334,14 @@ async def activity_server_timeseries(request: ActivityTimeseriesRequest):
             top_params = [guild_id_int]
             param_index = 2
 
-            if request.role_filter_ids:
-                user_ids = await db_stats._get_users_with_roles(request.guild_id, request.role_filter_ids)
-                if user_ids:
-                    placeholders = [
-                        f"${param_index + i}" for i in range(len(user_ids))]
-                    top_activities_query += f" AND user_id IN ({', '.join(placeholders)})"
-                    top_params.extend(user_ids)
-                    param_index += len(user_ids)
-                else:
-                    return []
+            if user_ids:
+                top_activities_query += f" AND user_id = ANY(${param_index}::bigint[])"
+                top_params.append(user_ids)
+                param_index += 1
 
             if request.start_time and request.end_time:
                 top_activities_query += f" AND hour >= ${param_index} AND hour <= ${param_index + 1}"
-                top_params.append(request.start_time)
-                top_params.append(request.end_time)
+                top_params.extend([request.start_time, request.end_time])
                 param_index += 2
             elif request.start_time:
                 top_activities_query += f" AND hour >= ${param_index}"
@@ -42355,11 +42360,11 @@ async def activity_server_timeseries(request: ActivityTimeseriesRequest):
                 top_activities_query, top_params, request.guild_id, 'activity_sessions_hourly'
             )
 
-            top_activities_query += """
+            top_activities_query += f"""
                 GROUP BY display_name, activity_type
                 ORDER BY total_duration DESC
-                LIMIT $"""
-            top_activities_query += str(param_index)
+                LIMIT ${param_index}
+            """
             top_params.append(request.limit)
 
             top_activities = await conn.fetch(top_activities_query, *top_params)
@@ -42367,9 +42372,14 @@ async def activity_server_timeseries(request: ActivityTimeseriesRequest):
             if not top_activities:
                 return []
 
-            # Step 2: Get the date range
+            activity_names = [row['display_name'] for row in top_activities]
+            activity_types = [row['activity_type'] for row in top_activities]
+
+            # ------------------------------------------------------------
+            # Step 2: Date range
+            # ------------------------------------------------------------
             date_range_query = """
-                SELECT 
+                SELECT
                     MIN(DATE(hour AT TIME ZONE 'UTC' AT TIME ZONE $2)) as min_date,
                     MAX(DATE(hour AT TIME ZONE 'UTC' AT TIME ZONE $2)) as max_date
                 FROM activity_sessions_hourly
@@ -42378,17 +42388,14 @@ async def activity_server_timeseries(request: ActivityTimeseriesRequest):
             date_params = [guild_id_int, timezone_str]
             param_index = 3
 
-            if request.role_filter_ids and user_ids:
-                placeholders = [
-                    f"${param_index + i}" for i in range(len(user_ids))]
-                date_range_query += f" AND user_id IN ({', '.join(placeholders)})"
-                date_params.extend(user_ids)
-                param_index += len(user_ids)
+            if user_ids:
+                date_range_query += f" AND user_id = ANY(${param_index}::bigint[])"
+                date_params.append(user_ids)
+                param_index += 1
 
             if request.start_time and request.end_time:
                 date_range_query += f" AND hour >= ${param_index} AND hour <= ${param_index + 1}"
-                date_params.append(request.start_time)
-                date_params.append(request.end_time)
+                date_params.extend([request.start_time, request.end_time])
                 param_index += 2
             elif request.start_time:
                 date_range_query += f" AND hour >= ${param_index}"
@@ -42411,97 +42418,98 @@ async def activity_server_timeseries(request: ActivityTimeseriesRequest):
             min_date = date_row['min_date']
             max_date = date_row['max_date']
 
-            # Generate all dates in the range
-            current_date = min_date
             all_dates = []
+            current_date = min_date
             while current_date <= max_date:
                 all_dates.append(current_date)
                 current_date += timedelta(days=1)
 
-            # Step 3: Get daily data for each activity
-            result = []
-            activity_names = [{'display_name': act['display_name'], 'activity_type': act['activity_type']}
-                              for act in top_activities]
+            # ------------------------------------------------------------
+            # Step 3: ONE grouped query for every day + every top activity,
+            # instead of one query per day. Uses a two-array unnest to match
+            # (display_name, activity_type) pairs without per-item placeholders.
+            # ------------------------------------------------------------
+            bulk_query = """
+                SELECT
+                    DATE(ash.hour AT TIME ZONE 'UTC' AT TIME ZONE $2) as day,
+                    ash.display_name,
+                    ash.activity_type,
+                    COALESCE(SUM(ash.total_duration_seconds), 0) as total_duration_seconds,
+                    COALESCE(SUM(ash.session_count), 0) as session_count,
+                    COUNT(DISTINCT ash.user_id) as user_count
+                FROM activity_sessions_hourly ash
+                JOIN unnest($3::text[], $4::text[]) AS want(display_name, activity_type)
+                    ON ash.display_name = want.display_name
+                   AND ash.activity_type = want.activity_type
+                WHERE ash.guild_id = $1
+            """
+            bulk_params = [guild_id_int, timezone_str, activity_names, activity_types]
+            param_index = 5
 
+            if user_ids:
+                bulk_query += f" AND ash.user_id = ANY(${param_index}::bigint[])"
+                bulk_params.append(user_ids)
+                param_index += 1
+
+            if request.start_time and request.end_time:
+                bulk_query += f" AND ash.hour >= ${param_index} AND ash.hour <= ${param_index + 1}"
+                bulk_params.extend([request.start_time, request.end_time])
+                param_index += 2
+            elif request.start_time:
+                bulk_query += f" AND ash.hour >= ${param_index}"
+                bulk_params.append(request.start_time)
+                param_index += 1
+            elif request.end_time:
+                bulk_query += f" AND ash.hour <= ${param_index}"
+                bulk_params.append(request.end_time)
+                param_index += 1
+            elif request.days:
+                bulk_query += f" AND ash.hour >= NOW() - INTERVAL '1 day' * ${param_index}"
+                bulk_params.append(request.days)
+                param_index += 1
+
+            bulk_query, bulk_params = await db_stats._apply_bot_filter(
+                bulk_query, bulk_params, request.guild_id, 'activity_sessions_hourly'
+            )
+
+            bulk_query += " GROUP BY day, ash.display_name, ash.activity_type"
+
+            try:
+                bulk_rows = await conn.fetch(bulk_query, *bulk_params)
+            except Exception as e:
+                logger.error(f"Error fetching bulk timeseries data: {e}")
+                bulk_rows = []
+
+            # Index results by (day, display_name, activity_type) for O(1) lookup
+            values_by_day = {}
+            for row in bulk_rows:
+                day_key = row['day'].isoformat()
+                act_key = f"{row['display_name']}_{row['activity_type']}"
+                values_by_day.setdefault(day_key, {})[act_key] = {
+                    'duration': row['total_duration_seconds'] or 0,
+                    'sessions': row['session_count'] or 0,
+                    'users': row['user_count'] or 0
+                }
+
+            # ------------------------------------------------------------
+            # Step 4: build the response, filling zeros for missing combos
+            # ------------------------------------------------------------
+            result = []
             for date in all_dates:
                 date_str = date.isoformat()
-                next_date = date + timedelta(days=1)
-
-                daily_query = f"""
-                    SELECT
-                        display_name,
-                        activity_type,
-                        COALESCE(SUM(total_duration_seconds), 0) as total_duration_seconds,
-                        COALESCE(SUM(session_count), 0) as session_count,
-                        COUNT(DISTINCT user_id) as user_count
-                    FROM activity_sessions_hourly
-                    WHERE guild_id = $1
-                    AND hour >= $2
-                    AND hour < $3
-                """
-                daily_params = [guild_id_int, date, next_date]
-                param_index = 4
-
-                if request.role_filter_ids and user_ids:
-                    placeholders = [
-                        f"${param_index + i}" for i in range(len(user_ids))]
-                    daily_query += f" AND user_id IN ({', '.join(placeholders)})"
-                    daily_params.extend(user_ids)
-                    param_index += len(user_ids)
-
-                if activity_names:
-                    conditions = []
-                    for i, act in enumerate(activity_names):
-                        display_param_idx = param_index + (i * 2)
-                        type_param_idx = param_index + (i * 2) + 1
-                        conditions.append(
-                            f"(display_name = ${display_param_idx} AND activity_type = ${type_param_idx})")
-                        daily_params.append(act['display_name'])
-                        daily_params.append(act['activity_type'])
-
-                    daily_query += " AND (" + " OR ".join(conditions) + ")"
-
-                daily_query, daily_params = await db_stats._apply_bot_filter(
-                    daily_query, daily_params, request.guild_id, 'activity_sessions_hourly'
-                )
-
-                daily_query += " GROUP BY display_name, activity_type"
-
-                try:
-                    daily_rows = await conn.fetch(daily_query, *daily_params)
-                except Exception as e:
-                    logger.error(
-                        f"Error fetching daily data for {date_str}: {e}")
-                    daily_rows = []
-
-                day_values = {}
-                for row in daily_rows:
-                    key = f"{row['display_name']}_{row['activity_type']}"
-                    day_values[key] = {
-                        'duration': row['total_duration_seconds'] or 0,
-                        'sessions': row['session_count'] or 0,
-                        'users': row['user_count'] or 0
-                    }
+                day_values = values_by_day.get(date_str, {})
 
                 day_activities = []
-                for act in activity_names:
-                    key = f"{act['display_name']}_{act['activity_type']}"
-                    if key in day_values:
-                        day_activities.append({
-                            'display_name': act['display_name'],
-                            'activity_type': act['activity_type'],
-                            'total_duration_seconds': day_values[key]['duration'],
-                            'session_count': day_values[key]['sessions'],
-                            'user_count': day_values[key]['users']
-                        })
-                    else:
-                        day_activities.append({
-                            'display_name': act['display_name'],
-                            'activity_type': act['activity_type'],
-                            'total_duration_seconds': 0,
-                            'session_count': 0,
-                            'user_count': 0
-                        })
+                for name, atype in zip(activity_names, activity_types):
+                    key = f"{name}_{atype}"
+                    v = day_values.get(key)
+                    day_activities.append({
+                        'display_name': name,
+                        'activity_type': atype,
+                        'total_duration_seconds': v['duration'] if v else 0,
+                        'session_count': v['sessions'] if v else 0,
+                        'user_count': v['users'] if v else 0
+                    })
 
                 result.append({
                     'date': date_str,

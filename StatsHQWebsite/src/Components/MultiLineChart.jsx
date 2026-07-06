@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   LineChart,
   Line,
@@ -11,10 +11,11 @@ import {
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
-// Predefined colors for up to 10 lines
+// Predefined colors for up to 10 lines (used ONLY as a fallback when a line
+// doesn't specify its own `color`)
 const LINE_COLORS = [
   '#ff6b6b', // red
-  '#4ecdc4', // teal
+  '#00b894', // green (was teal '#4ecdc4')
   '#ffe66d', // yellow
   '#c3447a', // pink
   '#6c5ce7', // purple
@@ -24,6 +25,46 @@ const LINE_COLORS = [
   '#0984e3', // blue
   '#a29bfe'  // lavender
 ];
+
+// Resolve the color for a given line: prefer the explicit color passed in
+// via the `lines` prop, fall back to the palette by index.
+const getLineColor = (line, index) => line.color || LINE_COLORS[index % LINE_COLORS.length];
+
+// IMPORTANT: this must live OUTSIDE the MultiLineChart function body.
+// If it's declared inside the component, React gets a brand-new component
+// reference on every render, which makes Recharts tear down and remount
+// every single dot SVG node on every re-render (e.g. every time you hover
+// a legend chip). With multiple charts on screen and up to 90 days of data
+// per line, that remount churn is what eventually pins the CPU and gets
+// you the "this page is slowing down Firefox" warning.
+const CustomDot = (props) => {
+  const { cx, cy, dataKey, index, onDotClick, selectedIndex } = props;
+
+  if (!cx || !cy) return null;
+
+  const isSelected = selectedIndex === index;
+
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      r={isSelected ? 6 : 0}
+      fill="#aa00ff"
+      stroke="#ffffff"
+      strokeWidth={2}
+      style={{
+        cursor: 'pointer',
+        filter: isSelected ? 'drop-shadow(0 0 8px rgba(170, 0, 255, 0.6))' : 'none',
+        transition: 'all 0.2s ease',
+        outline: 'none'
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onDotClick?.(dataKey, props.payload, index);
+      }}
+    />
+  );
+};
 
 // Helper function to truncate text
 const truncateText = (text, maxLength = 30) => {
@@ -47,6 +88,14 @@ const MultiLineChart = ({
   const [showExportMenu, setShowExportMenu] = useState(false);
   const chartRef = useRef(null);
   const exportButtonRef = useRef(null);
+  const hasAnimatedRef = useRef({});
+  // These refs let the memoized dot renderer below read "live" state at
+  // click/render time without needing selectedPoints (or the click handler)
+  // in its dependency array — keeping its identity 100% stable across
+  // re-renders, which is what stops Recharts from remounting every dot.
+  const selectedPointsRef = useRef(selectedPoints);
+  selectedPointsRef.current = selectedPoints;
+  const hiddenLinesRef = useRef({});
 
   // Check if mobile on mount and on resize
   useEffect(() => {
@@ -203,6 +252,20 @@ const MultiLineChart = ({
       }
     }));
   };
+  const handlePointClickRef = useRef(handlePointClick);
+  handlePointClickRef.current = handlePointClick;
+
+  // A single stable dot-renderer shared across every <Line>. Empty deps
+  // means this function's identity never changes across re-renders, so
+  // Recharts reconciles existing dot nodes instead of tearing them all
+  // down and remounting them on every hover/click/state change.
+  const renderDot = useCallback((dotProps) => (
+    <CustomDot
+      {...dotProps}
+      selectedIndex={selectedPointsRef.current[dotProps.dataKey]?.index}
+      onDotClick={(dataKey, payload, index) => handlePointClickRef.current(dataKey, payload, index)}
+    />
+  ), []);
 
   // Export functions
   const exportToCSV = async () => {
@@ -385,36 +448,6 @@ const MultiLineChart = ({
   const dataLength = data?.length || 0;
   const visibleIndices = getVisibleTickIndices(dataLength);
 
-  // Custom dot component that's clickable
-  const CustomDot = (props) => {
-    const { cx, cy, payload, dataKey, index } = props;
-    
-    if (!cx || !cy) return null;
-    
-    const isSelected = selectedPoints[dataKey]?.index === index;
-    
-    return (
-      <circle
-        cx={cx}
-        cy={cy}
-        r={isSelected ? 6 : 0}
-        fill="#aa00ff"
-        stroke="#ffffff"
-        strokeWidth={2}
-        style={{ 
-          cursor: 'pointer',
-          filter: isSelected ? 'drop-shadow(0 0 8px rgba(170, 0, 255, 0.6))' : 'none',
-          transition: 'all 0.2s ease',
-          outline: 'none'
-        }}
-        onClick={(e) => {
-          e.stopPropagation();
-          handlePointClick(dataKey, payload, index);
-        }}
-      />
-    );
-  };
-
   return (
     <div 
       ref={chartRef}
@@ -560,6 +593,7 @@ const MultiLineChart = ({
           const isHovered = hoveredLine === line.dataKey;
           const isHidden = hiddenLines[line.dataKey];
           const selectedPoint = selectedPoints[line.dataKey];
+          const color = getLineColor(line, index);
           
           // Apply character limit based on device
           const maxNameLength = isMobile ? 20 : 30;
@@ -577,7 +611,7 @@ const MultiLineChart = ({
                   gap: '6px',
                   padding: '4px 10px',
                   backgroundColor: isHovered ? '#2a2a2a' : '#222222',
-                  border: `1.5px solid ${isHidden ? '#444444' : LINE_COLORS[index % LINE_COLORS.length]}`,
+                  border: `1.5px solid ${isHidden ? '#444444' : color}`,
                   borderRadius: '6px',
                   cursor: 'pointer',
                   transition: 'all 0.2s ease',
@@ -588,7 +622,7 @@ const MultiLineChart = ({
                 <div style={{
                   width: '10px',
                   height: '10px',
-                  backgroundColor: LINE_COLORS[index % LINE_COLORS.length],
+                  backgroundColor: color,
                   borderRadius: '2px',
                 }} />
                 <span style={{ color: isHidden ? '#888888' : '#ffffff', fontSize: isMobile ? '10px' : '11px' }}>
@@ -640,21 +674,29 @@ const MultiLineChart = ({
             
             <Tooltip content={<CustomTooltip />} cursor={false} />
             
-            {lines.slice(0, 10).map((line, index) => (
-              <Line
-                key={line.dataKey}
-                type="monotone"
-                dataKey={line.dataKey}
-                name={line.name}
-                stroke={LINE_COLORS[index % LINE_COLORS.length]}
-                strokeWidth={2}
-                dot={<CustomDot />}
-                activeDot={{ r: 4, fill: LINE_COLORS[index % LINE_COLORS.length] }}
-                hide={hiddenLines[line.dataKey]}
-                isAnimationActive={true}
-                legendType="none"
-              />
-            ))}
+            {lines.slice(0, 10).map((line, index) => {
+              const color = getLineColor(line, index);
+              return (
+                <Line
+                  key={line.dataKey}
+                  type="monotone"
+                  dataKey={line.dataKey}
+                  name={line.name}
+                  stroke={color}
+                  strokeWidth={2}
+                  dot={renderDot}
+                  activeDot={{ r: 4, fill: color }}
+                  hide={hiddenLines[line.dataKey]}
+                  // Only animate the initial draw-in, not every re-render
+                  // caused by legend hover, tooltip state, etc. Replaying
+                  // the full entrance animation on every re-render is what
+                  // compounds into the runaway CPU usage over time.
+                  isAnimationActive={hasAnimatedRef.current[line.dataKey] ? false : true}
+                  onAnimationEnd={() => { hasAnimatedRef.current[line.dataKey] = true; }}
+                  legendType="none"
+                />
+              );
+            })}
           </LineChart>
         </ResponsiveContainer>
       </div>

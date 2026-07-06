@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
@@ -13,6 +13,22 @@ const PUBLIC_GUILD_ID = '1424021358680998022';
 
 // PRIVILEGED USERS - bypass all access levels
 const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
+
+// Maximum forecast horizon, in days. The projected-growth charts previously
+// used the *lookback* window (up to 2000/1825 days for "All Time" / custom
+// ranges) as the forecast horizon too, which made the backend compute a
+// multi-year projection on every load and made the page extremely slow.
+// The forecast horizon now scales with the lookback but is capped here.
+const PROJECTION_CAP_DAYS = 90;
+
+// Scales the forecast horizon with the lookback, but never exceeds the cap.
+// "all" and custom-range (where days is null) fall back to the full cap.
+const getProjectionDays = (days) => {
+  if (days !== null && days !== undefined && !isNaN(days)) {
+    return Math.min(days, PROJECTION_CAP_DAYS);
+  }
+  return PROJECTION_CAP_DAYS;
+};
 
 // ============================================
 // ADVANCED CACHING SYSTEM
@@ -734,7 +750,10 @@ const GrowthDashboard = () => {
       setServerStats(newServerStats);
       
       // 3. Fetch projected growth
-      const projectedDays = (days !== null && days !== undefined && !isNaN(days)) ? days : 1825;
+      // Forecast horizon scales with the lookback but is capped at
+      // PROJECTION_CAP_DAYS so "All Time" / large custom ranges don't
+      // trigger a multi-year projection on every load.
+      const projectedDays = getProjectionDays(days);
       const projectedRequestBody = {
         guild_id: currentServer.id,
         days: projectedDays
@@ -835,7 +854,10 @@ const GrowthDashboard = () => {
       
       setRoleStats(newRoleStats);
       
-      const projectedDays = (days !== null && days !== undefined && !isNaN(days)) ? days : 1825;
+      // Forecast horizon scales with the lookback but is capped at
+      // PROJECTION_CAP_DAYS so "All Time" / large custom ranges don't
+      // trigger a multi-year projection on every load.
+      const projectedDays = getProjectionDays(days);
       const projectedRequestBody = {
         guild_id: currentServer.id,
         role_id: selectedRoleId,
@@ -1177,7 +1199,10 @@ const GrowthDashboard = () => {
       setServerStats(newServerStats);
       
       // 3. Fetch projected growth
-      const projectedDays = (days !== null && days !== undefined && !isNaN(days)) ? days : 1825;
+      // Forecast horizon scales with the lookback but is capped at
+      // PROJECTION_CAP_DAYS so "All Time" / large custom ranges don't
+      // trigger a multi-year projection on every load.
+      const projectedDays = getProjectionDays(days);
       const projectedRequestBody = {
         guild_id: currentServer.id,
         days: projectedDays
@@ -1304,7 +1329,10 @@ const GrowthDashboard = () => {
       
       setRoleStats(newRoleStats);
       
-      const projectedDays = (days !== null && days !== undefined && !isNaN(days)) ? days : 1825;
+      // Forecast horizon scales with the lookback but is capped at
+      // PROJECTION_CAP_DAYS so "All Time" / large custom ranges don't
+      // trigger a multi-year projection on every load.
+      const projectedDays = getProjectionDays(days);
       const projectedRequestBody = {
         guild_id: currentServer.id,
         role_id: selectedRoleId,
@@ -1377,30 +1405,41 @@ const GrowthDashboard = () => {
     { value: 'custom-range', label: 'Custom date range' },
   ];
 
-  // Chart data preparation
-  const prepareMemberChartData = () => {
+  // ============================================
+  // MEMOIZED CHART DATA
+  // ============================================
+  // These used to be plain functions (prepareMemberChartData(), etc.)
+  // called directly in JSX. That meant every render — including ones
+  // triggered by hovering a legend chip, opening the export menu, or any
+  // other unrelated state change — rebuilt these arrays from scratch as
+  // brand-new object references. MultiLineChart/Recharts has no way to
+  // know "this is the same data as before"; a new array reference looks
+  // like new data, so it redid all its internal work (and replayed the
+  // draw-in animation) on every incidental re-render. Wrapping these in
+  // useMemo means they're only recalculated when the underlying timeseries
+  // state actually changes.
+
+  const memberChartData = useMemo(() => {
     if (!memberTimeseries.length) return [];
-    
-    const sorted = [...memberTimeseries].sort((a, b) => {
-      return a.date.localeCompare(b.date);
-    });
-    
+
+    const sorted = [...memberTimeseries].sort((a, b) => a.date.localeCompare(b.date));
+
     return sorted.map(point => ({
       date: point.date,
       count: point.count
     }));
-  };
+  }, [memberTimeseries]);
 
-  const prepareJoinsLeavesChartData = () => {
+  const joinsLeavesChartData = useMemo(() => {
     const { joins, leaves } = joinsLeavesTimeseries;
     if (joins.length === 0 && leaves.length === 0) return [];
-    
+
     const dateMap = new Map();
-    
+
     joins.forEach(j => {
       dateMap.set(j.date, { date: j.date, joins: j.count, leaves: 0 });
     });
-    
+
     leaves.forEach(l => {
       const existing = dateMap.get(l.date);
       if (existing) {
@@ -1409,39 +1448,31 @@ const GrowthDashboard = () => {
         dateMap.set(l.date, { date: l.date, joins: 0, leaves: l.count });
       }
     });
-    
-    const sorted = Array.from(dateMap.values()).sort((a, b) => {
-      return a.date.localeCompare(b.date);
-    });
-    
-    return sorted.map(point => ({
-      date: point.date,
-      joins: point.joins,
-      leaves: point.leaves
-    }));
-  };
 
-  const prepareProjectedChartData = () => {
+    return Array.from(dateMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [joinsLeavesTimeseries]);
+
+  const projectedChartData = useMemo(() => {
     const projectedData = projectedTimeseries.data || [];
     if (!projectedData.length) return [];
-    
+
     return projectedData.map(point => ({
       date: point.date,
       joins: point.joins,
       leaves: point.leaves
     }));
-  };
+  }, [projectedTimeseries]);
 
-  const prepareRoleChartData = () => {
+  const roleChartData = useMemo(() => {
     const { added, removed } = roleTimeseries;
     if (added.length === 0 && removed.length === 0) return [];
-    
+
     const dateMap = new Map();
-    
+
     added.forEach(a => {
       dateMap.set(a.date, { date: a.date, added: a.count, removed: 0 });
     });
-    
+
     removed.forEach(r => {
       const existing = dateMap.get(r.date);
       if (existing) {
@@ -1450,28 +1481,20 @@ const GrowthDashboard = () => {
         dateMap.set(r.date, { date: r.date, added: 0, removed: r.count });
       }
     });
-    
-    const sorted = Array.from(dateMap.values()).sort((a, b) => {
-      return a.date.localeCompare(b.date);
-    });
-    
-    return sorted.map(point => ({
-      date: point.date,
-      added: point.added,
-      removed: point.removed
-    }));
-  };
 
-  const prepareRoleProjectedChartData = () => {
+    return Array.from(dateMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [roleTimeseries]);
+
+  const roleProjectedChartData = useMemo(() => {
     const projectedData = roleProjectedTimeseries.data || [];
     if (!projectedData.length) return [];
-    
+
     return projectedData.map(point => ({
       date: point.date,
       added: point.added,
       removed: point.removed
     }));
-  };
+  }, [roleProjectedTimeseries]);
 
   const getDisplayDays = () => {
     if (timePeriod === "all") return "All Time";
@@ -2352,7 +2375,7 @@ const GrowthDashboard = () => {
                             <LoadingChart />
                           ) : memberTimeseries.length > 0 ? (
                             <MultiLineChart
-                              data={prepareMemberChartData()}
+                              data={memberChartData}
                               lines={[
                                 { dataKey: 'count', name: 'Member Count', color: '#aa00ff' }
                               ]}
@@ -2373,7 +2396,7 @@ const GrowthDashboard = () => {
                             <LoadingChart />
                           ) : joinsLeavesTimeseries.joins.length > 0 || joinsLeavesTimeseries.leaves.length > 0 ? (
                             <MultiLineChart
-                              data={prepareJoinsLeavesChartData()}
+                              data={joinsLeavesChartData}
                               lines={[
                                 { dataKey: 'joins', name: 'Joins', color: '#00ff00' },
                                 { dataKey: 'leaves', name: 'Leaves', color: '#ff0000' }
@@ -2389,13 +2412,13 @@ const GrowthDashboard = () => {
                       
                       {/* Projected Growth Chart - GREEN for Joins, RED for Leaves */}
                       <div className="charts-section">
-                        <h2 className="section-title">Projected Growth (Next {getDisplayDays()} Days)</h2>
+                        <h2 className="section-title">Projected Growth (Next {getProjectionDays(getDateRange().days)} Days)</h2>
                         <div className="chart-wrapper">
                           {loadingProjectedChart ? (
                             <LoadingChart />
                           ) : projectedTimeseries.data && projectedTimeseries.data.length > 0 ? (
                             <MultiLineChart
-                              data={prepareProjectedChartData()}
+                              data={projectedChartData}
                               lines={[
                                 { dataKey: 'joins', name: 'Projected Joins', color: '#00ff00' },
                                 { dataKey: 'leaves', name: 'Projected Leaves', color: '#ff0000' }
@@ -2463,7 +2486,7 @@ const GrowthDashboard = () => {
                                 <LoadingChart />
                               ) : roleTimeseries.added.length > 0 || roleTimeseries.removed.length > 0 ? (
                                 <MultiLineChart
-                                  data={prepareRoleChartData()}
+                                  data={roleChartData}
                                   lines={[
                                     { dataKey: 'added', name: 'Additions', color: '#00ff00' },
                                     { dataKey: 'removed', name: 'Removals', color: '#ff0000' }
@@ -2479,13 +2502,13 @@ const GrowthDashboard = () => {
                           
                           {/* Projected Role Growth Chart - GREEN for Additions, RED for Removals */}
                           <div className="charts-section">
-                            <h2 className="section-title">Projected Role Growth (Next {getDisplayDays()} Days)</h2>
+                            <h2 className="section-title">Projected Role Growth (Next {getProjectionDays(getDateRange().days)} Days)</h2>
                             <div className="chart-wrapper">
                               {loadingRoleProjectedChart ? (
                                 <LoadingChart />
                               ) : roleProjectedTimeseries.data && roleProjectedTimeseries.data.length > 0 ? (
                                 <MultiLineChart
-                                  data={prepareRoleProjectedChartData()}
+                                  data={roleProjectedChartData}
                                   lines={[
                                     { dataKey: 'added', name: 'Projected Additions', color: '#00ff00' },
                                     { dataKey: 'removed', name: 'Projected Removals', color: '#ff0000' }
@@ -2866,7 +2889,7 @@ const GrowthDashboard = () => {
                           <LoadingChart />
                         ) : memberTimeseries.length > 0 ? (
                           <MultiLineChart
-                            data={prepareMemberChartData()}
+                            data={memberChartData}
                             lines={[
                               { dataKey: 'count', name: 'Member Count', color: '#aa00ff' }
                             ]}
@@ -2887,7 +2910,7 @@ const GrowthDashboard = () => {
                           <LoadingChart />
                         ) : joinsLeavesTimeseries.joins.length > 0 || joinsLeavesTimeseries.leaves.length > 0 ? (
                           <MultiLineChart
-                            data={prepareJoinsLeavesChartData()}
+                            data={joinsLeavesChartData}
                             lines={[
                               { dataKey: 'joins', name: 'Joins', color: '#00ff00' },
                               { dataKey: 'leaves', name: 'Leaves', color: '#ff0000' }
@@ -2903,13 +2926,13 @@ const GrowthDashboard = () => {
                     
                     {/* Projected Growth Chart - GREEN for Joins, RED for Leaves */}
                     <div className="charts-section">
-                      <h2 className="section-title">Projected Growth (Next {getDisplayDays()} Days)</h2>
+                      <h2 className="section-title">Projected Growth (Next {getProjectionDays(getDateRange().days)} Days)</h2>
                       <div className="chart-wrapper">
                         {loadingProjectedChart ? (
                           <LoadingChart />
                         ) : projectedTimeseries.data && projectedTimeseries.data.length > 0 ? (
                           <MultiLineChart
-                            data={prepareProjectedChartData()}
+                            data={projectedChartData}
                             lines={[
                               { dataKey: 'joins', name: 'Projected Joins', color: '#00ff00' },
                               { dataKey: 'leaves', name: 'Projected Leaves', color: '#ff0000' }
@@ -2977,7 +3000,7 @@ const GrowthDashboard = () => {
                               <LoadingChart />
                             ) : roleTimeseries.added.length > 0 || roleTimeseries.removed.length > 0 ? (
                               <MultiLineChart
-                                data={prepareRoleChartData()}
+                                data={roleChartData}
                                 lines={[
                                   { dataKey: 'added', name: 'Additions', color: '#00ff00' },
                                   { dataKey: 'removed', name: 'Removals', color: '#ff0000' }
@@ -2993,13 +3016,13 @@ const GrowthDashboard = () => {
                         
                         {/* Projected Role Growth Chart - GREEN for Additions, RED for Removals */}
                         <div className="charts-section">
-                          <h2 className="section-title">Projected Role Growth (Next {getDisplayDays()} Days)</h2>
+                          <h2 className="section-title">Projected Role Growth (Next {getProjectionDays(getDateRange().days)} Days)</h2>
                           <div className="chart-wrapper">
                             {loadingRoleProjectedChart ? (
                               <LoadingChart />
                             ) : roleProjectedTimeseries.data && roleProjectedTimeseries.data.length > 0 ? (
                               <MultiLineChart
-                                data={prepareRoleProjectedChartData()}
+                                data={roleProjectedChartData}
                                 lines={[
                                   { dataKey: 'added', name: 'Projected Additions', color: '#00ff00' },
                                   { dataKey: 'removed', name: 'Projected Removals', color: '#ff0000' }
