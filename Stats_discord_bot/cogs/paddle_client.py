@@ -181,7 +181,7 @@ async def list_adjustments(
     return await _request("GET", "/adjustments", params=params)
 
 
-async def generate_checkout_url(
+async def create_transaction(
     price_id: str,
     quantity: int = 1,
     discount_id: Optional[str] = None,
@@ -189,11 +189,21 @@ async def generate_checkout_url(
     customer_id: Optional[str] = None,
     custom_data: Optional[Dict] = None,
 ) -> str:
+    """
+    Create a Paddle transaction for inline/overlay checkout.
+
+    NOTE: we deliberately do NOT set `checkout.url` here. That field tells
+    Paddle "this is the page that will host the Paddle.js overlay" -- Paddle
+    just echoes it back with a `_ptxn` transaction id appended. It is NOT a
+    hosted payment page, and navigating to it directly processes no payment
+    (this was the bug: window.location.href landed on that URL and nothing
+    ever charged). Instead we return the raw transaction id and let the
+    frontend open Paddle's overlay client-side via
+    Paddle.Checkout.open({ transactionId }), with settings.successUrl
+    telling Paddle where to send the user only after payment completes.
+    """
     payload: Dict[str, Any] = {
         "items": [{"price_id": price_id, "quantity": quantity}],
-        "checkout": {
-            "url": "https://statshq.xyz/checkout/success"
-        },
     }
     if discount_id:
         payload["discount_id"] = discount_id
@@ -205,8 +215,7 @@ async def generate_checkout_url(
         payload["custom_data"] = custom_data
 
     resp = await _request("POST", "/transactions", payload)
-    checkout = resp.get("data", {}).get("checkout", {})
-    return checkout.get("url", "")
+    return resp.get("data", {}).get("id", "")
 
 
 async def preview_prices(

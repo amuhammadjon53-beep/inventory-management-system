@@ -59,6 +59,15 @@ const MyCartPage = () => {
 
   const hasFetchedRef = useRef(false);
 
+  useEffect(() => {
+    if (window.Paddle) {
+      if (import.meta.env.VITE_PADDLE_ENV === 'sandbox') {
+        window.Paddle.Environment.set('sandbox');
+      }
+      window.Paddle.Setup({ token: import.meta.env.VITE_PADDLE_CLIENT_TOKEN });
+    }
+  }, []);
+
   // ─── Auth ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     const checkAuth = async () => {
@@ -301,19 +310,24 @@ const MyCartPage = () => {
       const data = await res.json();
 
       if (!res.ok) {
-        // 409 = already subscribed for this guild
         if (res.status === 409) {
           throw new Error('This server already has an active subscription for this module.');
         }
         throw new Error(data.detail || 'Failed to create checkout session');
       }
 
-      if (!data.checkout_url) {
-        throw new Error('No checkout URL returned from server');
+      if (!data.transaction_id) {
+        throw new Error('No transaction returned from server');
       }
 
-      // Redirect to Paddle hosted checkout
-      window.location.href = data.checkout_url;
+      // Open Paddle's overlay right here instead of navigating away
+      window.Paddle.Checkout.open({
+        transactionId: data.transaction_id,
+        settings: {
+          successUrl: `${window.location.origin}/checkout/success/index.html`,
+          displayMode: 'overlay',
+        },
+      });
 
     } catch (err) {
       setError(err.message);
@@ -540,7 +554,7 @@ const MyCartPage = () => {
                       </div>
 
                       <p className="module-footnote">
-                        Billed {isYearly ? 'yearly (2 months free)' : 'monthly'}, excluding VAT
+                        Billed {isYearly ? 'yearly (2 months free)' : 'monthly'}, including VAT
                       </p>
                     </div>
                   );

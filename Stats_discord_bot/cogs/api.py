@@ -46237,7 +46237,8 @@ async def create_checkout(
     user: Optional[Dict] = Depends(get_current_user)
 ):
     """
-    Create a Paddle hosted checkout URL for a single module + guild.
+    Create a Paddle transaction for a single module + guild, to be completed
+    via Paddle.js's inline checkout overlay on the frontend.
 
     Body:
         module_key    (str, required) — e.g. "optimization-plus"
@@ -46245,7 +46246,7 @@ async def create_checkout(
         billing_cycle (str, optional) — "monthly" (default) | "yearly"
 
     Returns:
-        { "checkout_url": "https://..." }
+        { "transaction_id": "txn_..." }
 
     Error codes:
         400 — missing / invalid fields
@@ -46351,10 +46352,32 @@ async def create_checkout(
     paddle_discount_id = os.environ.get(
         discount_env_key) if discount_env_key else None
 
+    # ── 4b. Resolve base price + discount pct for custom_data ─────────────────
+    # (needed so the subscription.created webhook can populate
+    #  subscriptions.base_price_usd / discount_pct / final_price_usd correctly
+    #  instead of defaulting everything to 0)
+    try:
+        module_row = await db_stats.get_module_by_key(module_key)
+        price_col = "monthly_price_usd" if billing_cycle == "monthly" else "yearly_price_usd"
+        base_price = float(module_row[price_col]) if module_row else 0.0
+    except Exception as e:
+        logger.warning(f"Error fetching module pricing for {module_key}: {e}")
+        base_price = 0.0
+
+    try:
+        discount_row = await db_stats.get_discount_for_server_count(tier)
+        discount_pct = float(discount_row["discount_pct"]) / 100 if discount_row else 0.0
+    except Exception as e:
+        logger.warning(f"Error fetching discount for tier {tier}: {e}")
+        discount_pct = 0.0
+
+    final_price = round(base_price * (1 - discount_pct), 2)
+
     logger.info(
         f"Checkout: user={discord_id} module={module_key} guild={guild_id} "
         f"billing={billing_cycle} existing_subs={existing_count} tier={tier} "
-        f"discount_env={discount_env_key or 'none'} discount_id={paddle_discount_id or 'none'}"
+        f"discount_env={discount_env_key or 'none'} discount_id={paddle_discount_id or 'none'} "
+        f"base_price={base_price} discount_pct={discount_pct} final_price={final_price}"
     )
 
     # ── 5. Resolve Paddle customer record ─────────────────────────────────────
@@ -46367,18 +46390,22 @@ async def create_checkout(
         logger.warning(
             f"Could not fetch Paddle customer for {discord_id}: {e}")
         # Non-fatal: Paddle will create a new customer at checkout
-
-    # ── 6. Build checkout URL via Paddle ──────────────────────────────────────
+        
+    # ── 6. Create Paddle transaction ──────────────────────────────────────────
     try:
-        checkout_url = await paddle_client.generate_checkout_url(
+        transaction_id = await paddle_client.create_transaction(
             price_id=paddle_price_id,
             customer_id=paddle_customer_id,       # None → Paddle creates new customer
             discount_id=paddle_discount_id,        # None → full price (tier 1)
             custom_data={
-                "discord_id":    discord_id,
-                "guild_id":      str(guild_id),
-                "module_key":    module_key,
-                "billing_cycle": billing_cycle,
+                "discord_id":       discord_id,
+                "guild_id":         str(guild_id),
+                "module_key":       module_key,
+                "billing_cycle":    billing_cycle,
+                "base_price_usd":   str(base_price),
+                "discount_pct":     str(discount_pct),
+                "final_price_usd":  str(final_price),
+                "server_count":     str(tier),
             },
         )
     except PaddleAPIError as e:
@@ -46391,11 +46418,11 @@ async def create_checkout(
         raise HTTPException(
             status_code=500, detail="Failed to create checkout session")
 
-    if not checkout_url:
+    if not transaction_id:
         raise HTTPException(
-            status_code=500, detail="No checkout URL returned from Paddle")
+            status_code=500, detail="No transaction ID returned from Paddle")
 
-    return {"checkout_url": checkout_url}
+    return {"transaction_id": transaction_id}
 
 
 # DYNAMIC: must be LAST among /modules/* routes

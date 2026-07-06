@@ -4109,9 +4109,9 @@ const ResetDashboard = () => {
         }
       } else {
         setIsAuthenticated(false);
-        setIsPublicMode(true);
-        setHasAccess(true);
-        setCurrentServer({ id: '1424021358680998022', name: 'StatsHQ' });
+        setIsPublicMode(false);
+        setHasAccess(null);
+        setCurrentServer(null);
         setInitialLoadComplete(true);
         setLoadingServers(false);
       }
@@ -4597,6 +4597,28 @@ const ResetDashboard = () => {
       </>
     );
   }
+
+  if (!isAuthenticated) {
+  return (
+    <>
+      <NavBar />
+      <div className="dashboard-page">
+        <DashboardSidebar topOffset={NAVBAR_HEIGHT} />
+        <main className="dashboard-main">
+          <div className="dashboard-content">
+            <div className="no-server">
+              <h2>Please Log In</h2>
+              <p>You need to be logged in to manage statistic resets.</p>
+              <a href={`${API_BASE_URL}/api/auth/discord`} className="login-button">Login with Discord</a>
+            </div>
+          </div>
+          <Footer />
+        </main>
+      </div>
+      <style>{styles}</style>
+    </>
+  );
+}
 
   if (!isAuthenticated && currentServer) {
     // Public mode

@@ -182,8 +182,8 @@ const PremiumPage = () => {
 
               const displayPrice = billingCycle === 'monthly' ? monthly : yearlyEffectiveMonthly;
               const footnote = billingCycle === 'monthly'
-                ? `Billed $${monthly.toFixed(2)} monthly, excluding VAT`
-                : `Billed $${yearlyTotal.toFixed(2)} yearly, excluding VAT`;
+                ? `Billed $${monthly.toFixed(2)} monthly, including VAT`
+                : `Billed $${yearlyTotal.toFixed(2)} yearly, including VAT`;
 
               return (
                 <div key={mod.id} className="module-card">
