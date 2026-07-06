@@ -27,7 +27,7 @@ class HelpView(View):
         # Row 1
         invite_button = Button(
             label="Invite Bot",
-            url="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863601&integration_type=0&scope=bot+applications.commands",
+            url="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=277293943856&integration_type=0&scope=bot+applications.commands",
             style=discord.ButtonStyle.link
         )
         self.add_item(invite_button)
@@ -277,7 +277,7 @@ class BotLinks(commands.Cog):
 
             embed.add_field(
                 name="🤖 Bot Invite Link",
-                value="[Click here to invite the bot to your server!](https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863600&integration_type=0&scope=bot+applications.commands)",
+                value="[Click here to invite the bot to your server!](https://discord.com/oauth2/authorize?client_id=277293943856&permissions=414734863600&integration_type=0&scope=bot+applications.commands)",
                 inline=False
             )
 
@@ -350,7 +350,7 @@ class BotLinks(commands.Cog):
 
             embed.add_field(
                 name="Invite Link",
-                value="[Click here to invite the bot!](https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863600&integration_type=0&scope=bot+applications.commands)",
+                value="[Click here to invite the bot!](https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=277293943856&integration_type=0&scope=bot+applications.commands)",
                 inline=False
             )
 

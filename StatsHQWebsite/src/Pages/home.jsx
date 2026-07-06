@@ -153,7 +153,7 @@ const HomePage = () => {
           {/* Button Container */}
           <div className="button-container">
             <a 
-              href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863601&integration_type=0&scope=bot+applications.commands" 
+              href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=277293943856&integration_type=0&scope=bot+applications.commands" 
               className="btn btn-primary"
               target="_blank"
               rel="noopener noreferrer"
@@ -217,7 +217,7 @@ const HomePage = () => {
                     <p className="feature-description">{feature.description}</p>
                     <div className="feature-button-wrapper">
                       <a 
-                        href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863601&integration_type=0&scope=bot+applications.commands" 
+                        href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=277293943856&integration_type=0&scope=bot+applications.commands" 
                         className="btn btn-primary btn-small"
                         target="_blank"
                         rel="noopener noreferrer"
@@ -237,7 +237,7 @@ const HomePage = () => {
                   <h2 className="cta-title">Take your server to the next level with Stats</h2>
                   <div className="cta-button-wrapper">
                     <a 
-                      href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=414734863601&integration_type=0&scope=bot+applications.commands" 
+                      href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=277293943856&integration_type=0&scope=bot+applications.commands" 
                       className="btn btn-primary btn-large"
                       target="_blank"
                       rel="noopener noreferrer"

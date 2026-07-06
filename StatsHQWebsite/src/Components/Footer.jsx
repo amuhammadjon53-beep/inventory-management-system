@@ -6,7 +6,7 @@ const Footer = () => {
       <div className="footer-container">
         <div className="footer-links">
           <a 
-            href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=352807976696992&integration_type=0&scope=bot+applications.commands" 
+            href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=277293943856&integration_type=0&scope=bot+applications.commands" 
             target="_blank" 
             rel="noopener noreferrer"
             className="footer-link"
