@@ -1,7 +1,7 @@
 // checkout-success/index.html
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { CheckCircle, RefreshCw, Server, Zap } from 'lucide-react';
+import { CheckCircle, RefreshCw, Server, Zap, Lock } from 'lucide-react';
 import NavBar from '../Components/NavBar.jsx';
 import Footer from '../Components/Footer.jsx';
 
@@ -177,7 +177,7 @@ const CheckoutSuccessPage = () => {
         <div className="checkout-page">
           <div className="login-overlay">
             <div className="login-modal">
-              <div className="login-icon">🔒</div>
+              <div className="login-icon"><Lock size={80} color="#aa00ff" strokeWidth={1.5} /></div>
               <h2>Sign in to confirm your subscription</h2>
               <p>Log in with Discord to see your subscription status and manage your account.</p>
               <button className="login-button" onClick={handleLogin}>Log In with Discord</button>
@@ -716,7 +716,8 @@ const allStyles = `
   }
 
   .login-icon { 
-    font-size: 80px; 
+    display: flex;
+    justify-content: center;
     margin-bottom: 30px; 
     animation: pulse 2s infinite; 
   }
@@ -784,8 +785,9 @@ const allStyles = `
       font-size: 26px;
     }
 
-    .login-icon {
-      font-size: 60px;
+    .login-icon svg {
+      width: 60px;
+      height: 60px;
     }
   }
 

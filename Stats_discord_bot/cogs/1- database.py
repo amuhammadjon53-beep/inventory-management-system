@@ -856,7 +856,6 @@ class DatabaseStats(commands.Cog):
             embed.set_footer(text="StatsHQ • Server Count Update")
 
             await channel.send(embed=embed)
-           
 
             # =========================================================
             # UPDATE TOP.GG
@@ -14918,8 +14917,6 @@ class DatabaseStats(commands.Cog):
                     LIMIT {limit}
                 '''
 
-               
-
                 rows = await conn.fetch(query, *params)
 
                 result = []
@@ -22798,7 +22795,7 @@ class DatabaseStats(commands.Cog):
                         # Set Up section
                         embed.add_field(
                             name="🔧 **Set Up**",
-                            value="Stats requires almost ZERO setup. By default: tracking for messages, voice activity and emojis is automatically set up and should work as long as it has the right [permissions](https://statshq.xyz/docs/?page=bot-setup&section=permissions).",
+                            value="Stats requires almost ZERO setup. By default: tracking for messages, voice activity and invites is automatically set up and should work as long as it has the right [permissions](https://statshq.xyz/docs/?page=bot-setup&section=permissions).",
                             inline=False
                         )
 
@@ -22819,14 +22816,14 @@ class DatabaseStats(commands.Cog):
                         # Advanced Tracking section
                         embed.add_field(
                             name="⚙️ **Advanced Tracking**",
-                            value="Need to track other statistics in your server like status activity, invites, mentions, or role/member growth? Follow the advanced tracking setup guide [here](https://statshq.xyz/docs/?page=bot-setup&section=advanced-tracking).",
+                            value="Need to track other statistics in your server like status activity, emojis, mentions, or role/member growth? Follow the advanced tracking setup guide [here](https://statshq.xyz/docs/?page=bot-setup&section=advanced-tracking).",
                             inline=False
                         )
 
                         # Historical Data section
                         embed.add_field(
                             name="🕓 **Historical Data**",
-                            value="Need past data before the bot was added? Use the free history data sync feature and get old messages, emojis or mention statistics following this setup guide [here](https://statshq.xyz/Dashboard/History%20Data%20Sync/).",
+                            value="Need past data before the bot was added? Use the free history data sync feature and get old messages, emojis or mention statistics following this setup guide [here](https://statshq.xyz/docs/?page=history-sync).",
                             inline=False
                         )
 

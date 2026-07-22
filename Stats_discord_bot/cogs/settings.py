@@ -137,6 +137,19 @@ HISTORY_SYNC_PAGE_URL = "https://statshq.xyz/Dashboard/History%20Data%20Sync/"
 # Link used whenever the word "Optimization+" is referenced across the settings menus
 OPTIMIZATION_PREMIUM_URL = "https://statshq.xyz/Premium/"
 
+# Zero-width character used as an invisible spacer field name/value in embeds
+SPACER = "‎"
+
+
+def add_settings_list_fields(embed: discord.Embed, settings_list) -> None:
+    for i, (setting_name, description) in enumerate(settings_list):
+        embed.add_field(name=setting_name, value=description, inline=False)
+        # Only add spacer between items, not after the last one
+        if i < len(settings_list) - 1:
+            # Use a different spacer that's less visually impactful
+            # Korean filler character
+            embed.add_field(name="ㅤ", value="ㅤ", inline=False)
+
 
 # ============================================================
 # SETTINGS COG
@@ -728,11 +741,10 @@ class Settings(commands.Cog):
              "Choose from the 5 levels of permission access."),
         ]
 
-        for setting_name, description in settings_list:
-            embed.add_field(name=setting_name, value=description, inline=False)
+        add_settings_list_fields(embed, settings_list)
 
         embed.add_field(
-            name="‎",
+            name=SPACER,
             value="**Choose a setting from the dropdown menu below**",
             inline=False
         )
@@ -784,11 +796,10 @@ class Settings(commands.Cog):
             ("`Privacy Mode`", "Control whether the bot tracks your data on this server.")
         ]
 
-        for setting_name, description in settings_list:
-            embed.add_field(name=setting_name, value=description, inline=False)
+        add_settings_list_fields(embed, settings_list)
 
         embed.add_field(
-            name="‎",
+            name=SPACER,
             value="**Choose a setting from the dropdown menu below**",
             inline=False
         )
@@ -1012,10 +1023,9 @@ class MainSettingsView(discord.ui.View):
             ("`Command Permission Access Level`",
              "Choose from the 5 levels of permission access."),
         ]
-        for setting_name, description in settings_list:
-            embed.add_field(name=setting_name, value=description, inline=False)
+        add_settings_list_fields(embed, settings_list)
         embed.add_field(
-            name="‎", value="**Choose a setting from the dropdown menu below**", inline=False)
+            name=SPACER, value="**Choose a setting from the dropdown menu below**", inline=False)
 
         view = MainSettingsView(self.cog, self.guild_id)
         await interaction.edit_original_response(embed=embed, view=view)
@@ -1356,10 +1366,9 @@ class UserSettingsView(discord.ui.View):
         settings_list = [
             ("`Privacy Mode`", "Control whether the bot tracks your data on this server.")
         ]
-        for setting_name, description in settings_list:
-            embed.add_field(name=setting_name, value=description, inline=False)
+        add_settings_list_fields(embed, settings_list)
         embed.add_field(
-            name="‎", value="**Choose a setting from the dropdown menu below**", inline=False)
+            name=SPACER, value="**Choose a setting from the dropdown menu below**", inline=False)
 
         view = UserSettingsView(self.cog, self.guild_id, self.user_id)
         await interaction.edit_original_response(embed=embed, view=view)

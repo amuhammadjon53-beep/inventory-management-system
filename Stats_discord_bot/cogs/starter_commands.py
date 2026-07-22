@@ -17,6 +17,11 @@ SUPPORT_SERVER_URL = "https://discord.gg/hreJvck8cK"
 VOTE_URL = "https://top.gg/bot/1481328229909270568/vote"
 NEW_EMBED_COLOR = "#aa00ff"
 
+# Custom emojis (must be from a server the bot is in to render)
+EMOJI_IDEA = "<:idea:1529395072200736879>"
+EMOJI_BUG = "<:bugg:1529395106581450772>"
+EMOJI_HELP = "<:help:1529395038361092157>"
+
 
 class HelpView(View):
     """View class for help command buttons"""
@@ -170,7 +175,7 @@ class FeedbackTypeView(View):
             return False
         return True
 
-    @discord.ui.button(label="Suggestion", emoji="💡", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Suggestion", emoji=EMOJI_IDEA, style=discord.ButtonStyle.primary)
     async def suggestion_button(self, interaction: discord.Interaction, button: Button):
         if not await self._check(interaction):
             return
@@ -178,7 +183,7 @@ class FeedbackTypeView(View):
         view = FeedbackWriteView(self.cog, "suggestion", self.author_id)
         await interaction.response.edit_message(embed=embed, view=view)
 
-    @discord.ui.button(label="Bug Report", emoji="🐛", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Bug Report", emoji=EMOJI_BUG, style=discord.ButtonStyle.danger)
     async def bug_report_button(self, interaction: discord.Interaction, button: Button):
         if not await self._check(interaction):
             return
@@ -330,7 +335,7 @@ class BotLinks(commands.Cog):
             )
 
             embed.add_field(
-                name="🆘 Support Server",
+                name=f"{EMOJI_HELP} Support Server",
                 value="[Click here to join our support server!](https://discord.gg/hreJvck8cK)",
                 inline=False
             )
@@ -355,7 +360,7 @@ class BotLinks(commands.Cog):
             )
 
         elif option == "support":
-            embed.title = "Support Server"
+            embed.title = f"{EMOJI_HELP} Support Server"
             embed.description = "Contact the developers directly and get help!"
 
             embed.add_field(
@@ -631,35 +636,24 @@ class BotLinks(commands.Cog):
         """Page 1: explain the difference between a suggestion and a bug report"""
         embed = discord.Embed(
             title="📝 Feedback",
-            description="We'd love to hear from you! Please choose the type of feedback you'd like to submit by using the buttons below.",
             color=discord.Color.from_str(NEW_EMBED_COLOR)
         )
 
         embed.add_field(
-            name="💡 What is a Suggestion?",
-            value=(
-                "A suggestion is an idea to make the bot better. For example:\n"
-                "• Requesting a **brand new feature**\n"
-                "• Requesting a **new command**\n"
-                "• Asking us to **change or improve an existing feature**"
-            ),
+            name=f"{EMOJI_IDEA} __Suggestion__",
+            value="Propose new features, commands, improvements, etc.",
             inline=False
         )
 
         embed.add_field(
-            name="🐛 What is a Bug Report?",
-            value=(
-                "A bug report is used to flag something that's already broken. For example:\n"
-                "• A command **erroring out** or not responding at all\n"
-                "• The dashboard **showing incorrect or missing data**\n"
-                "• Any other **existing issue** you've noticed within the bot"
-            ),
+            name=f"{EMOJI_BUG} __Bug Report__",
+            value="Report broken commands, dashboard errors, glitches, etc.",
             inline=False
         )
 
         embed.add_field(
-            name="🆘 Need Immediate Help?",
-            value=f"If you have an issue that needs a quicker follow-up, consider joining our [support server]({SUPPORT_SERVER_URL})!",
+            name=f"{EMOJI_HELP} __Need Urgent Help?__",
+            value=f"Join our [Support Discord Server]({SUPPORT_SERVER_URL}) for live assistance.",
             inline=False
         )
 
@@ -670,7 +664,7 @@ class BotLinks(commands.Cog):
         """Page 2: prompt the user to open the modal"""
         is_suggestion = feedback_type == "suggestion"
         embed = discord.Embed(
-            title="💡 Submit a Suggestion" if is_suggestion else "🐛 Submit a Bug Report",
+            title=f"{EMOJI_IDEA} Submit a Suggestion" if is_suggestion else f"{EMOJI_BUG} Submit a Bug Report",
             description=(
                 "Click the button below to open a form where you can type out your "
                 f"{'suggestion' if is_suggestion else 'bug report'}."
@@ -719,7 +713,7 @@ class BotLinks(commands.Cog):
 
         author = interaction.user
         outgoing_embed = discord.Embed(
-            title="💡 New Suggestion" if is_suggestion else "🐛 New Bug Report",
+            title=f"{EMOJI_IDEA} New Suggestion" if is_suggestion else f"{EMOJI_BUG} New Bug Report",
             description=text,
             color=discord.Color.from_str(NEW_EMBED_COLOR),
             timestamp=discord.utils.utcnow()

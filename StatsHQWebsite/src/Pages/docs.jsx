@@ -664,9 +664,9 @@ const DocsPage = () => {
               <li><strong>View Channels</strong> - Required for the bot to view channels and track their statistics.</li>
               <li><strong>Send Messages, Embed Links, Attach files & Read Message History</strong> - All required for the bot to respond to commands on Discord.</li>
               <li><strong>Use application commands</strong> - Slash commands won't work if the bot doesn't have this permission.</li>
-              <li><strong>Manage Server, Create Invite & View Audit Log</strong> - Needed to track invites in the server.</li>
+              <li><strong>Manage Server</strong> - Needed to track invites in the server.</li>
               <li><strong>Manage Roles</strong> - Needed for the upcoming autoroles feature</li>
-              <li><strong>Manage Channels & Connect</strong> - Needed for the upcoming counters feature</li>
+              <li><strong>Manage Channels</strong> - Needed for the upcoming counters feature</li>
             </ul>
 
             <h2 id="prefix-slash" className="docs-heading">Prefix and Slash commands</h2>
@@ -676,7 +676,7 @@ const DocsPage = () => {
 
             <h2 id="advanced-tracking" className="docs-heading">Advanced Tracking</h2>
             <p className="docs-text">
-              By default, tracking for messages, voice activity, and emojis is enabled. In order to track advanced statistics like invites, joins and leaves, role growth, mentions, and status activity, you need to turn them on manually.
+              By default, tracking for messages, voice activity, and invites is enabled. In order to track advanced statistics like emojis, joins and leaves, role growth, mentions, and status activity, you need to turn them on manually.
             </p>
             <p className="docs-text">
               There are two ways to turn on these stat types:

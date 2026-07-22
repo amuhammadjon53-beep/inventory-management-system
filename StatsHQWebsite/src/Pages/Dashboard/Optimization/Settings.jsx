@@ -183,7 +183,7 @@ const styles = `
     content: '';
     position: absolute;
     top: 100%;
-    left: 50%;
+    left: var(--arrow-left, 50%);
     transform: translateX(-50%);
     border-width: 6px;
     border-style: solid;
@@ -640,6 +640,9 @@ const styles = `
 // Portal-based InfoIcon (same pattern as HistorySync)
 // ─────────────────────────────────────────────────────────────
 
+const TOOLTIP_WIDTH = 300;
+const VIEWPORT_MARGIN = 12; // min gap to keep between the tooltip and the screen edge
+
 const InfoIcon = ({ descriptions }) => {
   const [tooltipPos, setTooltipPos] = useState(null);
   const iconRef = React.useRef(null);
@@ -648,7 +651,24 @@ const InfoIcon = ({ descriptions }) => {
   const show = () => {
     if (!iconRef.current) return;
     const rect = iconRef.current.getBoundingClientRect();
-    setTooltipPos({ left: rect.left + rect.width / 2, bottom: window.innerHeight - rect.top + 10 });
+    const iconCenterX = rect.left + rect.width / 2;
+
+    // Ideally the tooltip is centered on the icon, but on narrow/mobile
+    // viewports that pushes it past the screen edge. Clamp the box's left
+    // edge to stay within the viewport, then keep the little arrow pointed
+    // at the icon by offsetting it within the (now shifted) box.
+    const idealLeft = iconCenterX - TOOLTIP_WIDTH / 2;
+    const minLeft = VIEWPORT_MARGIN;
+    const maxLeft = window.innerWidth - TOOLTIP_WIDTH - VIEWPORT_MARGIN;
+    const boxLeft = Math.min(Math.max(idealLeft, minLeft), maxLeft);
+
+    const arrowLeft = Math.min(Math.max(iconCenterX - boxLeft, 16), TOOLTIP_WIDTH - 16);
+
+    setTooltipPos({
+      left: boxLeft,
+      bottom: window.innerHeight - rect.top + 10,
+      arrowLeft,
+    });
   };
 
   const handleMouseEnter = () => { timeoutRef.current = setTimeout(show, 300); };
@@ -657,7 +677,14 @@ const InfoIcon = ({ descriptions }) => {
 
   const tooltip = tooltipPos
     ? ReactDOM.createPortal(
-        <div className="info-tooltip-portal" style={{ bottom: tooltipPos.bottom, left: tooltipPos.left, transform: 'translateX(-50%)' }}>
+        <div
+          className="info-tooltip-portal"
+          style={{
+            bottom: tooltipPos.bottom,
+            left: tooltipPos.left,
+            '--arrow-left': `${tooltipPos.arrowLeft}px`,
+          }}
+        >
           {descriptions.map((desc, idx) => (
             <div key={idx} style={{ marginBottom: idx < descriptions.length - 1 ? '8px' : '0' }}>
               <strong style={{ color: '#aa00ff' }}>{desc.level}:</strong> {desc.description}

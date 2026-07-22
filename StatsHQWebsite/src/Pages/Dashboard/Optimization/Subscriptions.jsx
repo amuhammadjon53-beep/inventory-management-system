@@ -5,7 +5,8 @@ import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
 import {
   Settings, Server, FileText, XCircle, Clock, CheckCircle,
-  Ban, AlertCircle, RotateCcw
+  Ban, AlertCircle, RotateCcw, Lock, X, Info, CreditCard,
+  RefreshCw, History as HistoryIcon
 } from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
@@ -112,7 +113,7 @@ const LoadingSpinner = ({ size = "medium", text = "Loading..." }) => {
 const AccessDenied = () => (
   <div className="dashboard-content">
     <div className="error-message-container">
-      <div className="error-icon">🔒</div>
+      <div className="error-icon"><Lock size={64} color="#ff4444" /></div>
       <h2 className="error-title">Access Denied</h2>
       <p className="error-message">You don't have permission to view subscriptions for this server.</p>
       <p className="error-message">This page requires <strong>Administrator</strong> permission.</p>
@@ -380,16 +381,18 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
   const ToastComponent = () => {
     if (!toast) return null;
     const colors = {
-      success: { bg: "#00b894", icon: "✅" },
-      error: { bg: "#ff7675", icon: "❌" },
-      info: { bg: "#0984e3", icon: "ℹ️" },
+      success: { bg: "#00b894", icon: <CheckCircle size={18} color="#fff" /> },
+      error: { bg: "#ff7675", icon: <XCircle size={18} color="#fff" /> },
+      info: { bg: "#0984e3", icon: <Info size={18} color="#fff" /> },
     };
     const c = colors[toast.type] || colors.info;
     return (
       <div className="toast-message" style={{ backgroundColor: c.bg }}>
-        <span>{c.icon}</span>
+        <span style={{ display: "flex", alignItems: "center" }}>{c.icon}</span>
         <span>{toast.message}</span>
-        <button onClick={() => setToast(null)} style={{ background: "none", border: "none", color: "white", cursor: "pointer", marginLeft: "10px", fontSize: "16px" }}>✕</button>
+        <button onClick={() => setToast(null)} style={{ background: "none", border: "none", color: "white", cursor: "pointer", marginLeft: "10px", display: "flex", alignItems: "center" }}>
+          <X size={16} />
+        </button>
       </div>
     );
   };
@@ -400,7 +403,7 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
       {!loading && subscriptions.length > 0 && (
         <div className="reset-section" style={{ marginBottom: "24px" }}>
           <div className="section-header">
-            <div className="section-icon">💳</div>
+            <div className="section-icon"><CreditCard size={26} color="#aa00ff" /></div>
             <div className="section-title">Server Subscriptions</div>
             <div className="section-subtitle">{currentServer?.name}</div>
           </div>
@@ -446,7 +449,8 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
             onClick={fetchSubscriptions}
             style={{ marginLeft: "auto" }}
           >
-            🔄 Refresh
+            <RefreshCw size={14} />
+            <span>Refresh</span>
           </button>
         </div>
       )}
@@ -454,7 +458,9 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
       {/* Error */}
       {error && (
         <div className="reset-section" style={{ borderColor: "#ff4444" }}>
-          <p style={{ color: "#ff7675" }}>⚠️ {error}</p>
+          <p style={{ color: "#ff7675", display: "flex", alignItems: "center", gap: "8px" }}>
+            <AlertCircle size={16} /> {error}
+          </p>
           <button className="apply-days-btn" style={{ marginTop: "12px" }} onClick={fetchSubscriptions}>
             Retry
           </button>
@@ -471,7 +477,9 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
       {/* Empty */}
       {!loading && !error && subscriptions.length === 0 && (
         <div className="reset-section" style={{ textAlign: "center", padding: "60px" }}>
-          <div style={{ fontSize: "48px", marginBottom: "16px" }}>💳</div>
+          <div style={{ marginBottom: "16px", display: "flex", justifyContent: "center" }}>
+            <CreditCard size={48} color="#555" />
+          </div>
           <h3 style={{ color: "#fff", marginBottom: "8px" }}>No subscriptions</h3>
           <p style={{ color: "#888" }}>This server doesn't have any subscription history yet.</p>
         </div>
@@ -481,7 +489,7 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
       {!loading && activeSubs.length > 0 && (
         <div className="reset-section">
           <div className="section-header">
-            <div className="section-icon">✅</div>
+            <div className="section-icon"><CheckCircle size={22} color="#00b894" /></div>
             <div className="section-title" style={{ fontSize: "18px" }}>Active</div>
             <div className="section-subtitle">{activeSubs.length} subscription{activeSubs.length !== 1 ? "s" : ""}</div>
           </div>
@@ -505,7 +513,7 @@ const SubscriptionsDashboard = ({ currentServer, currentUserId }) => {
       {!loading && historySubs.length > 0 && (
         <div className="reset-section">
           <div className="section-header">
-            <div className="section-icon">🕓</div>
+            <div className="section-icon"><HistoryIcon size={22} color="#888" /></div>
             <div className="section-title" style={{ fontSize: "18px", color: "#888" }}>History</div>
             <div className="section-subtitle">{historySubs.length} record{historySubs.length !== 1 ? "s" : ""}</div>
           </div>
@@ -648,7 +656,7 @@ const SubscriptionsPage = () => {
           <main className="dashboard-main">
             <div className="dashboard-content">
               <div className="error-message-container">
-                <div className="error-icon">🔒</div>
+                <div className="error-icon"><Lock size={64} color="#ff4444" /></div>
                 <h2 className="error-title">Sign In Required</h2>
                 <p className="error-message">Please log in to view subscription management.</p>
                 <a href={`${API_BASE_URL}/api/auth/discord`} className="invite-button" style={{ display: "inline-block", marginTop: "16px" }}>
@@ -748,7 +756,7 @@ const styles = `
     display: flex; align-items: center; gap: 12px;
     margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #1f1f1f;
   }
-  .section-icon { font-size: 26px; }
+  .section-icon { display: flex; align-items: center; }
   .section-title {
     font-size: 20px; font-weight: 600; color: #ffffff; display: flex; align-items: center;
   }
@@ -922,7 +930,7 @@ const styles = `
     text-align: center; padding: 80px 40px; background: #1a1a1a;
     border: 1px solid #ff4444; border-radius: 16px;
   }
-  .error-icon { font-size: 64px; margin-bottom: 20px; }
+  .error-icon { margin-bottom: 20px; display: flex; justify-content: center; }
   .error-title { color: #ff4444; font-size: 28px; font-weight: 600; margin-bottom: 16px; }
   .error-message { color: #aaa; font-size: 15px; margin-top: 8px; }
   .invite-button {
