@@ -337,10 +337,13 @@ class DatabaseStats(commands.Cog):
         self.reconcile_subs_cron = aiocron.crontab(
             '0 20 * * 5',  # 20:00 (8 PM) every Friday
             func=self.reconcile_expired_subscriptions, tz=ZoneInfo('UTC'))
+        self.downgrade_expired_premium_cron = aiocron.crontab(
+            '0 16 * * *', func=self.downgrade_expired_premium_guilds, tz=ZoneInfo('UTC'))
         print("⏱️ CRON JOBS")
-        print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, 6 month retention check every friday at 12:00 UTC, reconcile expired subs every friday at 20:00 UTC.")
+        print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, 6 month retention check every friday at 12:00 UTC, reconcile expired subs every friday at 20:00 UTC, downgrade expired premium guilds daily at 16:00 UTC.")
         print("✅ Periodic tasks: Reset Scheduler every 30 minutes, Server count message every 3 hours.")
 
+    @track_sync_job("Scheduled Reset Check")
     async def check_and_execute_scheduled_resets(self):
         """Check for due reset schedules and execute them - runs every 12 hours."""
         try:
@@ -364,6 +367,7 @@ class DatabaseStats(commands.Cog):
             import traceback
             traceback.print_exc()
 
+    @track_sync_job("Subscription Reconciliation")
     async def reconcile_expired_subscriptions(self):
         """
         Safety net for missed cancellation webhooks: revoke access for any
@@ -388,6 +392,187 @@ class DatabaseStats(commands.Cog):
             )
             print(
                 f"Reconciliation: revoked stale access for sub {sub['paddle_subscription_id']}")
+
+    # ======================================================================
+    # DAILY PREMIUM DOWNGRADE SWEEP
+    # ======================================================================
+    @track_sync_job("Premium Downgrade Sweep")
+    async def downgrade_expired_premium_guilds(self):
+        """
+        Runs daily at 16:00 UTC.
+
+        Finds every guild that has EVER had an Optimization+ subscription
+        (a row in `subscriptions` with module_id = optimization) but does NOT
+        currently have active access, and checks whether that guild is sitting
+        on premium-only configuration left over from when they were subscribed:
+            - more than FREE_STAT_TOGGLE_LIMIT (4) stat types enabled
+            - any active (enabled=TRUE, not completed) reset schedules
+            - a custom default time period instead of the free default (14 days back)
+
+        Guilds that don't exceed any of these limits are left completely
+        untouched. Guilds that currently HAVE active Optimization+ access are
+        skipped entirely, regardless of history.
+        """
+        if not self.pool or not self.db_connected:
+            print("⚠️ Premium downgrade sweep skipped - database not connected")
+            return
+
+        print(f"\n{'='*60}")
+        print(
+            f"🔻 Starting premium downgrade sweep at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        print(f"{'='*60}")
+
+        try:
+            async with self.pool.acquire() as conn:
+                opt_module_id = await conn.fetchval(
+                    "SELECT id FROM modules WHERE module_key = 'optimization'"
+                )
+                if not opt_module_id:
+                    print("⚠️ No 'optimization' module found - skipping sweep")
+                    print(f"{'='*60}\n")
+                    return
+
+                rows = await conn.fetch(
+                    "SELECT DISTINCT guild_id FROM subscriptions WHERE module_id = $1",
+                    opt_module_id
+                )
+                guild_ids = [row['guild_id'] for row in rows]
+        except Exception as e:
+            print(
+                f"❌ Failed to enumerate guilds for premium downgrade sweep: {e}")
+            return
+
+        if not guild_ids:
+            print("ℹ️ No guilds have ever had an Optimization+ subscription")
+            print(f"{'='*60}\n")
+            return
+
+        checked = 0
+        skipped_active = 0
+        downgraded = 0
+        untouched = 0
+        failed = 0
+
+        for guild_id in guild_ids:
+            checked += 1
+            try:
+                has_access = await self.guild_has_module_access(guild_id, 'optimization')
+                if has_access:
+                    skipped_active += 1
+                    continue
+
+                changed = await self._downgrade_guild_to_free_limits(guild_id)
+                if changed:
+                    downgraded += 1
+                else:
+                    untouched += 1
+
+            except Exception as e:
+                failed += 1
+                print(f"  ❌ Error processing guild {guild_id}: {e}")
+                continue
+
+        print(
+            f"\n✅ Premium downgrade sweep complete: {checked} guilds checked, "
+            f"{skipped_active} skipped (still have Optimization+), "
+            f"{downgraded} downgraded, {untouched} already within free limits, {failed} failed")
+        print(f"{'='*60}\n")
+
+    async def _downgrade_guild_to_free_limits(self, guild_id: int) -> bool:
+        """
+        Checks a single guild (already confirmed to lack active Optimization+
+        access) against the three free-tier limits and trims anything that
+        exceeds them. Returns True if any change was made, False if the guild
+        was already within limits and nothing was touched.
+        """
+        if not self.pool:
+            return False
+
+        changed_any = False
+
+        try:
+            async with self.pool.acquire() as conn:
+                # ---- 1. Stat type toggles ----
+                settings_row = await conn.fetchrow("""
+                    SELECT track_messages, track_voice, track_emojis, track_invites,
+                           track_status_activity, track_mentions, track_member_growth,
+                           track_role_growth
+                    FROM settings WHERE guild_id = $1
+                """, guild_id)
+
+                if settings_row:
+                    toggle_cols = [
+                        'track_messages', 'track_voice', 'track_emojis', 'track_invites',
+                        'track_status_activity', 'track_mentions', 'track_member_growth',
+                        'track_role_growth'
+                    ]
+                    enabled_count = sum(
+                        1 for c in toggle_cols if settings_row[c])
+
+                    if enabled_count > 4:  # FREE_STAT_TOGGLE_LIMIT in settings.py
+                        await conn.execute("""
+                            UPDATE settings SET
+                                track_messages = TRUE,
+                                track_voice = TRUE,
+                                track_invites = TRUE,
+                                track_emojis = FALSE,
+                                track_status_activity = FALSE,
+                                track_mentions = FALSE,
+                                track_member_growth = FALSE,
+                                track_role_growth = FALSE
+                            WHERE guild_id = $1
+                        """, guild_id)
+                        changed_any = True
+                        self._invalidate_stat_toggle_cache(guild_id)
+                        print(
+                            f"  🔻 Guild {guild_id}: stat toggles trimmed to free defaults "
+                            f"(messages/voice/invites) - had {enabled_count} enabled")
+
+                # ---- 2. Reset schedules ----
+                disable_result = await conn.execute("""
+                    UPDATE reset_schedules
+                    SET enabled = FALSE
+                    WHERE guild_id = $1 AND completed = FALSE AND enabled = TRUE
+                """, guild_id)
+                disabled_count = int(disable_result.split()[-1]
+                                     ) if disable_result else 0
+                if disabled_count > 0:
+                    changed_any = True
+                    print(
+                        f"  🔻 Guild {guild_id}: disabled {disabled_count} active reset schedule(s)")
+
+                # ---- 3. Default time period ----
+                time_row = await conn.fetchrow("""
+                    SELECT default_time_mode, default_days_back
+                    FROM settings WHERE guild_id = $1
+                """, guild_id)
+
+                if time_row:
+                    mode = time_row['default_time_mode']
+                    days_back = time_row['default_days_back']
+                    is_custom = (mode != 'days_back') or (days_back != 14)
+
+                    if is_custom:
+                        await conn.execute("""
+                            UPDATE settings SET
+                                default_time_mode = 'days_back',
+                                default_days_back = 14,
+                                default_from_date = NULL,
+                                default_to_date = NULL,
+                                default_rolling_type = NULL,
+                                default_rolling_value = NULL
+                            WHERE guild_id = $1
+                        """, guild_id)
+                        changed_any = True
+                        print(
+                            f"  🔻 Guild {guild_id}: default time period reset to 14 days "
+                            f"(was mode='{mode}', days_back={days_back})")
+
+        except Exception as e:
+            print(f"  ❌ Error downgrading guild {guild_id}: {e}")
+            return False
+
+        return changed_any
 
     async def revoke_module_access(self, subscription_id: int) -> int:
         """Revoke all access rows tied to a subscription. Returns affected count."""
@@ -449,7 +634,7 @@ class DatabaseStats(commands.Cog):
     # ======================================================================
     # OLDEST-WEEK ROLLING PURGE (non-Optimization+ guilds only)
     # ======================================================================
-
+    @track_sync_job("6 Month Retention Purge")
     async def purge_oldest_week_for_free_guilds(self):
         """
         Runs every Friday at 12:00 UTC.
@@ -538,6 +723,7 @@ class DatabaseStats(commands.Cog):
             f"{purged} purged, {no_old_data} had nothing to purge, {failed} failed")
         print(f"{'='*60}\n")
 
+    @track_sync_job("Retention Alert Update")
     async def update_retention_alert_windows(self):
         if not self.pool or not self.db_connected:
             return
@@ -980,7 +1166,7 @@ class DatabaseStats(commands.Cog):
         print("❌ All Discords.com authentication methods failed.")
         print("   Please verify your DISCORDS_TOKEN in the .env file.")
 
-    @track_sync_job("channel_sync")
+    @track_sync_job("Channel Sync")
     async def sync_all_guilds_channels_sharded(self):
         """Sync channels for all guilds with sharded approach and rate limiting."""
         if not self.pool or not self.db_connected:
@@ -1041,7 +1227,7 @@ class DatabaseStats(commands.Cog):
         print(f"📊 Total channels/categories synced: {total_channels_synced}")
         return success_count
 
-    @track_sync_job("role_membership_sync")
+    @track_sync_job("Role Membership Sync")
     async def _sync_guild_role_memberships(self, guild: discord.Guild):
         """Actually sync role memberships for a single guild with role names and colors."""
         if not self.pool or not self.db_connected:
@@ -1243,7 +1429,7 @@ class DatabaseStats(commands.Cog):
             f"\n✅ Role membership sync completed: {success_count}/{total_guilds} guilds synced")
         print(f"{'='*60}\n")
 
-    @track_sync_job("activity_streak_update")
+    @track_sync_job("Activity Streak Update")
     async def update_activity_streaks(self):
         """Update activity streaks for all users (uses ActivityTracker cog)."""
         print(f"\n{'='*60}")
@@ -1271,7 +1457,7 @@ class DatabaseStats(commands.Cog):
 
         print(f"{'='*60}\n")
 
-    @track_sync_job("startup_full_sync")
+    @track_sync_job("Startup Full Sync")
     async def startup_sync_all_guilds(self):
         """Run all sync operations sequentially at startup."""
         if not self.pool or not self.db_connected:
@@ -3863,6 +4049,14 @@ class DatabaseStats(commands.Cog):
                 print(
                     "  ✅ Corrected modules.paddle_product_id / price IDs to match live .env")
 
+                await conn.execute('''
+                    UPDATE modules
+                    SET module_key = 'optimization-plus'
+                    WHERE module_key = 'optimization'
+                ''')
+                print(
+                    "  ✅ Corrected modules.module_key 'optimization' -> 'optimization-plus' to match frontend")
+
                 # ----- subscription_guild_switches (audit log for server-switching) -----
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS subscription_guild_switches (
@@ -4145,6 +4339,10 @@ class DatabaseStats(commands.Cog):
             self.oldest_week_purge_cron.stop()
         if hasattr(self, 'retention_alert_cron'):
             self.retention_alert_cron.stop()
+        if hasattr(self, 'reconcile_subs_cron'):
+            self.reconcile_subs_cron.stop()
+        if hasattr(self, 'downgrade_expired_premium_cron'):
+            self.downgrade_expired_premium_cron.stop()
 
         for task in loop_tasks:
             if task and task.is_running():
@@ -20953,6 +21151,7 @@ class DatabaseStats(commands.Cog):
             import traceback
             traceback.print_exc()
 
+    @track_sync_job("Guild Check")
     async def sync_user_servers_on_ready(self):
         """When bot starts, sync all servers for all logged-in users."""
         if not self.pool:
@@ -21082,6 +21281,7 @@ class DatabaseStats(commands.Cog):
                 )
             raise
 
+    @track_sync_job("Permission Sync")
     async def sync_user_permissions(self):
         """Sync user roles and permissions for all authenticated users"""
         if not self.db_connected or not self.pool:

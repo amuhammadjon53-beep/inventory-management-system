@@ -46446,6 +46446,14 @@ async def get_module_by_key(
         logger.error(f"Error in get_module_by_key: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/guild/module-access")
+async def get_guild_module_access_endpoint(guild_id: str, module: str = "optimization"):
+    try:
+        guild_id_int = int(guild_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid guild_id")
+    has_access = await db_stats.guild_has_module_access(guild_id_int, module)
+    return {"has_access": has_access}
 
 # ============================================
 # PADDLE: DISCOUNTS ENDPOINTS

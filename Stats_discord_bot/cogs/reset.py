@@ -454,6 +454,22 @@ class DatabaseManager:
             logger.error(f"Failed to delete schedule {schedule_id}: {e}")
             return False
 
+    async def disable_schedule(self, schedule_id: int, guild_id: int) -> bool:
+        """Disable a schedule without deleting it (used when a guild's
+        Optimization+ subscription has lapsed but the schedule config
+        should be preserved in case they resubscribe)."""
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.execute("""
+                    UPDATE reset_schedules
+                    SET enabled = FALSE
+                    WHERE id = $1 AND guild_id = $2
+                """, schedule_id, guild_id)
+                return result.split()[-1] == '1'
+        except Exception as e:
+            logger.error(f"Failed to disable schedule {schedule_id}: {e}")
+            return False
+
     # ======================================================================
     # SERVER DELETION LOGIC
     # ======================================================================
@@ -3033,11 +3049,32 @@ class ResetStats(commands.Cog):
 
         for schedule in due_schedules:
             schedule_id = schedule['id']
+            guild_id = schedule['guild_id']
+
+            try:
+                has_premium = await _guild_has_optimization(self.bot, guild_id)
+            except Exception as e:
+                logger.error(
+                    f"Failed to check premium status for guild {guild_id} (schedule {schedule_id}): {e}")
+                # Fail safe: don't execute if we can't confirm premium status
+                continue
+
+            if not has_premium:
+                try:
+                    await self.db_manager.disable_schedule(schedule_id, guild_id)
+                    logger.info(
+                        f"Skipped and disabled schedule {schedule_id} (guild {guild_id}): "
+                        f"no active Optimization+ subscription")
+                except Exception as e:
+                    logger.error(
+                        f"Failed to disable expired-premium schedule {schedule_id}: {e}")
+                continue
+
             try:
                 results = await self.db_manager.execute_scheduled_reset(schedule)
                 await self.db_manager.mark_schedule_completed(schedule_id)
                 logger.info(
-                    f"Executed schedule {schedule_id} (guild {schedule['guild_id']}): {results}")
+                    f"Executed schedule {schedule_id} (guild {guild_id}): {results}")
             except Exception as e:
                 logger.error(
                     f"Failed to execute scheduled reset {schedule_id}: {e}")

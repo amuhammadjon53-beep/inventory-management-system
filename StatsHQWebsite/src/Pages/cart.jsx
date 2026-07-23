@@ -54,6 +54,12 @@ const MyCartPage = () => {
   // e.g. { 'optimization-plus': 2 }
   const [existingSubCounts, setExistingSubCounts] = useState({});
 
+  // Which guild IDs already have an ACTIVE subscription for a given module_key.
+  // e.g. { 'optimization-plus': Set('123', '456') }
+  // Used to hide those servers from the assignment dropdown for that item —
+  // assigning one would just 409 at checkout since it's already subscribed.
+  const [subscribedGuildsByModule, setSubscribedGuildsByModule] = useState({});
+
   const [pendingCheckout, setPendingCheckout] = useState(null); // item_id being checked out
   const [removingItem, setRemovingItem]       = useState(null);
 
@@ -97,8 +103,8 @@ const MyCartPage = () => {
     if (!user || hasFetchedRef.current) return;
     hasFetchedRef.current = true;
     fetchCart();
-    fetchServers();
-    fetchExistingSubCounts();
+    fetchServers();      // this now also kicks off fetchGuildModuleAccess once it has the server list
+    fetchExistingSubs();
   }, [user]);
 
   const fetchCart = async ({ silent = false } = {}) => {
@@ -128,13 +134,17 @@ const MyCartPage = () => {
       });
       if (!res.ok) throw new Error(`Failed to fetch servers: ${res.status}`);
       const data = await res.json();
-      setServers(data.map(s => ({
+      const mapped = data.map(s => ({
         ...s,
         id: String(s.id),
         iconUrl: s.icon
           ? `https://cdn.discordapp.com/icons/${s.id}/${s.icon}.png?size=64`
           : 'https://cdn.discordapp.com/embed/avatars/0.png',
-      })));
+      }));
+      setServers(mapped);
+      // Needs the resolved server list, not state (setState is async) —
+      // pass it straight through instead of reading `servers` here.
+      fetchGuildModuleAccess(mapped);
     } catch (err) {
       console.error('Error fetching servers:', err);
     } finally {
@@ -142,7 +152,10 @@ const MyCartPage = () => {
     }
   };
 
-  const fetchExistingSubCounts = async () => {
+  // existingSubCounts[module_key] -> how many of the user's OWN active subs
+  // exist for that module, purely for discount-tier math (matches the
+  // existing_count logic in /api/paddle/checkout).
+  const fetchExistingSubs = async () => {
     try {
       const res = await fetch(`${API_URL}/api/paddle/subscriptions/user/me`, {
         credentials: 'include',
@@ -151,7 +164,6 @@ const MyCartPage = () => {
       if (!res.ok) return;
       const subs = await res.json();
 
-      // Count active subs per module_key
       const counts = {};
       for (const sub of subs) {
         if (sub.status === 'active' && sub.module_key) {
@@ -161,6 +173,51 @@ const MyCartPage = () => {
       setExistingSubCounts(counts);
     } catch (err) {
       console.error('Error fetching existing sub counts:', err);
+    }
+  };
+
+  // subscribedGuildsByModule[module_key] -> Set of guild_ids that ALREADY have
+  // that module active, used to hide those servers from the assignment
+  // dropdown. Deliberately checked at the GUILD level via
+  // /api/paddle/guild-module-access/{guild_id}/active — same question
+  // /api/paddle/checkout's duplicate-sub guard asks — rather than
+  // /subscriptions/user/me, which only reflects subs *you* personally
+  // bought. That matters for two reasons: (1) staff grants are owned by
+  // the guild, not any individual user, so they'd never show up under
+  // "your" subscriptions; (2) a co-admin on a shared server could have
+  // bought the module without you knowing, and it should still be
+  // excluded here.
+  const fetchGuildModuleAccess = async (serverList) => {
+    if (!serverList.length) return;
+    try {
+      const results = await Promise.all(
+        serverList.map(async (s) => {
+          try {
+            const res = await fetch(
+              `${API_URL}/api/paddle/guild-module-access/${s.id}/active`,
+              { credentials: 'include', headers: { 'Cache-Control': 'no-cache' } }
+            );
+            if (!res.ok) return { guildId: s.id, modules: [] };
+            const activeModules = await res.json(); // expected: array of module rows/keys
+            return { guildId: s.id, modules: activeModules };
+          } catch {
+            return { guildId: s.id, modules: [] };
+          }
+        })
+      );
+
+      const guildsByModule = {};
+      for (const { guildId, modules } of results) {
+        for (const m of modules) {
+          const key = typeof m === 'string' ? m : m.module_key;
+          if (!key) continue;
+          if (!guildsByModule[key]) guildsByModule[key] = new Set();
+          guildsByModule[key].add(guildId);
+        }
+      }
+      setSubscribedGuildsByModule(guildsByModule);
+    } catch (err) {
+      console.error('Error fetching guild module access:', err);
     }
   };
 
@@ -348,7 +405,24 @@ const MyCartPage = () => {
     const takenByOtherItems = cart
       .filter(ci => ci.item_id === item.item_id && ci.cart_item_id !== item.cart_item_id && ci.guild_id)
       .map(ci => String(ci.guild_id));
-    return servers.filter(s => !takenByOtherItems.includes(s.id));
+
+    // Exclude servers that already have an ACTIVE subscription for this module —
+    // assigning one of these would just fail at checkout with a 409, so hide them
+    // from the dropdown up front instead of letting the user hit the error.
+    const alreadySubscribed = subscribedGuildsByModule[item.item_id] || new Set();
+
+    return servers.filter(s =>
+      !takenByOtherItems.includes(s.id) && !alreadySubscribed.has(s.id)
+    );
+  };
+
+  // Whether the ONLY reason a server list is empty is because every server
+  // the user administers already has this module — vs. genuinely having no
+  // servers at all. Used to give a more useful empty-state message.
+  const allServersAlreadySubscribed = (item) => {
+    if (servers.length === 0) return false;
+    const alreadySubscribed = subscribedGuildsByModule[item.item_id] || new Set();
+    return servers.every(s => alreadySubscribed.has(s.id));
   };
 
   // ─── Login overlay ─────────────────────────────────────────────────────────
@@ -426,6 +500,7 @@ const MyCartPage = () => {
                   const isYearly       = item.billing_cycle === 'yearly';
                   const assignedServer = getAssignedServer(item);
                   const availServers   = getAvailableServers(item);
+                  const noEligibleServers = allServersAlreadySubscribed(item);
                   const isRemoving     = removingItem === item.item_id;
                   const isCheckingOut  = pendingCheckout === item.item_id;
                   const existing       = existingSubCounts[item.item_id] || 0;
@@ -496,7 +571,9 @@ const MyCartPage = () => {
                                 {serversLoading
                                   ? 'Loading servers...'
                                   : availServers.length === 0
-                                    ? 'No servers available'
+                                    ? (noEligibleServers
+                                        ? 'All your servers already have this module'
+                                        : 'No servers available')
                                     : 'Select a server'}
                               </option>
                               {availServers.map(s => (
@@ -517,6 +594,11 @@ const MyCartPage = () => {
                         {existing === 0 && discount === 0 && (
                           <p className="discount-context-note muted">
                             Add this module to more servers for up to 50% off each
+                          </p>
+                        )}
+                        {noEligibleServers && !assignedServer && (
+                          <p className="discount-context-note muted">
+                            Every server you administer already has {info.name} active — remove it from one first if you want to move it.
                           </p>
                         )}
                       </div>
