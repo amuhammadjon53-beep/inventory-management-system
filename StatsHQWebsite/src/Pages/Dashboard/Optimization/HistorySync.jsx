@@ -1974,7 +1974,7 @@ const HistorySyncPage = () => {
   const fetchOptimizationAccess = useCallback(async (guildId) => {
     if (!guildId) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/api/guild/module-access?guild_id=${guildId}&module=optimization`, {
+      const res = await fetch(`${API_BASE_URL}/api/guild/module-access?guild_id=${guildId}&module=optimization-plus`, {
         credentials: 'include', headers: { 'Accept': 'application/json' },
       });
       if (res.ok) {
