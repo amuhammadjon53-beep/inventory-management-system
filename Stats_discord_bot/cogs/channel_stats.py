@@ -2,10 +2,11 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import asyncio
 import os
+import re
 from PIL import Image, ImageDraw, ImageFont
 import io
 import aiohttp
@@ -19,7 +20,7 @@ from .ratelimiter import RateLimiter, RateLimitType, rate_limited, get_rate_limi
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# USER VERIFICATION FUNCTION WITH RATE LIMITING
+# USER VERIFICATION FUNCTION WITH RATE LIMITING (ONLY FOR FALLBACK)
 @rate_limited(RateLimitType.API, timeout=1.0)
 async def _fetch_user_limited(bot, user_id: int):
     """Rate-limited fetch_user for users who left the server."""
@@ -68,33 +69,44 @@ async def get_user_info(guild: discord.Guild, user_id: int) -> Tuple[Optional[di
 def normalize_text(text: str) -> str:
     """
     Normalize Unicode text to ASCII-compatible form.
-    - Apply Unicode normalization (NFKD) to decompose characters
-    - Remove non-ASCII characters
-    - Preserve semantic meaning (e.g., 𝓖𝓮𝓷𝓮𝓻𝓪𝓵 → General)
     """
     if not text:
         return text
 
-    # Apply Unicode normalization (NFKD)
     normalized = unicodedata.normalize('NFKD', text)
-
-    # Remove non-ASCII characters while preserving spaces and basic punctuation
     ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
 
-    # If the result is empty after removing non-ASCII, return original text
     if not ascii_text.strip():
         return text
 
     return ascii_text
 
 
+# MESSAGE COUNT FORMAT FUNCTION
+def format_message_count(count):
+    """
+    Format message counts. Numbers of 1000 or more are abbreviated with a
+    single decimal place and a "k" suffix (e.g. 31,125 -> "31.1k").
+    Numbers under 1000 are shown as plain integers (no comma separators).
+    """
+    if count is None:
+        count = 0
+
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = 0
+
+    if count >= 1000:
+        value = count / 1000
+        return f"{value:.1f}k"
+
+    return f"{count}"
+
+
 # PERMISSION CHECK FUNCTION
 async def check_command_permission(interaction_or_context, target_user_id: int = None) -> bool:
-    """
-    Check if user has permission to use the command based on guild settings.
-    Returns True if allowed, False if not.
-    """
-    # Get user and guild from either Interaction or Context
+    """Check if user has permission to use the command based on guild settings."""
     if isinstance(interaction_or_context, discord.Interaction):
         user = interaction_or_context.user
         guild = interaction_or_context.guild
@@ -106,11 +118,9 @@ async def check_command_permission(interaction_or_context, target_user_id: int =
     else:
         return True
 
-    # Users with administrator permission always have access
     if user.guild_permissions.administrator:
         return True
 
-    # Get settings cog
     settings_cog = bot.get_cog('Settings')
     if not settings_cog or not getattr(settings_cog, 'initialized', False):
         return True
@@ -137,7 +147,7 @@ async def check_command_permission(interaction_or_context, target_user_id: int =
 
 # IMAGE GENERATION FUNCTIONS
 
-async def generate_channel_stats_image(guild: discord.Guild, channel: discord.TextChannel, channel_data: dict, days_back: int, role_id: str = None, role_name: str = None):
+async def generate_channel_stats_image(guild: discord.Guild, channel: discord.TextChannel, channel_data: dict, display_text: str, role_id: str = None, role_name: str = None):
 
     template_path = BASE_DIR / "assets" / \
         "images" / "text channel stats final png.png"
@@ -347,7 +357,13 @@ async def generate_channel_stats_image(guild: discord.Guild, channel: discord.Te
 
     # Stats numbers
     total_messages = channel_data.get('total', 0)
-    total_hours = days_back * 24
+    total_hours = 24
+    # Parse days from display_text for per-hour calculation
+    if display_text != "All Time":
+        days_match = re.search(r'(\d+)', display_text)
+        if days_match:
+            days = int(days_match.group(1))
+            total_hours = days * 24
     messages_per_hour = total_messages / total_hours if total_hours > 0 else 0
 
     with Pilmoji(image) as pilmoji:
@@ -360,7 +376,7 @@ async def generate_channel_stats_image(guild: discord.Guild, channel: discord.Te
         pilmoji.text((105, 155), messages_per_hour_text,
                      fill="white", font=font_huge)
 
-        total_messages_text = f"{total_messages:,}"
+        total_messages_text = format_message_count(total_messages)
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:
                 if dx != 0 or dy != 0:
@@ -379,8 +395,8 @@ async def generate_channel_stats_image(guild: discord.Guild, channel: discord.Te
                                  fill="black", font=font_small)
         pilmoji.text((70, 424), role_text, fill="white", font=font_small)
 
-    # Time period
-    time_period_text = f"{days_back} days"
+    # Time period - use display_text
+    time_period_text = display_text
     with Pilmoji(image) as pilmoji:
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:
@@ -441,7 +457,7 @@ async def generate_channel_stats_image(guild: discord.Guild, channel: discord.Te
             pilmoji.text(username_pos, fitted_username,
                          fill="white", font=username_font)
 
-            count_text = f"{count:,}"
+            count_text = format_message_count(count)
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
                     if dx != 0 or dy != 0:
@@ -457,23 +473,15 @@ async def generate_channel_stats_image(guild: discord.Guild, channel: discord.Te
 
     with Pilmoji(image) as pilmoji:
         for days, position in time_positions.items():
-            if days <= days_back:
-                count = timeseries_data.get(f'{days}d', 0)
-                count_text = f"{count:,}"
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        if dx != 0 or dy != 0:
-                            pilmoji.text(
-                                (position[0] + dx, position[1] + dy), count_text, fill="black", font=font_large)
-                pilmoji.text(position, count_text,
-                             fill="white", font=font_large)
-            else:
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        if dx != 0 or dy != 0:
-                            pilmoji.text(
-                                (position[0] + dx, position[1] + dy), "0", fill="black", font=font_large)
-                pilmoji.text(position, "0", fill="white", font=font_large)
+            count = timeseries_data.get(f'{days}d', 0)
+            count_text = format_message_count(count)
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx != 0 or dy != 0:
+                        pilmoji.text(
+                            (position[0] + dx, position[1] + dy), count_text, fill="black", font=font_large)
+            pilmoji.text(position, count_text,
+                         fill="white", font=font_large)
 
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
@@ -515,7 +523,7 @@ def format_voice_per_hour(seconds):
         return f"{int(days)}d {int(hours)}h"
 
 
-async def generate_voice_stats_image(guild: discord.Guild, channel: discord.VoiceChannel, voice_data: dict, days_back: int, role_id: str = None, role_name: str = None):
+async def generate_voice_stats_image(guild: discord.Guild, channel: discord.VoiceChannel, voice_data: dict, display_text: str, role_id: str = None, role_name: str = None):
 
     template_path = BASE_DIR / "assets" / "images" / \
         "voice channel stats final png.png"
@@ -725,7 +733,13 @@ async def generate_voice_stats_image(guild: discord.Guild, channel: discord.Voic
 
     # Stats numbers
     total_seconds = voice_data.get('total_seconds', 0)
-    total_hours = days_back * 24
+    total_hours = 24
+    # Parse days from display_text for per-hour calculation
+    if display_text != "All Time":
+        days_match = re.search(r'(\d+)', display_text)
+        if days_match:
+            days = int(days_match.group(1))
+            total_hours = days * 24
     voice_per_hour = total_seconds / total_hours if total_hours > 0 else 0
 
     voice_per_hour_text = format_voice_per_hour(voice_per_hour)
@@ -758,8 +772,8 @@ async def generate_voice_stats_image(guild: discord.Guild, channel: discord.Voic
                                  fill="black", font=font_small)
         pilmoji.text((70, 424), role_text, fill="white", font=font_small)
 
-    # Time period
-    time_period_text = f"{days_back} days"
+    # Time period - use display_text
+    time_period_text = display_text
     with Pilmoji(image) as pilmoji:
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:
@@ -836,23 +850,15 @@ async def generate_voice_stats_image(guild: discord.Guild, channel: discord.Voic
 
     with Pilmoji(image) as pilmoji:
         for days, position in time_positions_dict.items():
-            if days <= days_back:
-                seconds = timeseries_data.get(str(days), 0)
-                voice_time_text = format_voice_time(seconds)
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        if dx != 0 or dy != 0:
-                            pilmoji.text(
-                                (position[0] + dx, position[1] + dy), voice_time_text, fill="black", font=font_large)
-                pilmoji.text(position, voice_time_text,
-                             fill="white", font=font_large)
-            else:
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        if dx != 0 or dy != 0:
-                            pilmoji.text(
-                                (position[0] + dx, position[1] + dy), "0s", fill="black", font=font_large)
-                pilmoji.text(position, "0s", fill="white", font=font_large)
+            seconds = timeseries_data.get(str(days), 0)
+            voice_time_text = format_voice_time(seconds)
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx != 0 or dy != 0:
+                        pilmoji.text(
+                            (position[0] + dx, position[1] + dy), voice_time_text, fill="black", font=font_large)
+            pilmoji.text(position, voice_time_text,
+                         fill="white", font=font_large)
 
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
@@ -861,6 +867,7 @@ async def generate_voice_stats_image(guild: discord.Guild, channel: discord.Voic
 
 
 # STATS TYPE SELECT MENU
+
 class StatsTypeSelectMenu(discord.ui.Select):
     def __init__(self, current_type: str = "messages"):
         options = [
@@ -871,7 +878,9 @@ class StatsTypeSelectMenu(discord.ui.Select):
         ]
         super().__init__(placeholder="Select stats type...", options=options,
                          custom_id="stats_type_select", min_values=1, max_values=1)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not self.values:
             await interaction.response.send_message("❌ No value selected.", ephemeral=True)
@@ -885,18 +894,18 @@ class StatsTypeSelectMenu(discord.ui.Select):
         await interaction.response.defer()
 
         if view.stats_type == "messages":
-            channel_data = await view.cog._get_channel_stats_from_db(view.guild, view.channel, view.current_days, view.selected_role_id)
+            channel_data = await view.cog._get_channel_stats_from_db(view.guild, view.channel, view.current_start_time, view.current_end_time, view.current_days_back_equiv, view.selected_role_id)
             if channel_data is None:
                 channel_data = {'total': 0, 'users': Counter(
                 ), 'timeseries': {}, 'timestamp': time.time()}
-            img_bytes = await generate_channel_stats_image(view.guild, view.channel, channel_data, view.current_days, view.selected_role_id)
+            img_bytes = await generate_channel_stats_image(view.guild, view.channel, channel_data, view.current_display_text, view.selected_role_id)
             filename = "channel_stats.png"
         else:
-            voice_data = await view.cog._get_voice_stats_from_db(view.guild, view.channel, view.current_days, view.selected_role_id)
+            voice_data = await view.cog._get_voice_stats_from_db(view.guild, view.channel, view.current_start_time, view.current_end_time, view.current_days_back_equiv, view.selected_role_id)
             if voice_data is None:
                 voice_data = {'total_seconds': 0, 'users': Counter(
                 ), 'timeseries': {}, 'timestamp': time.time()}
-            img_bytes = await generate_voice_stats_image(view.guild, view.channel, voice_data, view.current_days, view.selected_role_id)
+            img_bytes = await generate_voice_stats_image(view.guild, view.channel, voice_data, view.current_display_text, view.selected_role_id)
             filename = "voice_stats.png"
 
         view._update_buttons()
@@ -905,18 +914,22 @@ class StatsTypeSelectMenu(discord.ui.Select):
 
 
 # ROLE ID MODAL
-class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
-    def __init__(self, cog_instance, original_message_id, guild, channel, stats_type):
+
+class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
+    def __init__(self, cog_instance, original_message_id, guild, channel, stats_type, view):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
         self.channel = channel
         self.stats_type = stats_type
+        self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID', placeholder='e.g., 123456789012345678', min_length=1, max_length=20, required=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_id_input = self.role_id.value.strip()
@@ -940,60 +953,52 @@ class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
 
             await interaction.response.defer()
 
-            if self.original_message_id not in self.cog.active_sessions:
-                await interaction.followup.send("❌ Session expired or not found. Please run the command again.", ephemeral=True)
-                return
+            if self.view:
+                self.view.selected_role_id = role_id
+                self.view.show_time_buttons = False
 
-            session = self.cog.active_sessions[self.original_message_id]
-            view = session.get('view')
-            if not view:
-                await interaction.followup.send("❌ Could not find session view.", ephemeral=True)
-                return
+                # Get role name from database
+                role_name = None
+                if self.view.selected_role_id:
+                    db_stats = self.cog.bot.get_cog('DatabaseStats')
+                    if db_stats and db_stats.pool:
+                        try:
+                            async with db_stats.pool.acquire() as conn:
+                                row = await conn.fetchrow("SELECT role_name FROM current_role_members WHERE role_id = $1 AND guild_id = $2 LIMIT 1", int(self.view.selected_role_id), self.guild.id)
+                                if row:
+                                    role_name = row['role_name']
+                        except:
+                            pass
 
-            view.selected_role_id = role_id if role_id else None
-            view.show_time_buttons = False
-
-            # Get role name from database
-            role_name = None
-            if view.selected_role_id:
-                db_stats = self.cog.bot.get_cog('DatabaseStats')
-                if db_stats and db_stats.pool:
-                    try:
-                        async with db_stats.pool.acquire() as conn:
-                            row = await conn.fetchrow("SELECT role_name FROM current_role_members WHERE role_id = $1 AND guild_id = $2 LIMIT 1", int(view.selected_role_id), self.guild.id)
-                            if row:
-                                role_name = row['role_name']
-                    except:
-                        pass
-
-            if self.stats_type == "messages":
-                channel_data = await self.cog._get_channel_stats_from_db(self.guild, self.channel, view.current_days, view.selected_role_id)
-                if channel_data is None:
-                    channel_data = {'total': 0, 'users': Counter(
-                    ), 'timeseries': {}, 'timestamp': time.time()}
-                img_bytes = await generate_channel_stats_image(self.guild, self.channel, channel_data, view.current_days, view.selected_role_id, role_name)
-                filename = "channel_stats.png"
-            else:
-                voice_data = await self.cog._get_voice_stats_from_db(self.guild, self.channel, view.current_days, view.selected_role_id)
-                if voice_data is None:
-                    voice_data = {'total_seconds': 0, 'users': Counter(
-                    ), 'timeseries': {}, 'timestamp': time.time()}
-                img_bytes = await generate_voice_stats_image(self.guild, self.channel, voice_data, view.current_days, view.selected_role_id, role_name)
-                filename = "voice_stats.png"
-
-            view._update_buttons()
-            file = discord.File(img_bytes, filename=filename)
-
-            try:
-                original_message = await interaction.channel.fetch_message(self.original_message_id)
-                if original_message:
-                    await original_message.edit(attachments=[file], view=view)
+                if self.stats_type == "messages":
+                    channel_data = await self.cog._get_channel_stats_from_db(self.guild, self.channel, self.view.current_start_time, self.view.current_end_time, self.view.current_days_back_equiv, self.view.selected_role_id)
+                    if channel_data is None:
+                        channel_data = {'total': 0, 'users': Counter(
+                        ), 'timeseries': {}, 'timestamp': time.time()}
+                    img_bytes = await generate_channel_stats_image(self.guild, self.channel, channel_data, self.view.current_display_text, self.view.selected_role_id, role_name)
+                    filename = "channel_stats.png"
                 else:
-                    await interaction.followup.send(file=file, view=view)
-            except discord.NotFound:
-                await interaction.followup.send(file=file, view=view)
+                    voice_data = await self.cog._get_voice_stats_from_db(self.guild, self.channel, self.view.current_start_time, self.view.current_end_time, self.view.current_days_back_equiv, self.view.selected_role_id)
+                    if voice_data is None:
+                        voice_data = {'total_seconds': 0, 'users': Counter(
+                        ), 'timeseries': {}, 'timestamp': time.time()}
+                    img_bytes = await generate_voice_stats_image(self.guild, self.channel, voice_data, self.view.current_display_text, self.view.selected_role_id, role_name)
+                    filename = "voice_stats.png"
 
-            self.cog.active_sessions[self.original_message_id]['selected_role_id'] = view.selected_role_id
+                self.view._update_buttons()
+                file = discord.File(img_bytes, filename=filename)
+
+                try:
+                    original_message = await interaction.channel.fetch_message(self.original_message_id)
+                    if original_message:
+                        await original_message.edit(attachments=[file], view=self.view)
+                    else:
+                        await interaction.followup.send(file=file, view=self.view)
+                except discord.NotFound:
+                    await interaction.followup.send(file=file, view=self.view)
+
+            else:
+                await interaction.followup.send("❌ Could not find session view.", ephemeral=True)
 
         except Exception as e:
             print(f"Error in role ID modal submit: {e}")
@@ -1002,17 +1007,21 @@ class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
 
 
 # TIME MODAL
+
 class ChannelTimeModal(discord.ui.Modal, title='Custom Time Period'):
-    def __init__(self, cog_instance, original_message_id, guild, channel):
+    def __init__(self, cog_instance, original_message_id, guild, channel, view):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
         self.channel = channel
+        self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(label='Enter number of days',
                                 placeholder='e.g., 7, 14, 30, 90...', min_length=1, max_length=4, required=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1022,47 +1031,17 @@ class ChannelTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
             await interaction.response.defer()
 
-            if self.original_message_id not in self.cog.active_sessions:
-                await interaction.followup.send("❌ Session expired or not found. Please run the command again.", ephemeral=True)
-                return
-
-            session = self.cog.active_sessions[self.original_message_id]
-            view = session.get('view')
-            if not view:
-                await interaction.followup.send("❌ Could not find session view.", ephemeral=True)
-                return
-
-            view.current_days = days
-            view.show_time_buttons = False
-
-            if view.stats_type == "messages":
-                channel_data = await self.cog._get_channel_stats_from_db(self.guild, self.channel, days, view.selected_role_id)
-                if channel_data is None:
-                    channel_data = {'total': 0, 'users': Counter(
-                    ), 'timeseries': {}, 'timestamp': time.time()}
-                img_bytes = await generate_channel_stats_image(self.guild, self.channel, channel_data, days, view.selected_role_id)
-                filename = "channel_stats.png"
+            if self.view:
+                now = datetime.utcnow()
+                self.view.current_start_time = now - timedelta(days=days)
+                self.view.current_end_time = now
+                self.view.current_days_back_equiv = days
+                self.view.current_display_text = f"{days} days"
+                self.view.using_server_default = False
+                self.view.show_time_buttons = False
+                await self.view.update_chart(interaction)
             else:
-                voice_data = await self.cog._get_voice_stats_from_db(self.guild, self.channel, days, view.selected_role_id)
-                if voice_data is None:
-                    voice_data = {'total_seconds': 0, 'users': Counter(
-                    ), 'timeseries': {}, 'timestamp': time.time()}
-                img_bytes = await generate_voice_stats_image(self.guild, self.channel, voice_data, days, view.selected_role_id)
-                filename = "voice_stats.png"
-
-            view._update_buttons()
-            file = discord.File(img_bytes, filename=filename)
-
-            try:
-                original_message = await interaction.channel.fetch_message(self.original_message_id)
-                if original_message:
-                    await original_message.edit(attachments=[file], view=view)
-                else:
-                    await interaction.followup.send(file=file, view=view)
-            except discord.NotFound:
-                await interaction.followup.send(file=file, view=view)
-
-            self.cog.active_sessions[self.original_message_id]['current_days'] = days
+                await interaction.followup.send("❌ Could not find session view.", ephemeral=True)
 
         except ValueError:
             await interaction.response.send_message("❌ Please enter a valid number.", ephemeral=True)
@@ -1073,94 +1052,29 @@ class ChannelTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
 
 # MAIN VIEW
+
 class ChannelStatsView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, channel, days_back: int, stats_type: str = "messages", selected_role_id: str = None):
+    def __init__(self, cog_instance, guild: discord.Guild, channel, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = 14, display_text: str = "14 days", stats_type: str = "messages",
+                 selected_role_id: str = None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.channel = channel
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time if end_time else datetime.utcnow()
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.stats_type = stats_type
         self.selected_role_id = selected_role_id
         self.show_time_buttons = False
+        self.using_server_default = using_server_default
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
-    def _update_buttons(self):
-        self.clear_items()
-
-        stats_type_select = StatsTypeSelectMenu(self.stats_type)
-        self.add_item(stats_type_select)
-
-        role_button = discord.ui.Button(style=discord.ButtonStyle.primary,
-                                        label="Input Role ID" if not self.selected_role_id else f"Role: {self.selected_role_id[:10]}...", custom_id="role_id_button", row=1)
-        role_button.callback = self.role_id_callback
-        self.add_item(role_button)
-
-        refresh_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="🔄 Refresh", custom_id="channel_refresh", row=1)
-        refresh_button.callback = self.refresh_callback
-        self.add_item(refresh_button)
-
-        time_settings_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, label="⏰ Time Settings", custom_id="channel_time_settings", row=1)
-        time_settings_button.callback = self.time_settings_callback
-        self.add_item(time_settings_button)
-
-        if self.show_time_buttons:
-            days_7_button = discord.ui.Button(style=discord.ButtonStyle.primary if self.current_days ==
-                                              7 else discord.ButtonStyle.secondary, label="7 Days", custom_id="channel_days_7", row=2)
-            days_7_button.callback = self.days_7_callback
-            self.add_item(days_7_button)
-
-            days_14_button = discord.ui.Button(style=discord.ButtonStyle.primary if self.current_days ==
-                                               14 else discord.ButtonStyle.secondary, label="14 Days", custom_id="channel_days_14", row=2)
-            days_14_button.callback = self.days_14_callback
-            self.add_item(days_14_button)
-
-            days_30_button = discord.ui.Button(style=discord.ButtonStyle.primary if self.current_days ==
-                                               30 else discord.ButtonStyle.secondary, label="30 Days", custom_id="channel_days_30", row=2)
-            days_30_button.callback = self.days_30_callback
-            self.add_item(days_30_button)
-
-            custom_button = discord.ui.Button(style=discord.ButtonStyle.success, label=f"Custom ({self.current_days}d)" if self.current_days not in [
-                                              7, 14, 30] else "Custom", custom_id="channel_custom_days", row=2)
-            custom_button.callback = self.custom_days_callback
-            self.add_item(custom_button)
-
-    async def role_id_callback(self, interaction: discord.Interaction):
-        modal = RoleIdModal(self.cog, interaction.message.id,
-                            self.guild, self.channel, self.stats_type)
-        await interaction.response.send_modal(modal)
-
-    async def refresh_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, refresh=True)
-
-    async def time_settings_callback(self, interaction: discord.Interaction):
-        await self.handle_time_settings(interaction)
-
-    async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=7)
-
-    async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=14)
-
-    async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=30)
-
-    async def custom_days_callback(self, interaction: discord.Interaction):
-        modal = ChannelTimeModal(
-            self.cog, interaction.message.id, self.guild, self.channel)
-        await interaction.response.send_modal(modal)
-
-    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, days: int = None):
+    async def update_chart(self, interaction: discord.Interaction):
+        """Update the chart for the current view"""
         try:
-            await interaction.response.defer()
-
-            if days:
-                self.current_days = days
-                self.show_time_buttons = False
-
-            # Get role name from database
             role_name = None
             if self.selected_role_id and self.selected_role_id != "none":
                 db_stats = self.cog.bot.get_cog('DatabaseStats')
@@ -1174,28 +1088,135 @@ class ChannelStatsView(discord.ui.View):
                         pass
 
             if self.stats_type == "messages":
-                channel_data = await self.cog._get_channel_stats_from_db(self.guild, self.channel, self.current_days, self.selected_role_id)
+                channel_data = await self.cog._get_channel_stats_from_db(self.guild, self.channel, self.current_start_time, self.current_end_time, self.current_days_back_equiv, self.selected_role_id)
                 if channel_data is None:
                     channel_data = {'total': 0, 'users': Counter(
                     ), 'timeseries': {}, 'timestamp': time.time()}
-                img_bytes = await generate_channel_stats_image(self.guild, self.channel, channel_data, self.current_days, self.selected_role_id, role_name)
+                img_bytes = await generate_channel_stats_image(self.guild, self.channel, channel_data, self.current_display_text, self.selected_role_id, role_name)
                 filename = "channel_stats.png"
             else:
-                voice_data = await self.cog._get_voice_stats_from_db(self.guild, self.channel, self.current_days, self.selected_role_id)
+                voice_data = await self.cog._get_voice_stats_from_db(self.guild, self.channel, self.current_start_time, self.current_end_time, self.current_days_back_equiv, self.selected_role_id)
                 if voice_data is None:
                     voice_data = {'total_seconds': 0, 'users': Counter(
                     ), 'timeseries': {}, 'timestamp': time.time()}
-                img_bytes = await generate_voice_stats_image(self.guild, self.channel, voice_data, self.current_days, self.selected_role_id, role_name)
+                img_bytes = await generate_voice_stats_image(self.guild, self.channel, voice_data, self.current_display_text, self.selected_role_id, role_name)
                 filename = "voice_stats.png"
 
             self._update_buttons()
             file = discord.File(img_bytes, filename=filename)
-            await interaction.edit_original_response(attachments=[file], view=self)
 
-            if interaction.message and interaction.message.id in self.cog.active_sessions:
-                self.cog.active_sessions[interaction.message.id]['current_days'] = self.current_days
-                self.cog.active_sessions[interaction.message.id]['selected_role_id'] = self.selected_role_id
-                self.cog.active_sessions[interaction.message.id]['stats_type'] = self.stats_type
+            if interaction:
+                await interaction.edit_original_response(attachments=[file], view=self)
+
+        except Exception as e:
+            print(f"Error updating chart: {e}")
+            traceback.print_exc()
+            if interaction:
+                await interaction.followup.send("❌ An error occurred while updating the stats.", ephemeral=True)
+
+    def _update_buttons(self):
+        self.clear_items()
+
+        stats_type_select = StatsTypeSelectMenu(self.stats_type)
+        self.add_item(stats_type_select)
+
+        role_button = discord.ui.Button(style=discord.ButtonStyle.primary,
+                                        label="Filter By Role" if not self.selected_role_id else f"Role: {self.selected_role_id[:10]}...", custom_id="role_id_button", row=1)
+        role_button.callback = self.role_id_callback
+        self.add_item(role_button)
+
+        refresh_button = discord.ui.Button(
+            style=discord.ButtonStyle.secondary, emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743), custom_id="channel_refresh", row=1)
+        refresh_button.callback = self.refresh_callback
+        self.add_item(refresh_button)
+
+        time_settings_button = discord.ui.Button(
+            style=discord.ButtonStyle.secondary, emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867), custom_id="channel_time_settings", row=1)
+        time_settings_button.callback = self.time_settings_callback
+        self.add_item(time_settings_button)
+
+        if self.show_time_buttons:
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
+                label="All Time", custom_id="channel_all_time", row=2)
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
+
+            days_7_button = discord.ui.Button(style=discord.ButtonStyle.primary if self.current_days_back_equiv ==
+                                              7 else discord.ButtonStyle.secondary, label="7 Days", custom_id="channel_days_7", row=2)
+            days_7_button.callback = self.days_7_callback
+            self.add_item(days_7_button)
+
+            days_14_button = discord.ui.Button(style=discord.ButtonStyle.primary if self.current_days_back_equiv ==
+                                               14 else discord.ButtonStyle.secondary, label="14 Days", custom_id="channel_days_14", row=2)
+            days_14_button.callback = self.days_14_callback
+            self.add_item(days_14_button)
+
+            days_30_button = discord.ui.Button(style=discord.ButtonStyle.primary if self.current_days_back_equiv ==
+                                               30 else discord.ButtonStyle.secondary, label="30 Days", custom_id="channel_days_30", row=2)
+            days_30_button.callback = self.days_30_callback
+            self.add_item(days_30_button)
+
+            custom_button = discord.ui.Button(style=discord.ButtonStyle.success, label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in [
+                                              7, 14, 30, 999999] else "Custom", custom_id="channel_custom_days", row=2)
+            custom_button.callback = self.custom_days_callback
+            self.add_item(custom_button)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def role_id_callback(self, interaction: discord.Interaction):
+        modal = RoleIdModal(self.cog, interaction.message.id,
+                            self.guild, self.channel, self.stats_type, self)
+        await interaction.response.send_modal(modal)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def refresh_callback(self, interaction: discord.Interaction):
+        await self.handle_button_click(interaction, refresh=True)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def time_settings_callback(self, interaction: discord.Interaction):
+        await self.handle_time_settings(interaction)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def all_time_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=now, display_text="All Time")
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def days_7_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def days_14_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def days_30_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def custom_days_callback(self, interaction: discord.Interaction):
+        modal = ChannelTimeModal(
+            self.cog, interaction.message.id, self.guild, self.channel, self)
+        await interaction.response.send_modal(modal)
+
+    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False,
+                                  days_back_equiv: int = None, start_time: datetime = None,
+                                  end_time: datetime = None, display_text: str = None):
+        try:
+            await interaction.response.defer()
+
+            if days_back_equiv is not None:
+                self.current_start_time = start_time
+                self.current_end_time = end_time
+                self.current_days_back_equiv = days_back_equiv
+                self.current_display_text = display_text
+                self.using_server_default = False
+                self.show_time_buttons = False
+
+            await self.update_chart(interaction)
 
         except Exception as e:
             print(f"Error handling button click: {e}")
@@ -1219,7 +1240,113 @@ class ChannelCommands(commands.Cog):
         self.active_sessions = {}
         self.rate_limiter = get_rate_limiter()
 
-    async def _get_channel_stats_from_db(self, guild: discord.Guild, channel: discord.TextChannel, days_back: int, role_id: str = None) -> Optional[Dict[str, Any]]:
+    # GET SERVER DEFAULT TIME RANGE
+    # GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild_id: int) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                end = datetime.now(timezone.utc)
+                start = end - timedelta(days=14)
+                return (start, end, "14 days", 14)
+
+            settings = await settings_cog.get_guild_settings(guild_id)
+            mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.now(timezone.utc)
+
+            if mode == 'all_time':
+                return (None, now, "All Time", 999999)
+
+            elif mode == 'days_back':
+                days = settings.get('default_days_back') or 14
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+
+                # Add timezone awareness guards
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Custom"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=14)
+            return (start, end, "14 days", 14)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=14)
+            return (start, end, "14 days", 14)
+
+    async def _get_channel_stats_from_db(self, guild: discord.Guild, channel: discord.TextChannel, start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14, role_id: str = None) -> Optional[Dict[str, Any]]:
         db_cog = self.bot.get_cog('DatabaseStats')
         if not db_cog:
             print("❌ DatabaseStats cog not found")
@@ -1229,9 +1356,6 @@ class ChannelCommands(commands.Cog):
             role_ids = None
             if role_id and role_id != "none":
                 role_ids = [int(role_id)]
-
-            start_time = datetime.utcnow() - timedelta(days=days_back)
-            end_time = datetime.utcnow()
 
             all_messages = await db_cog.q_channel_total_messages(
                 guild_id=int(guild.id), channel_id=channel.id, role_filter_ids=role_ids,
@@ -1251,7 +1375,7 @@ class ChannelCommands(commands.Cog):
 
             timeseries_data = await db_cog.q_channel_timeseries_messages_1d_5d_10d_20d_30d(
                 guild_id=int(guild.id), channel_id=channel.id, role_filter_ids=role_ids,
-                start_time=None, end_time=datetime.utcnow()
+                start_time=start_time, end_time=end_time
             )
 
             return {
@@ -1265,7 +1389,7 @@ class ChannelCommands(commands.Cog):
             traceback.print_exc()
             return None
 
-    async def _get_voice_stats_from_db(self, guild: discord.Guild, channel: discord.VoiceChannel, days_back: int, role_id: str = None) -> Optional[Dict[str, Any]]:
+    async def _get_voice_stats_from_db(self, guild: discord.Guild, channel: discord.VoiceChannel, start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14, role_id: str = None) -> Optional[Dict[str, Any]]:
         db_cog = self.bot.get_cog('DatabaseStats')
         if not db_cog:
             print("❌ DatabaseStats cog not found")
@@ -1275,9 +1399,6 @@ class ChannelCommands(commands.Cog):
             role_ids = None
             if role_id and role_id != "none":
                 role_ids = [int(role_id)]
-
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
 
             channel_voice_stats = await db_cog.q_channel_total_voice(
                 guild_id=guild.id, channel_id=channel.id, role_filter_ids=role_ids,
@@ -1384,37 +1505,50 @@ class ChannelCommands(commands.Cog):
             if is_interaction:
                 await ctx_or_interaction.response.defer()
 
-            days = 14
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
 
             if isinstance(channel, discord.TextChannel):
-                channel_data = await self._get_channel_stats_from_db(guild, channel, days)
+                channel_data = await self._get_channel_stats_from_db(guild, channel, start_time, end_time, days_back_equiv)
                 if channel_data is None:
                     channel_data = {'total': 0, 'users': Counter(
                     ), 'timeseries': {}, 'timestamp': time.time()}
-                img_bytes = await generate_channel_stats_image(guild, channel, channel_data, days)
+                img_bytes = await generate_channel_stats_image(guild, channel, channel_data, display_text)
                 filename = "channel_stats.png"
                 stats_type = "messages"
             else:
-                voice_data = await self._get_voice_stats_from_db(guild, channel, days)
+                voice_data = await self._get_voice_stats_from_db(guild, channel, start_time, end_time, days_back_equiv)
                 if voice_data is None:
                     voice_data = {'total_seconds': 0, 'users': Counter(
                     ), 'timeseries': {}, 'timestamp': time.time()}
-                img_bytes = await generate_voice_stats_image(guild, channel, voice_data, days)
+                img_bytes = await generate_voice_stats_image(guild, channel, voice_data, display_text)
                 filename = "voice_stats.png"
                 stats_type = "voice"
 
             view = ChannelStatsView(
-                self, guild, channel, days_back=days, stats_type=stats_type)
+                self, guild, channel, start_time=start_time, end_time=end_time,
+                days_back_equiv=days_back_equiv, display_text=display_text,
+                stats_type=stats_type, using_server_default=True)
             file = discord.File(img_bytes, filename=filename)
 
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id)
+            required_stat = ['track_messages'] if stats_type == "messages" else [
+                'track_voice']
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, required_stat)
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                msg = await send_method(content=content, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await send_method(content=content, file=file, view=view, delete_after=300)
 
             self.active_sessions[msg.id] = {
                 'guild_id': guild.id, 'user_id': user.id, 'channel_id': channel.id,
-                'current_days': days, 'selected_role_id': None, 'stats_type': stats_type,
+                'current_start_time': start_time, 'current_end_time': end_time,
+                'current_days_back_equiv': days_back_equiv, 'current_display_text': display_text,
+                'selected_role_id': None, 'stats_type': stats_type,
                 'view': view, 'created_at': time.time()
             }
         except Exception as e:

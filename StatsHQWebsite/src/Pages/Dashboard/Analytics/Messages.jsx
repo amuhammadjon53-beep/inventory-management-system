@@ -4,7 +4,6 @@ import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
 import DashboardSidebar from "../../../Components/sidebar.jsx";
 import Leaderboard from "../../../Components/Leaderboard.jsx";
-import TimezonePieChart from "../../../Components/PieChart.jsx";
 import InteractiveLineChart from "../../../Components/Charts.jsx";
 
 // API base URL - your FastAPI backend
@@ -230,6 +229,8 @@ const MessagesDashboard = () => {
   const [dashboardAccessLevel, setDashboardAccessLevel] = useState('Member');
   const [currentUserId, setCurrentUserId] = useState(null);
   const [serverTimezone, setServerTimezone] = useState('UTC');
+  const [retentionAlert, setRetentionAlert] = useState(null);
+  const [retentionDismissed, setRetentionDismissed] = useState(false);
   
   // Individual loading states
   const [loadingTopUsers, setLoadingTopUsers] = useState(true);
@@ -237,14 +238,9 @@ const MessagesDashboard = () => {
   const [loadingTopCategories, setLoadingTopCategories] = useState(true);
   const [loadingUserTopChannels, setLoadingUserTopChannels] = useState(true);
   const [loadingUserTopCategories, setLoadingUserTopCategories] = useState(true);
-  const [loadingUserMentions, setLoadingUserMentions] = useState(true);
   const [loadingChannelTopUsers, setLoadingChannelTopUsers] = useState(true);
   const [loadingCategoryTopUsers, setLoadingCategoryTopUsers] = useState(true);
   const [loadingCategoryTopChannels, setLoadingCategoryTopChannels] = useState(true);
-  const [loadingHourlyDistribution, setLoadingHourlyDistribution] = useState(true);
-  const [loadingUserHourlyDistribution, setLoadingUserHourlyDistribution] = useState(true);
-  const [loadingChannelHourlyDistribution, setLoadingChannelHourlyDistribution] = useState(true);
-  const [loadingCategoryHourlyDistribution, setLoadingCategoryHourlyDistribution] = useState(true);
   const [loadingTimeseries, setLoadingTimeseries] = useState(true);
   const [loadingUserTimeseries, setLoadingUserTimeseries] = useState(true);
   const [loadingChannelTimeseries, setLoadingChannelTimeseries] = useState(true);
@@ -275,7 +271,6 @@ const MessagesDashboard = () => {
   // User-specific leaderboards
   const [userTopChannels, setUserTopChannels] = useState([]);
   const [userTopCategories, setUserTopCategories] = useState([]);
-  const [userMentionedBy, setUserMentionedBy] = useState([]);
   
   // Channel-specific leaderboards
   const [channelTopUsers, setChannelTopUsers] = useState([]);
@@ -283,12 +278,6 @@ const MessagesDashboard = () => {
   // Category-specific leaderboards
   const [categoryTopUsers, setCategoryTopUsers] = useState([]);
   const [categoryTopChannels, setCategoryTopChannels] = useState([]);
-  
-  // Chart data
-  const [hourlyDistribution, setHourlyDistribution] = useState([]);
-  const [userHourlyDistribution, setUserHourlyDistribution] = useState([]);
-  const [channelHourlyDistribution, setChannelHourlyDistribution] = useState([]);
-  const [categoryHourlyDistribution, setCategoryHourlyDistribution] = useState([]);
   
   // Profile pictures and names cache
   const [profilePictures, setProfilePictures] = useState({});
@@ -304,12 +293,26 @@ const MessagesDashboard = () => {
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [rolesLoaded, setRolesLoaded] = useState(false);
 
+  // Tracks whether the initial per-server load (entity lists + settings +
+  // first stats fetch) has completed, so the filter-watcher effect knows
+  // not to fire a duplicate fetch during initialization.
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+
   // Use refs to prevent infinite loops
   const fetchedRef = useRef(false);
   const prevFiltersRef = useRef(JSON.stringify({
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
     selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
   }));
+
+  // Guards against React.StrictMode's intentional double-invoke of mount effects
+  const didInitRef = useRef(false);
+  // Guards against re-running the "server changed" initialization twice for
+  // the same server (e.g. if hasAccess flips more than once for the same id)
+  const initialDataLoadedRef = useRef(null);
+  // In-flight request cache so overlapping triggers reuse the same promise
+  // instead of firing parallel duplicate fetches
+  const inFlightRequestsRef = useRef({});
 
   // Create refs for current data
   const channelsRef = useRef([]);
@@ -372,6 +375,29 @@ const MessagesDashboard = () => {
     }
   }, [currentServer, isPublicMode]);
 
+  useEffect(() => {
+    if (!currentServer || isPublicMode || hasAccess === null) { setRetentionAlert(null); return; }
+    let cancelled = false;
+    const fetchRetentionStatus = async () => {
+      try {
+        const r = await fetch(`${API_BASE_URL}/api/retention/status?guild_id=${currentServer.id}`, {
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!cancelled) {
+          setRetentionAlert(d.show_alert ? { message: d.message } : null);
+          setRetentionDismissed(false);
+        }
+      } catch {
+        if (!cancelled) setRetentionAlert(null);
+      }
+    };
+    fetchRetentionStatus();
+    return () => { cancelled = true; };
+  }, [currentServer, isPublicMode, hasAccess]);
+
   // Navbar height constant
   const NAVBAR_HEIGHT = "80px";
 
@@ -390,6 +416,8 @@ const MessagesDashboard = () => {
 
   // Load everything on mount
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     loadInitialData();
   }, []);
 
@@ -517,6 +545,10 @@ const MessagesDashboard = () => {
     }
   };
 
+  // Determines access/permissions ONLY. Settings/time-period application and
+  // the first data fetch are handled exclusively by the unified
+  // [currentServer, hasAccess] effect further down, so this no longer
+  // triggers a fetch itself (that used to race with the other init paths).
   const checkServerAccess = async (guildId, permissions, hasAdmin, hasManageServer) => {
     try {
       const settingsResponse = await fetch(`${API_BASE_URL}/api/settings/get`, {
@@ -531,12 +563,12 @@ const MessagesDashboard = () => {
         const accessLevel = settingsData.dashboard_access_level || 'Member';
         setDashboardAccessLevel(accessLevel);
         window.accessLevel = accessLevel;
-        
+
         const isAdmin = hasAdmin;
         const hasManageServerPerm = hasManageServer;
-        
+
         let hasAccessFlag = false;
-        
+
         if (accessLevel === 'Public') {
           hasAccessFlag = true;
         } else if (accessLevel === 'Member') {
@@ -548,18 +580,16 @@ const MessagesDashboard = () => {
         } else {
           hasAccessFlag = true;
         }
-        
+
         setHasAccess(hasAccessFlag);
-        setLoading(false);
-        
       } else {
         console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
-        setLoading(false);
       }
     } catch (error) {
       console.error('Error checking server access:', error);
       setHasAccess(false);
+    } finally {
       setLoading(false);
     }
   };
@@ -1106,79 +1136,129 @@ const MessagesDashboard = () => {
     }
   };
 
-  // Load all data when server changes
+  // Unified "server changed" lifecycle: reset -> fetch entity lists -> fetch
+  // settings -> apply resolved time period -> fetch data with the resolved
+  // params. This is the ONLY effect that kicks off the initial data fetch
+  // for a server. checkServerAccess above and the old duplicate
+  // "fetchAndApplyTimePeriod" effect no longer fetch data themselves - that
+  // used to cause 2-3 overlapping requests per navigation.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
-    
+    if (initialDataLoadedRef.current === currentServer.id) return;
+
+    initialDataLoadedRef.current = currentServer.id;
     fetchedRef.current = false;
-    
+    setInitialLoadComplete(false);
+
     // Reset all loading states
     setLoadingTopUsers(true);
     setLoadingTopChannels(true);
     setLoadingTopCategories(true);
     setLoadingUserTopChannels(true);
     setLoadingUserTopCategories(true);
-    setLoadingUserMentions(true);
     setLoadingChannelTopUsers(true);
     setLoadingCategoryTopUsers(true);
     setLoadingCategoryTopChannels(true);
-    setLoadingHourlyDistribution(true);
-    setLoadingUserHourlyDistribution(true);
-    setLoadingChannelHourlyDistribution(true);
-    setLoadingCategoryHourlyDistribution(true);
     setLoadingTimeseries(true);
     setLoadingUserTimeseries(true);
     setLoadingChannelTimeseries(true);
     setLoadingCategoryTimeseries(true);
     setLoadingSummaryStats(true);
     setLoadingAverages(true);
-    
+
     setLoading(true);
-    
+
     setUsersLoaded(false);
     setChannelsLoaded(false);
     setCategoriesLoaded(false);
     setRolesLoaded(false);
-    
+
     setTopUsers([]);
     setTopChannels([]);
     setTopCategories([]);
     setUserTopChannels([]);
     setUserTopCategories([]);
-    setUserMentionedBy([]);
     setChannelTopUsers([]);
     setCategoryTopUsers([]);
     setCategoryTopChannels([]);
     setServerData(null);
-    
+
     profileCache.clear();
-    
-    Promise.all([
-      fetchAllUsers(),
-      fetchAllChannels(),
-      fetchAllCategories(),
-      fetchAllRoles()
-    ]).then(() => {
-      fetchData();
-    });
+
+    const initializeServer = async () => {
+      // 1. Entity lists (users/channels/categories/roles) are needed via
+      // refs to resolve names inside fetchServerData/etc, so wait for them
+      // before the stats fetch. They're independent of time-period settings.
+      await Promise.all([
+        fetchAllUsers(),
+        fetchAllChannels(),
+        fetchAllCategories(),
+        fetchAllRoles()
+      ]);
+
+      // 2. Get the server's configured default time period BEFORE any
+      // stats fetch, so we don't fetch with the default period and then
+      // immediately re-fetch with the real one.
+      let timeParams = {};
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          timeParams = applyServerTimePeriod(data); // sets state AND returns the values synchronously
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+      }
+
+      // 3. Fetch data ONCE, using the resolved params directly (not stale state)
+      await fetchDataWithParams(timeParams);
+
+      // 4. Sync prevFiltersRef to the resolved values so the filter-watcher
+      // effect below sees no diff and doesn't fire a duplicate fetch right
+      // after initialization completes.
+      const resolvedFilters = {
+        selectedView,
+        timePeriod: timeParams.timePeriod ?? timePeriod,
+        customDaysBack: timeParams.customDaysBack ?? customDaysBack,
+        customStartDate: timeParams.customStartDate ?? customStartDate,
+        customEndDate: timeParams.customEndDate ?? customEndDate,
+        selectedUserId,
+        selectedChannelId,
+        selectedCategoryId,
+        selectedRoleId
+      };
+      prevFiltersRef.current = JSON.stringify(resolvedFilters);
+
+      setInitialLoadComplete(true);
+    };
+
+    initializeServer();
   }, [currentServer, hasAccess]);
 
-  // Fetch stats when filters change
+  // Fetch stats when filters change (post-initialization only). Gated on
+  // fetchedRef/initialLoadComplete so this never fires during the initial
+  // per-server load above - only for genuine user-driven filter changes.
   useEffect(() => {
-    if (!currentServer || !hasAccess) return;
+    if (!currentServer || !hasAccess || !initialLoadComplete) return;
     
     const currentFilters = JSON.stringify({
       selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
       selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
     });
     
-    if (prevFiltersRef.current !== currentFilters) {
+    if (fetchedRef.current && prevFiltersRef.current !== currentFilters) {
       prevFiltersRef.current = currentFilters;
-      fetchData();
+      fetchDataWithParams();
     }
   }, [
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
-    selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId
+    selectedUserId, selectedChannelId, selectedCategoryId, selectedRoleId,
+    initialLoadComplete, hasAccess
   ]);
 
   // Filter users when search changes
@@ -1493,53 +1573,6 @@ const MessagesDashboard = () => {
     }
   };
 
-  const fetchData = async () => {
-    if (!currentServer || !hasAccess) return;
-    
-    setLoading(true);
-    setApiError(null);
-    const { startDate, endDate } = getDateRange();
-    
-    let daysInPeriod = 0;
-    if (startDate && endDate) {
-      daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
-    } else if (timePeriod !== "all" && timePeriod !== "custom-lookback" && timePeriod !== "custom-range") {
-      daysInPeriod = parseInt(timePeriod);
-    } else if (timePeriod === "custom-lookback" && customDaysBack) {
-      daysInPeriod = parseInt(customDaysBack);
-    } else {
-      daysInPeriod = 30;
-    }
-    
-    try {
-      const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
-      
-      const requestBody = {
-        guild_id: currentServer.id,
-        role_filter_ids: roleFilterArray,
-        start_time: startDate?.toISOString(),
-        end_time: endDate?.toISOString()
-      };
-      
-      if (selectedView === 'server') {
-        await fetchServerData(requestBody, daysInPeriod);
-      } else if (selectedView === 'user' && selectedUserId) {
-        await fetchUserData(requestBody, daysInPeriod);
-      } else if (selectedView === 'channel' && selectedChannelId) {
-        await fetchChannelData(requestBody, daysInPeriod);
-      } else if (selectedView === 'category' && selectedCategoryId) {
-        await fetchCategoryData(requestBody, daysInPeriod);
-      }
-      
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      setApiError(error.message);
-    } finally {
-      setLoading(false);
-      fetchedRef.current = true;
-    }
-  };
-
   const fetchServerData = async (requestBody, daysInPeriod) => {
     const isPublic = isPublicMode;
     
@@ -1745,64 +1778,7 @@ const MessagesDashboard = () => {
       setLoadingTopCategories(false);
     }
     
-    // 5. Hourly distribution
-    try {
-      let daysBack = 30;
-      if (timePeriod === "all") {
-        daysBack = 0;
-      } else if (timePeriod === "custom-lookback" && customDaysBack) {
-        daysBack = parseInt(customDaysBack);
-      } else if (timePeriod === "custom-range") {
-        daysBack = daysInPeriod;
-      } else {
-        daysBack = parseInt(timePeriod);
-      }
-      
-      let distEndpoint;
-      if (isPublic) {
-        distEndpoint = `${API_BASE_URL}/api/public/server/activity-distribution/messages`;
-      } else {
-        distEndpoint = `${API_BASE_URL}/api/server/activity-distribution/messages`;
-      }
-      
-      const distResponse = await fetch(distEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: isPublic ? 'omit' : 'include',
-        body: JSON.stringify({
-          guild_id: requestBody.guild_id,
-          days_back: daysBack,
-          role_filter_ids: requestBody.role_filter_ids,
-          timezone_str: serverTimezone
-        })
-      });
-      
-      if (distResponse.ok) {
-        const distData = await distResponse.json();
-        
-        if (distData.messages) {
-          const distribution = [];
-          let hasData = false;
-          
-          for (let i = 0; i < 24; i++) {
-            const value = distData.messages[`hour_${i}`] || 0;
-            if (value > 0) hasData = true;
-            distribution.push({
-              name: `${i.toString().padStart(2, '0')}:00`,
-              value: value
-            });
-          }
-          
-          setHourlyDistribution(hasData ? distribution : []);
-          await fetchTimeseriesData();
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching hourly distribution:', error);
-      setHourlyDistribution([]);
-    } finally {
-      setLoadingHourlyDistribution(false);
-    }
+    await fetchTimeseriesData();
   };
 
   const fetchUserData = async (requestBody, daysInPeriod) => {
@@ -1947,118 +1923,7 @@ const MessagesDashboard = () => {
       setLoadingUserTopCategories(false);
     }
     
-    // 4. Mentions leaderboard - ONLY fetch avatars for top 3
-    let mentionsUrl;
-    if (isPublic) {
-      mentionsUrl = buildUrl(`${API_BASE_URL}/api/public/leaderboard/mentions/target-user`, {
-        guild_id: requestBody.guild_id,
-        mentioned_user_id: selectedUserId,
-        role_filter_ids: requestBody.role_filter_ids,
-        limit: 100000000000,
-        start_time: requestBody.start_time,
-        end_time: requestBody.end_time
-      });
-    } else {
-      mentionsUrl = buildUrl(`${API_BASE_URL}/api/leaderboard/mentions/target-user`, {
-        guild_id: requestBody.guild_id,
-        mentioned_user_id: selectedUserId,
-        role_filter_ids: requestBody.role_filter_ids,
-        limit: 100000000000,
-        start_time: requestBody.start_time,
-        end_time: requestBody.end_time
-      });
-    }
-    
-    const mentionsResponse = await fetch(mentionsUrl, {
-      credentials: isPublic ? 'omit' : 'include',
-      headers: { 'Accept': 'application/json' }
-    });
-    
-    let formattedMentions = [];
-    if (mentionsResponse.ok) {
-      const mentionsData = await mentionsResponse.json();
-      
-      if (Array.isArray(mentionsData)) {
-        // Get basic info for all mentions (names only)
-        const allMentionUserIds = mentionsData.map(mention => String(mention.user_id || mention.mentioner_user_id));
-        const mentionBasicInfoMap = await batchFetchUserBasicInfo(allMentionUserIds);
-        
-        // Fetch avatars ONLY for top 3 mentions
-        const top3MentionIds = allMentionUserIds.slice(0, 3);
-        const mentionAvatars = await Promise.all(
-          top3MentionIds.map(userId => fetchUserAvatar(userId))
-        );
-        
-        formattedMentions = mentionsData.map((mention, index) => {
-          const userId = String(mention.user_id || mention.mentioner_user_id);
-          const basicInfo = mentionBasicInfoMap[userId];
-          const isTop3 = index < 3;
-          const avatarUrl = isTop3 ? (mentionAvatars[index] || null) : null;
-          
-          return {
-            userId: userId,
-            name: basicInfo?.name || `User ${userId.slice(-4)}`,
-            value: mention.mention_count || 0,
-            avatar: avatarUrl
-          };
-        });
-        setUserMentionedBy(formattedMentions);
-      }
-    }
-    setLoadingUserMentions(false);
-    
-    // 5. User hourly distribution
-    let daysBack = 30;
-    if (timePeriod === "all") {
-      daysBack = 0;
-    } else if (timePeriod === "custom-lookback" && customDaysBack) {
-      daysBack = parseInt(customDaysBack);
-    } else if (timePeriod === "custom-range") {
-      daysBack = daysInPeriod;
-    } else {
-      daysBack = parseInt(timePeriod);
-    }
-    
-    let distEndpoint;
-    if (isPublic) {
-      distEndpoint = `${API_BASE_URL}/api/public/user/activity/distribution`;
-    } else {
-      distEndpoint = `${API_BASE_URL}/api/user/activity-distribution/messages`;
-    }
-    
-    const distResponse = await fetch(distEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: isPublic ? 'omit' : 'include',
-      body: JSON.stringify({
-        guild_id: requestBody.guild_id,
-        user_id: selectedUserId,
-        days_back: daysBack,
-        role_filter_ids: requestBody.role_filter_ids,
-        timezone_str: serverTimezone
-      })
-    });
-    
-    let distribution = [];
-    if (distResponse.ok) {
-      const distData = await distResponse.json();
-      
-      distribution = [];
-      let hasData = false;
-      
-      for (let i = 0; i < 24; i++) {
-        const value = distData.messages ? distData.messages[`hour_${i}`] : 0;
-        if (value > 0) hasData = true;
-        distribution.push({
-          name: `${i.toString().padStart(2, '0')}:00`,
-          value: value
-        });
-      }
-      
-      setUserHourlyDistribution(hasData ? distribution : []);
-      await fetchUserTimeseriesData();
-    }
-    setLoadingUserHourlyDistribution(false);
+    await fetchUserTimeseriesData();
     
     const userName = userProfile?.name || `User ${selectedUserId.slice(-4)}`;
     
@@ -2171,60 +2036,6 @@ const MessagesDashboard = () => {
     }
     setLoadingChannelTopUsers(false);
     
-    // 3. Channel hourly distribution
-    let daysBack = 30;
-    if (timePeriod === "all") {
-      daysBack = 0;
-    } else if (timePeriod === "custom-lookback" && customDaysBack) {
-      daysBack = parseInt(customDaysBack);
-    } else if (timePeriod === "custom-range") {
-      daysBack = daysInPeriod;
-    } else {
-      daysBack = parseInt(timePeriod);
-    }
-    
-    let distEndpoint;
-    if (isPublic) {
-      distEndpoint = `${API_BASE_URL}/api/public/channel/activity/distribution`;
-    } else {
-      distEndpoint = `${API_BASE_URL}/api/channel/activity/distribution`;
-    }
-    
-    const distResponse = await fetch(distEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: isPublic ? 'omit' : 'include',
-      body: JSON.stringify({
-        guild_id: requestBody.guild_id,
-        channel_id: selectedChannelId,
-        days_back: daysBack,
-        role_filter_ids: requestBody.role_filter_ids,
-        timezone_str: serverTimezone
-      })
-    });
-    
-    let distribution = [];
-    if (distResponse.ok) {
-      const distData = await distResponse.json();
-      
-      if (distData.messages) {
-        let hasData = false;
-        
-        for (let i = 0; i < 24; i++) {
-          const value = distData.messages[`hour_${i}`] || 0;
-          if (value > 0) hasData = true;
-          distribution.push({
-            name: `${i.toString().padStart(2, '0')}:00`,
-            value: value
-          });
-        }
-        
-        setChannelHourlyDistribution(hasData ? distribution : []);
-      }
-    }
-    setLoadingChannelHourlyDistribution(false);
-    
-    // 4. Fetch channel timeseries data
     await fetchChannelTimeseriesData();
     
     const channelName = getChannelName(selectedChannelId);
@@ -2388,60 +2199,6 @@ const MessagesDashboard = () => {
     }
     setLoadingCategoryTopChannels(false);
     
-    // 4. Category hourly distribution
-    let daysBack = 30;
-    if (timePeriod === "all") {
-      daysBack = 0;
-    } else if (timePeriod === "custom-lookback" && customDaysBack) {
-      daysBack = parseInt(customDaysBack);
-    } else if (timePeriod === "custom-range") {
-      daysBack = daysInPeriod;
-    } else {
-      daysBack = parseInt(timePeriod);
-    }
-    
-    let distEndpoint;
-    if (isPublic) {
-      distEndpoint = `${API_BASE_URL}/api/public/category/activity/distribution`;
-    } else {
-      distEndpoint = `${API_BASE_URL}/api/category/activity/distribution`;
-    }
-    
-    const distResponse = await fetch(distEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: isPublic ? 'omit' : 'include',
-      body: JSON.stringify({
-        guild_id: requestBody.guild_id,
-        category_id: selectedCategoryId,
-        days_back: daysBack,
-        role_filter_ids: requestBody.role_filter_ids,
-        timezone_str: serverTimezone
-      })
-    });
-    
-    let categoryDistData = [];
-    if (distResponse.ok) {
-      const distData = await distResponse.json();
-      
-      if (distData.messages) {
-        let hasData = false;
-        
-        for (let i = 0; i < 24; i++) {
-          const value = distData.messages[`hour_${i}`] || 0;
-          if (value > 0) hasData = true;
-          categoryDistData.push({
-            name: `${i.toString().padStart(2, '0')}:00`,
-            value: value
-          });
-        }
-        
-        setCategoryHourlyDistribution(hasData ? categoryDistData : []);
-      }
-    }
-    setLoadingCategoryHourlyDistribution(false);
-    
-    // 5. Fetch category timeseries data
     await fetchCategoryTimeseriesData();
     
     const categoryName = getCategoryName(selectedCategoryId);
@@ -2501,6 +2258,232 @@ const MessagesDashboard = () => {
     setSelectedCategoryId(category.id);
     setCategorySearch(category.name || `Category ${category.id}`);
     setShowCategoryDropdown(false);
+  };
+
+  // applyServerTimePeriod returns the computed values synchronously (in
+  // addition to setting state) so callers can use them immediately without
+  // waiting for a re-render.
+  const applyServerTimePeriod = (settings) => {
+    const mode = settings.default_time_mode || 'days_back';
+    const result = {};
+
+    if (mode === 'all_time') {
+      setTimePeriod('all');
+      result.timePeriod = 'all';
+    } else if (mode === 'days_back') {
+      const days = settings.default_days_back || 14;
+      const presets = ['7', '14', '30', '60', '90'];
+      if (presets.includes(String(days))) {
+        setTimePeriod(String(days));
+        result.timePeriod = String(days);
+      } else {
+        setTimePeriod('custom-lookback');
+        setCustomDaysBack(String(days));
+        result.timePeriod = 'custom-lookback';
+        result.customDaysBack = String(days);
+      }
+    } else if (mode === 'date_range') {
+      setTimePeriod('custom-range');
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      
+      let fromDate = null;
+      let toDate = null;
+      
+      if (settings.default_from_date) {
+        fromDate = settings.default_from_date.split('T')[0];
+        setCustomStartDate(fromDate);
+      }
+      if (settings.default_to_date) {
+        toDate = settings.default_to_date.split('T')[0];
+        setCustomEndDate(toDate);
+      }
+      
+      // Handle cases where one date is missing
+      if (fromDate && !toDate) {
+        toDate = formattedToday;
+        setCustomEndDate(toDate);
+      } else if (!fromDate && toDate) {
+        fromDate = '';
+        setCustomStartDate('');
+      }
+      
+      result.timePeriod = 'custom-range';
+      result.customStartDate = fromDate || '';
+      result.customEndDate = toDate || '';
+    } else if (mode === 'rolling_window') {
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      let startDate = null;
+      
+      if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
+        // weekday: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday
+        const targetWeekday = settings.default_rolling_value;
+        const currentWeekday = today.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+        
+        // Convert to Monday-based (0=Monday, 6=Sunday)
+        const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
+        
+        let daysToSubtract;
+        if (currentWeekdayMonday >= targetWeekday) {
+          daysToSubtract = currentWeekdayMonday - targetWeekday;
+        } else {
+          daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
+        }
+        
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - daysToSubtract);
+        
+      } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
+        const targetDay = settings.default_rolling_value; // 1-31
+        const currentDate = today.getDate();
+        
+        startDate = new Date(today);
+        
+        if (currentDate >= targetDay) {
+          // Use this month's target day
+          startDate.setDate(targetDay);
+        } else {
+          // Use previous month's target day
+          startDate.setMonth(today.getMonth() - 1);
+          // Handle month boundaries (e.g., Jan 31 -> Dec 31)
+          const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+          startDate.setDate(Math.min(targetDay, lastDayOfMonth));
+        }
+      }
+      
+      if (startDate) {
+        const formattedStartDate = startDate.toISOString().split('T')[0];
+        setTimePeriod('custom-range');
+        setCustomStartDate(formattedStartDate);
+        setCustomEndDate(formattedToday);
+        result.timePeriod = 'custom-range';
+        result.customStartDate = formattedStartDate;
+        result.customEndDate = formattedToday;
+      } else {
+        // Fallback to all time if rolling window calculation fails
+        setTimePeriod('all');
+        result.timePeriod = 'all';
+      }
+    }
+    
+    return result;
+  };
+
+  // fetchDataWithParams is the SINGLE entry point for fetching stats/leaderboard
+  // /timeseries data (server, user, channel, or category view depending on
+  // selectedView). It accepts optional overrides for the time-period fields
+  // so the very first fetch after a server switch can use the just-resolved
+  // settings instead of stale state. Any caller that just wants "fetch with
+  // current state" can call it with no arguments.
+  //
+  // In-flight requests are deduped by key so overlapping triggers (fast
+  // re-renders, rapid filter changes, etc.) reuse the same promise instead of
+  // firing parallel duplicate network calls.
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer || !hasAccess) return;
+
+    const requestKey = JSON.stringify({
+      guildId: currentServer.id,
+      selectedView,
+      selectedUserId,
+      selectedChannelId,
+      selectedCategoryId,
+      selectedRoleId,
+      overrides
+    });
+
+    if (inFlightRequestsRef.current[requestKey]) {
+      return inFlightRequestsRef.current[requestKey];
+    }
+
+    const promise = (async () => {
+      setLoading(true);
+      setApiError(null);
+
+      // Use overrides or current state
+      const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+      const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+      const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+      const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+
+      // Compute date range directly (same logic as getDateRange)
+      let startDate = null;
+      let endDate = null;
+
+      if (effectiveTimePeriod === "all") {
+        startDate = null;
+        endDate = null;
+      } else if (effectiveTimePeriod === "custom-lookback") {
+        if (!effectiveCustomDaysBack || parseInt(effectiveCustomDaysBack) <= 0) {
+          startDate = null;
+          endDate = null;
+        } else {
+          endDate = new Date();
+          startDate = new Date();
+          startDate.setDate(startDate.getDate() - parseInt(effectiveCustomDaysBack));
+        }
+      } else if (effectiveTimePeriod === "custom-range") {
+        if (!effectiveCustomStartDate || !effectiveCustomEndDate) {
+          startDate = null;
+          endDate = null;
+        } else {
+          startDate = new Date(effectiveCustomStartDate);
+          endDate = new Date(effectiveCustomEndDate);
+        }
+      } else {
+        // Preset days (7, 14, 30, 60, 90)
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - parseInt(effectiveTimePeriod));
+      }
+
+      let daysInPeriod = 0;
+      if (startDate && endDate) {
+        daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+      } else if (effectiveTimePeriod !== "all" && effectiveTimePeriod !== "custom-lookback" && effectiveTimePeriod !== "custom-range") {
+        daysInPeriod = parseInt(effectiveTimePeriod);
+      } else if (effectiveTimePeriod === "custom-lookback" && effectiveCustomDaysBack) {
+        daysInPeriod = parseInt(effectiveCustomDaysBack);
+      } else {
+        daysInPeriod = 30;
+      }
+
+      try {
+        const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
+
+        const requestBody = {
+          guild_id: currentServer.id,
+          role_filter_ids: roleFilterArray,
+          start_time: startDate?.toISOString(),
+          end_time: endDate?.toISOString()
+        };
+
+        if (selectedView === 'server') {
+          await fetchServerData(requestBody, daysInPeriod);
+        } else if (selectedView === 'user' && selectedUserId) {
+          await fetchUserData(requestBody, daysInPeriod);
+        } else if (selectedView === 'channel' && selectedChannelId) {
+          await fetchChannelData(requestBody, daysInPeriod);
+        } else if (selectedView === 'category' && selectedCategoryId) {
+          await fetchCategoryData(requestBody, daysInPeriod);
+        }
+
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        setApiError(error.message);
+      } finally {
+        setLoading(false);
+        fetchedRef.current = true;
+      }
+    })();
+
+    inFlightRequestsRef.current[requestKey] = promise;
+    try {
+      return await promise;
+    } finally {
+      delete inFlightRequestsRef.current[requestKey];
+    }
   };
 
   const timePeriodOptions = [
@@ -3176,6 +3159,11 @@ const MessagesDashboard = () => {
       background-color: #aa00ff;
       border-radius: 2px;
     }
+
+    .retention-banner { width:100%; box-sizing:border-box; background:linear-gradient(135deg,#3a2f00 0%,#4a3a00 100%); border-bottom:1px solid #ffcc00; padding:12px 24px; display:flex; align-items:center; justify-content:center; gap:16px; position:relative; }
+    .retention-banner-text { color:#ffe066; font-size:14px; font-weight:500; text-align:center; max-width:900px; }
+    .retention-banner-close { background:none; border:none; color:#ffe066; font-size:14px; cursor:pointer; padding:4px 8px; border-radius:6px; line-height:1; flex-shrink:0; transition:background-color 0.15s,color 0.15s; }
+    .retention-banner-close:hover { background-color:rgba(255,224,102,0.15); color:#fff; }
 
     .leaderboards-section {
       margin-bottom: 40px;
@@ -3906,25 +3894,6 @@ const MessagesDashboard = () => {
                       )}
                     </div>
                   </div>
-                  
-                  <div className="charts-section">
-                    <h2 className="section-title">Most Active Hours</h2>
-                    <div className="chart-wrapper">
-                      {loadingHourlyDistribution ? (
-                        <LoadingSpinner size="large" text="Loading hourly data..." />
-                      ) : hourlyDistribution.length > 0 && hourlyDistribution.some(item => item.value > 0) ? (
-                        <TimezonePieChart
-                          hourlyData={hourlyDistribution.map(item => item.value)}
-                          timezone={serverTimezone}
-                          activityType="Messages"
-                          guildName={currentServer?.name || "Server"}
-                          daysBack={timePeriod === "all" ? null : parseInt(timePeriod)}
-                        />
-                      ) : (
-                        <div className="no-chart-data">No hourly data available</div>
-                      )}
-                    </div>
-                  </div>
                 </>
               )}
               
@@ -4016,33 +3985,6 @@ const MessagesDashboard = () => {
                             </div>
                           ) : (
                             <div className="no-data-message">No category data available for this user</div>
-                          )}
-                          
-                          {loadingUserMentions ? (
-                            <LoadingCard />
-                          ) : userMentionedBy.length > 0 ? (
-                            <div className="leaderboard-wrapper">
-                              <Leaderboard
-                                data={userMentionedBy}
-                                title="Users Who Mentioned Them"
-                                valueLabel="Mentions"
-                                valueFormatter={formatValue}
-                                showProfilePictures={true}
-                                itemType="user"
-                                nameKey="name"
-                                valueKey="value"
-                                idKey="userId"
-                                backgroundColor="transparent"
-                                cardBackground="#1a1a1a"
-                                accentColor="#aa00ff"
-                                getProfilePicture={async (userId) => {
-                                  const user = userMentionedBy.find(u => u.userId === userId);
-                                  return user?.avatar || null;
-                                }}
-                              />
-                            </div>
-                          ) : (
-                            <div className="no-data-message">No mentions data available for this user</div>
                           )}
                         </div>
                       </div>
@@ -4346,6 +4288,18 @@ const MessagesDashboard = () => {
   return (
     <>
       <NavBar />
+      {retentionAlert && !retentionDismissed && (
+        <div className="retention-banner">
+          <span className="retention-banner-text">⚠️ {retentionAlert.message}</span>
+          <button
+            className="retention-banner-close"
+            onClick={() => setRetentionDismissed(true)}
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div className="dashboard-page">
         <DashboardSidebar 
           currentServerId={currentServer?.id} 
@@ -4742,25 +4696,6 @@ const MessagesDashboard = () => {
                     )}
                   </div>
                 </div>
-                
-                <div className="charts-section">
-                  <h2 className="section-title">Most Active Hours</h2>
-                  <div className="chart-wrapper">
-                    {loadingHourlyDistribution ? (
-                      <LoadingSpinner size="large" text="Loading hourly data..." />
-                    ) : hourlyDistribution.length > 0 && hourlyDistribution.some(item => item.value > 0) ? (
-                      <TimezonePieChart
-                        hourlyData={hourlyDistribution.map(item => item.value)}
-                        timezone={serverTimezone}
-                        activityType="Messages"
-                        guildName={currentServer?.name || "Server"}
-                        daysBack={timePeriod === "all" ? null : parseInt(timePeriod)}
-                      />
-                    ) : (
-                      <div className="no-chart-data">No hourly data available {selectedRoleId ? 'with this role filter' : ''}</div>
-                    )}
-                  </div>
-                </div>
               </>
             )}
             
@@ -4852,33 +4787,6 @@ const MessagesDashboard = () => {
                           </div>
                         ) : (
                           <div className="no-data-message">No category data available for this user {selectedRoleId ? 'with this role filter' : ''}</div>
-                        )}
-                        
-                        {loadingUserMentions ? (
-                          <LoadingCard />
-                        ) : userMentionedBy.length > 0 ? (
-                          <div className="leaderboard-wrapper">
-                            <Leaderboard
-                              data={userMentionedBy}
-                              title="Users Who Mentioned Them"
-                              valueLabel="Mentions"
-                              valueFormatter={formatValue}
-                              showProfilePictures={true}
-                              itemType="user"
-                              nameKey="name"
-                              valueKey="value"
-                              idKey="userId"
-                              backgroundColor="transparent"
-                              cardBackground="#1a1a1a"
-                              accentColor="#aa00ff"
-                              getProfilePicture={async (userId) => {
-                                const user = userMentionedBy.find(u => u.userId === userId);
-                                return user?.avatar || null;
-                              }}
-                            />
-                          </div>
-                        ) : (
-                          <div className="no-data-message">No mentions data available for this user {selectedRoleId ? 'with this role filter' : ''}</div>
                         )}
                       </div>
                     </div>

@@ -6,7 +6,6 @@ const Login = () => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
 
-  // Get the current hostname for API URL (now pointing to FastAPI on port 8000)
   const getApiUrl = () => {
     return window.location.origin;
   };
@@ -43,10 +42,7 @@ const Login = () => {
       
       const data = await response.json();
       
-      
       if (data.authenticated) {
-       
-        
         setUser(data.user);
         localStorage.setItem('user', JSON.stringify(data.user));
       } else {
@@ -64,10 +60,10 @@ const Login = () => {
   const handleLogin = (e) => {
     e.preventDefault();
     
-    // CORRECTED: Use the proper OAuth2 user authorization link
-    // This link ONLY has the scopes needed for user login (no bot scopes)
-    const clientId = '1481328229909270568';
-    const redirectUri = encodeURIComponent('https://statshq.xyz/api/auth/discord/callback');
+    const clientId = import.meta.env.VITE_CLIENT_ID || '1481328229909270568';
+    const redirectUri = encodeURIComponent(
+      import.meta.env.VITE_DISCORD_REDIRECT_URI || 'https://statshq.xyz/api/auth/discord/callback'
+    );
     const currentOrigin = encodeURIComponent(window.location.origin);
     
     const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=identify%20guilds%20guilds.members.read&state=${currentOrigin}`;
@@ -91,7 +87,17 @@ const Login = () => {
 
   const handleManageServers = (e) => {
     e.preventDefault();
-    window.location.href = '/Manage Servers';
+    window.location.href = '/Manage Servers/';
+  };
+
+  const handleMyCart = (e) => {
+    e.preventDefault();
+    window.location.href = '/My Cart/';
+  };
+
+  const handleMySubscriptions = (e) => {
+    e.preventDefault();
+    window.location.href = '/My Subscriptions/';
   };
 
   const toggleDropdown = () => {
@@ -100,19 +106,16 @@ const Login = () => {
 
   const getDisplayName = () => {
     if (!user) return '';
-    // Try different possible name fields
     return user.global_name || user.username || 'User';
   };
 
   const getAvatarUrl = () => {
     if (!user) return '';
     
-    // Check if user has avatar and id
     if (user.avatar && user.id) {
       return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=32`;
     }
     
-    // Fallback to default avatar
     return 'https://cdn.discordapp.com/embed/avatars/0.png';
   };
 
@@ -142,8 +145,14 @@ const Login = () => {
 
         {dropdownOpen && (
           <div className="dropdown-menu">
-            <a href="/Manage Servers" className="dropdown-item" onClick={handleManageServers}>
+            <a href="/Manage Servers/" className="dropdown-item" onClick={handleManageServers}>
               Manage Servers
+            </a>
+            <a href="/My Cart/" className="dropdown-item" onClick={handleMyCart}>
+              My Cart
+            </a>
+            <a href="/My Subscriptions/" className="dropdown-item" onClick={handleMySubscriptions}>
+              My Subscriptions
             </a>
             <button className="dropdown-item logout-item" onClick={handleLogout}>
               Log Out
@@ -223,7 +232,7 @@ const Login = () => {
           @keyframes dropdownFade {
             from {
               opacity: 0;
-              transform: translateY(-10px);
+              transform: translateY(-8px);
             }
             to {
               opacity: 1;
@@ -280,29 +289,20 @@ const Login = () => {
             }
 
             .dropdown-menu {
-              right: auto;
-              left: -80px;
-              min-width: 160px;
-            }
-
-            @media (max-width: 480px) {
-              .dropdown-menu {
-                left: -60px;
-              }
-            }
-
-            @media (max-width: 360px) {
-              .dropdown-menu {
-                left: -40px;
-              }
+              position: fixed;
+              top: auto;
+              right: 8px;
+              left: auto;
+              min-width: 170px;
             }
           }
 
           @media (max-width: 480px) {
             .dropdown-menu {
-              min-width: 150px;
+              right: 8px;
+              min-width: 155px;
             }
-            
+
             .dropdown-item {
               padding: 10px 14px;
               font-size: 13px;

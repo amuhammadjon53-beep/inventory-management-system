@@ -24,7 +24,25 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+# HELPER FUNCTIONS
+def get_ordinal(n: int) -> str:
+    """Get ordinal suffix for a number (e.g., 1st, 2nd, 3rd)"""
+    if 10 <= n % 100 <= 20:
+        return 'th'
+    return {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+
+
+def format_count_with_k(value):
+    """Format a count, abbreviating thousands as e.g. 31.5k (one decimal max)."""
+    try:
+        if value >= 1000:
+            return f"{value / 1000:.1f}k"
+        return f"{value:,}"
+    except Exception:
+        return str(value)
+
 # CONFIGURATION
+
 
 class EmojiConfig:
 
@@ -47,6 +65,50 @@ class EmojiConfig:
         'default': (93, 0, 136, 255),
         'background': (0, 0, 0, 220)
     }
+
+
+# PAGE JUMP MODAL
+class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
+    def __init__(self, view, total_pages):
+        super().__init__(timeout=60)
+        self.view = view
+        self.total_pages = total_pages
+        self.rate_limiter = get_rate_limiter()
+
+        self.page_number = discord.ui.TextInput(
+            label=f'Enter page number (1-{total_pages})',
+            placeholder=f'1 to {total_pages}',
+            min_length=1,
+            max_length=4,
+            required=True
+        )
+        self.add_item(self.page_number)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            page = int(self.page_number.value) - 1
+
+            if page < 0 or page >= self.total_pages:
+                embed = discord.Embed(
+                    title="❌ Invalid Page",
+                    description=f"Page {page + 1} does not exist. Please enter a number between 1 and {self.total_pages}.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            await interaction.response.defer()
+            self.view.page = page
+            await self.view.update_message(interaction)
+
+        except ValueError:
+            embed = discord.Embed(
+                title="❌ Invalid Input",
+                description="Please enter a valid page number.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # FONTS
@@ -162,7 +224,7 @@ def draw_rounded_rectangle(draw, xy, radius, fill=None, outline=None):
                    fill=fill, outline=outline)
     draw.pieslice([x1, y1, x1 + radius * 2, y1 + radius * 2],
                   180, 270, fill=fill, outline=outline)
-    draw.pieslice([x2 - radius * 2, y1, x2, y1 + radius * 2],
+    draw.pieslice([x2 - radius * 2, y1, x2, y2 - radius * 2],
                   270, 360, fill=fill, outline=outline)
     draw.pieslice([x1, y2 - radius * 2, x1 + radius * 2, y2],
                   90, 180, fill=fill, outline=outline)
@@ -389,7 +451,7 @@ async def generate_emoji_leaderboard_image(
     guild: discord.Guild,
     leaderboard_data: list,
     leaderboard_type: str,
-    days_back: int,
+    display_text: str,
     role_id: str = None,
     role_name: str = None,
     target_member: discord.Member = None,
@@ -431,7 +493,7 @@ async def generate_emoji_leaderboard_image(
     with Pilmoji(image) as pilmoji:
         draw_text_with_stroke_and_emoji(pilmoji, (70, 424), role_text,
                                         font=font_small, fill="white", stroke_fill="black", stroke_width=1)
-        draw_text_with_stroke_and_emoji(pilmoji, (630, 422), f"{days_back} days",
+        draw_text_with_stroke_and_emoji(pilmoji, (630, 422), display_text,
                                         font=font_small, fill="white", stroke_fill="black", stroke_width=1)
         draw_text_with_stroke_and_emoji(pilmoji, (550, 38), datetime.now(timezone.utc).strftime(
             "%B %d, %Y"), font=font_small, fill="white", stroke_fill="black", stroke_width=1)
@@ -484,7 +546,7 @@ async def generate_emoji_leaderboard_image(
                 total_uses = sum(count for _, count, _, _ in leaderboard_data)
                 percentage = (total_count / total_uses) * \
                     100 if total_uses > 0 else 0
-                value_text = f"{total_count:,} uses ({percentage:.1f}%)"
+                value_text = f"{format_count_with_k(total_count)} uses ({percentage:.1f}%)"
 
                 rank_text = f"#{global_rank}"
                 rank_bbox = draw.textbbox((0, 0), rank_text, font=font_medium)
@@ -599,7 +661,7 @@ async def generate_emoji_leaderboard_image(
 async def generate_user_emoji_leaderboard_image(
     guild: discord.Guild,
     user_data: list,
-    days_back: int,
+    display_text: str,
     role_id: str = None,
     role_name: str = None,
     usage_type: str = "all",
@@ -639,7 +701,7 @@ async def generate_user_emoji_leaderboard_image(
     with Pilmoji(image) as pilmoji:
         draw_text_with_stroke_and_emoji(pilmoji, (70, 424), role_text,
                                         font=font_small, fill="white", stroke_fill="black", stroke_width=1)
-        draw_text_with_stroke_and_emoji(pilmoji, (630, 422), f"{days_back} days",
+        draw_text_with_stroke_and_emoji(pilmoji, (630, 422), display_text,
                                         font=font_small, fill="white", stroke_fill="black", stroke_width=1)
         draw_text_with_stroke_and_emoji(pilmoji, (550, 38), datetime.now(timezone.utc).strftime(
             "%B %d, %Y"), font=font_small, fill="white", stroke_fill="black", stroke_width=1)
@@ -692,7 +754,7 @@ async def generate_user_emoji_leaderboard_image(
                 total_uses = sum(count for _, count, _, _ in user_data)
                 percentage = (total_count / total_uses) * \
                     100 if total_uses > 0 else 0
-                value_text = f"{total_count:,} uses ({percentage:.1f}%)"
+                value_text = f"{format_count_with_k(total_count)} uses ({percentage:.1f}%)"
 
                 rank_text = f"#{global_rank}"
                 rank_bbox = draw.textbbox((0, 0), rank_text, font=font_medium)
@@ -937,7 +999,9 @@ class UsageTypeSelectMenu(discord.ui.Select):
             min_values=1,
             max_values=1
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False, thinking=False)
         view = self.view
@@ -953,10 +1017,12 @@ class RoleInputButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
             style=discord.ButtonStyle.primary,
-            label="Input Role ID",
+            label="Filter By Role",
             custom_id="role_input_button"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         modal = RoleInputModal(self.view)
         await interaction.response.send_modal(modal)
@@ -966,6 +1032,7 @@ class RoleInputModal(discord.ui.Modal, title="Enter Role ID"):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
         self.role_id_input = discord.ui.TextInput(
             label="Role ID",
@@ -977,12 +1044,14 @@ class RoleInputModal(discord.ui.Modal, title="Enter Role ID"):
         )
         self.add_item(self.role_id_input)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_id = self.role_id_input.value.strip()
 
             if role_id.lower() == "none" or role_id == "":
                 self.view.selected_role_id = "none"
+                self.view.using_server_default = False
                 self.view.page = 0
                 await interaction.response.defer(ephemeral=False, thinking=False)
                 await self.view.update_message(interaction)
@@ -991,6 +1060,7 @@ class RoleInputModal(discord.ui.Modal, title="Enter Role ID"):
             role = self.view.guild.get_role(int(role_id))
             if role:
                 self.view.selected_role_id = role_id
+                self.view.using_server_default = False
                 self.view.page = 0
                 await interaction.response.defer(ephemeral=False, thinking=False)
                 await self.view.update_message(interaction)
@@ -1023,8 +1093,10 @@ class RoleInputModal(discord.ui.Modal, title="Enter Role ID"):
 class EmojiPrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⬅️", custom_id="emoji_leaderboard_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="emoji_leaderboard_prev")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1042,8 +1114,10 @@ class EmojiPrevButton(discord.ui.Button):
 class EmojiNextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="➡️", custom_id="emoji_leaderboard_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="emoji_leaderboard_next")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1060,14 +1134,52 @@ class EmojiNextButton(discord.ui.Button):
 class EmojiPageIndicator(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
-                         label="Page 1/1", custom_id="emoji_leaderboard_page", disabled=True)
+                         label="Page 1/1", custom_id="emoji_leaderboard_page", disabled=False)
+        self.rate_limiter = get_rate_limiter()
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+
+        # Get total pages based on current data
+        if isinstance(view, EmojiLeaderboardView):
+            total_items = len(view.last_emoji_data) if hasattr(
+                view, 'last_emoji_data') else 0
+            items_per_page = EmojiConfig.EMOJIS_PER_PAGE
+        elif isinstance(view, UserEmojiLeaderboardView):
+            total_items = len(view.last_user_data) if hasattr(
+                view, 'last_user_data') else 0
+            items_per_page = EmojiConfig.USERS_PER_PAGE
+        elif isinstance(view, ChannelEmojiLeaderboardView):
+            total_items = len(view.last_emoji_data) if hasattr(
+                view, 'last_emoji_data') else 0
+            items_per_page = EmojiConfig.EMOJIS_PER_PAGE
+        elif isinstance(view, CategoryEmojiLeaderboardView):
+            total_items = len(view.last_emoji_data) if hasattr(
+                view, 'last_emoji_data') else 0
+            items_per_page = EmojiConfig.EMOJIS_PER_PAGE
+        elif isinstance(view, UserSpecificEmojiLeaderboardView):
+            total_items = len(view.last_emoji_data) if hasattr(
+                view, 'last_emoji_data') else 0
+            items_per_page = EmojiConfig.EMOJIS_PER_PAGE
+        else:
+            total_items = 0
+            items_per_page = 10
+
+        total_pages = max(
+            1, (total_items + items_per_page - 1) // items_per_page)
+
+        modal = PageJumpModal(view, total_pages)
+        await interaction.response.send_modal(modal)
 
 
 class RefreshButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="🔄", custom_id="emoji_stats_refresh")
+                         emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743), custom_id="emoji_stats_refresh")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         await self.view.update_message(interaction)
@@ -1076,66 +1188,113 @@ class RefreshButton(discord.ui.Button):
 class TimeSettingsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⏰ Time Settings", custom_id="emoji_stats_time_settings")
+                         emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867), custom_id="emoji_stats_time_settings")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         self.view.show_time_buttons = not self.view.show_time_buttons
         await self.view.update_message(interaction)
 
 
-class Days7Button(discord.ui.Button):
-    def __init__(self, days_back):
+class AllTimeButton(discord.ui.Button):
+    def __init__(self):
         super().__init__(
-            style=discord.ButtonStyle.primary if days_back == 7 else discord.ButtonStyle.secondary,
-            label="7 Days", custom_id="emoji_stats_days_7"
+            style=discord.ButtonStyle.secondary,
+            label="All Time", custom_id="emoji_stats_all_time"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        self.view.days_back = 7
+        now = datetime.now(timezone.utc)
+        self.view.start_time = None
+        self.view.end_time = now
+        self.view.days_back_equiv = 999999
+        self.view.display_text = "All Time"
+        self.view.using_server_default = False
+        self.view.page = 0
+        self.view.show_time_buttons = False
+        await self.view.update_message(interaction)
+
+
+class Days7Button(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label="7 Days", custom_id="emoji_stats_days_7"
+        )
+        self.rate_limiter = get_rate_limiter()
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        now = datetime.now(timezone.utc)
+        self.view.start_time = now - timedelta(days=7)
+        self.view.end_time = now
+        self.view.days_back_equiv = 7
+        self.view.display_text = "7 days"
+        self.view.using_server_default = False
         self.view.page = 0
         self.view.show_time_buttons = False
         await self.view.update_message(interaction)
 
 
 class Days14Button(discord.ui.Button):
-    def __init__(self, days_back):
+    def __init__(self):
         super().__init__(
-            style=discord.ButtonStyle.primary if days_back == 14 else discord.ButtonStyle.secondary,
+            style=discord.ButtonStyle.secondary,
             label="14 Days", custom_id="emoji_stats_days_14"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        self.view.days_back = 14
+        now = datetime.now(timezone.utc)
+        self.view.start_time = now - timedelta(days=14)
+        self.view.end_time = now
+        self.view.days_back_equiv = 14
+        self.view.display_text = "14 days"
+        self.view.using_server_default = False
         self.view.page = 0
         self.view.show_time_buttons = False
         await self.view.update_message(interaction)
 
 
 class Days30Button(discord.ui.Button):
-    def __init__(self, days_back):
+    def __init__(self):
         super().__init__(
-            style=discord.ButtonStyle.primary if days_back == 30 else discord.ButtonStyle.secondary,
+            style=discord.ButtonStyle.secondary,
             label="30 Days", custom_id="emoji_stats_days_30"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        self.view.days_back = 30
+        now = datetime.now(timezone.utc)
+        self.view.start_time = now - timedelta(days=30)
+        self.view.end_time = now
+        self.view.days_back_equiv = 30
+        self.view.display_text = "30 days"
+        self.view.using_server_default = False
         self.view.page = 0
         self.view.show_time_buttons = False
         await self.view.update_message(interaction)
 
 
 class DaysCustomButton(discord.ui.Button):
-    def __init__(self, days_back):
+    def __init__(self):
         super().__init__(
-            style=discord.ButtonStyle.secondary,
+            style=discord.ButtonStyle.success,
             label="Custom", custom_id="emoji_stats_days_custom"
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         modal = CustomDaysModal(self.view)
         await interaction.response.send_modal(modal)
@@ -1145,17 +1304,20 @@ class CustomDaysModal(discord.ui.Modal, title="Custom Time Range"):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
         self.days_input = discord.ui.TextInput(
             label="Number of Days",
             placeholder="Enter number of days (max 2000)",
-            default=str(self.view.days_back),
+            default=str(
+                self.view.days_back_equiv) if self.view.days_back_equiv != 999999 else "",
             min_length=1,
             max_length=4,
             required=True
         )
         self.add_item(self.days_input)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days_input.value)
@@ -1167,7 +1329,12 @@ class CustomDaysModal(discord.ui.Modal, title="Custom Time Range"):
                 return
 
             await interaction.response.defer(ephemeral=False, thinking=False)
-            self.view.days_back = days
+            now = datetime.now(timezone.utc)
+            self.view.start_time = now - timedelta(days=days)
+            self.view.end_time = now
+            self.view.days_back_equiv = days
+            self.view.display_text = f"{days} days"
+            self.view.using_server_default = False
             self.view.page = 0
             self.view.show_time_buttons = False
             await self.view.update_message(interaction)
@@ -1179,15 +1346,22 @@ class CustomDaysModal(discord.ui.Modal, title="Custom Time Range"):
 # EMOJI LEADERBOARD VIEW
 
 class EmojiLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int = 14, page: int = 0, selected_role_id: str = None, usage_type: str = 'all'):
+    def __init__(self, cog_instance, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = 14, display_text: str = "14 days", page: int = 0, selected_role_id: str = None,
+                 usage_type: str = 'all', using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.days_back = days_back
+        self.start_time = start_time
+        self.end_time = end_time if end_time else datetime.now(timezone.utc)
+        self.days_back_equiv = days_back_equiv
+        self.display_text = display_text
         self.page = page
         self.selected_role_id = selected_role_id
         self.usage_type = usage_type
         self.show_time_buttons = False
+        self.using_server_default = using_server_default
+        self.last_emoji_data = []
         self.message = None
 
     async def _update_buttons(self, total_pages: int = 1):
@@ -1215,10 +1389,11 @@ class EmojiLeaderboardView(discord.ui.View):
         self.add_item(TimeSettingsButton())
 
         if self.show_time_buttons:
-            self.add_item(Days7Button(self.days_back))
-            self.add_item(Days14Button(self.days_back))
-            self.add_item(Days30Button(self.days_back))
-            self.add_item(DaysCustomButton(self.days_back))
+            self.add_item(AllTimeButton())
+            self.add_item(Days7Button())
+            self.add_item(Days14Button())
+            self.add_item(Days30Button())
+            self.add_item(DaysCustomButton())
 
     async def generate_image(self):
         # Get role name from database
@@ -1238,9 +1413,10 @@ class EmojiLeaderboardView(discord.ui.View):
                 except:
                     pass
 
-        emoji_data = await self.cog.get_emoji_stats(self.guild, self.days_back, self.usage_type, self.selected_role_id)
+        self.last_emoji_data = await self.cog.get_emoji_stats(
+            self.guild, self.start_time, self.end_time, self.usage_type, self.selected_role_id)
 
-        total_emojis = len(emoji_data)
+        total_emojis = len(self.last_emoji_data)
         total_pages = max(
             1, (total_emojis + EmojiConfig.EMOJIS_PER_PAGE - 1) // EmojiConfig.EMOJIS_PER_PAGE)
 
@@ -1249,9 +1425,9 @@ class EmojiLeaderboardView(discord.ui.View):
 
         return await generate_emoji_leaderboard_image(
             guild=self.guild,
-            leaderboard_data=emoji_data,
+            leaderboard_data=self.last_emoji_data,
             leaderboard_type='server',
-            days_back=self.days_back,
+            display_text=self.display_text,
             role_id=self.selected_role_id,
             role_name=role_name,
             usage_type=self.usage_type,
@@ -1283,15 +1459,22 @@ class EmojiLeaderboardView(discord.ui.View):
 # EMOJI USER LEADERBOARD VIEW
 
 class UserEmojiLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int = 14, page: int = 0, selected_role_id: str = None, usage_type: str = 'all', target_location=None):
+    def __init__(self, cog_instance, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = 14, display_text: str = "14 days", page: int = 0, selected_role_id: str = None,
+                 usage_type: str = 'all', target_location=None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.days_back = days_back
+        self.start_time = start_time
+        self.end_time = end_time if end_time else datetime.now(timezone.utc)
+        self.days_back_equiv = days_back_equiv
+        self.display_text = display_text
         self.page = page
         self.selected_role_id = selected_role_id
         self.usage_type = usage_type
         self.target_location = target_location
+        self.using_server_default = using_server_default
+        self.last_user_data = []
         self.show_time_buttons = False
         self.message = None
 
@@ -1320,10 +1503,11 @@ class UserEmojiLeaderboardView(discord.ui.View):
         self.add_item(TimeSettingsButton())
 
         if self.show_time_buttons:
-            self.add_item(Days7Button(self.days_back))
-            self.add_item(Days14Button(self.days_back))
-            self.add_item(Days30Button(self.days_back))
-            self.add_item(DaysCustomButton(self.days_back))
+            self.add_item(AllTimeButton())
+            self.add_item(Days7Button())
+            self.add_item(Days14Button())
+            self.add_item(Days30Button())
+            self.add_item(DaysCustomButton())
 
     async def generate_image(self):
         # Get role name from database
@@ -1345,21 +1529,21 @@ class UserEmojiLeaderboardView(discord.ui.View):
 
         if self.target_location:
             if isinstance(self.target_location, discord.TextChannel):
-                user_data = await self.cog.get_user_emoji_stats(
-                    self.guild, self.days_back, self.usage_type, self.selected_role_id,
+                self.last_user_data = await self.cog.get_user_emoji_stats(
+                    self.guild, self.start_time, self.end_time, self.usage_type, self.selected_role_id,
                     channel_id=self.target_location.id)
             elif isinstance(self.target_location, discord.CategoryChannel):
-                user_data = await self.cog.get_user_emoji_stats(
-                    self.guild, self.days_back, self.usage_type, self.selected_role_id,
+                self.last_user_data = await self.cog.get_user_emoji_stats(
+                    self.guild, self.start_time, self.end_time, self.usage_type, self.selected_role_id,
                     category_id=self.target_location.id)
             else:
-                user_data = await self.cog.get_user_emoji_stats(
-                    self.guild, self.days_back, self.usage_type, self.selected_role_id)
+                self.last_user_data = await self.cog.get_user_emoji_stats(
+                    self.guild, self.start_time, self.end_time, self.usage_type, self.selected_role_id)
         else:
-            user_data = await self.cog.get_user_emoji_stats(
-                self.guild, self.days_back, self.usage_type, self.selected_role_id)
+            self.last_user_data = await self.cog.get_user_emoji_stats(
+                self.guild, self.start_time, self.end_time, self.usage_type, self.selected_role_id)
 
-        total_users = len(user_data)
+        total_users = len(self.last_user_data)
         total_pages = max(
             1, (total_users + EmojiConfig.USERS_PER_PAGE - 1) // EmojiConfig.USERS_PER_PAGE)
 
@@ -1368,8 +1552,8 @@ class UserEmojiLeaderboardView(discord.ui.View):
 
         return await generate_user_emoji_leaderboard_image(
             guild=self.guild,
-            user_data=user_data,
-            days_back=self.days_back,
+            user_data=self.last_user_data,
+            display_text=self.display_text,
             role_id=self.selected_role_id,
             role_name=role_name,
             usage_type=self.usage_type,
@@ -1403,15 +1587,23 @@ class UserEmojiLeaderboardView(discord.ui.View):
 
 # EMOJI CHANNEL LEADERBOARD VIEW
 class ChannelEmojiLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, channel: discord.TextChannel, days_back: int = 14, page: int = 0, selected_role_id: str = None, usage_type: str = 'all'):
+    def __init__(self, cog_instance, guild: discord.Guild, channel: discord.TextChannel,
+                 start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14,
+                 display_text: str = "14 days", page: int = 0, selected_role_id: str = None,
+                 usage_type: str = 'all', using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.channel = channel
-        self.days_back = days_back
+        self.start_time = start_time
+        self.end_time = end_time if end_time else datetime.now(timezone.utc)
+        self.days_back_equiv = days_back_equiv
+        self.display_text = display_text
         self.page = page
         self.selected_role_id = selected_role_id
         self.usage_type = usage_type
+        self.using_server_default = using_server_default
+        self.last_emoji_data = []
         self.show_time_buttons = False
         self.message = None
 
@@ -1440,10 +1632,11 @@ class ChannelEmojiLeaderboardView(discord.ui.View):
         self.add_item(TimeSettingsButton())
 
         if self.show_time_buttons:
-            self.add_item(Days7Button(self.days_back))
-            self.add_item(Days14Button(self.days_back))
-            self.add_item(Days30Button(self.days_back))
-            self.add_item(DaysCustomButton(self.days_back))
+            self.add_item(AllTimeButton())
+            self.add_item(Days7Button())
+            self.add_item(Days14Button())
+            self.add_item(Days30Button())
+            self.add_item(DaysCustomButton())
 
     async def generate_image(self):
         # Get role name from database
@@ -1463,9 +1656,10 @@ class ChannelEmojiLeaderboardView(discord.ui.View):
                 except:
                     pass
 
-        emoji_data = await self.cog.get_channel_emoji_stats(self.guild, self.channel.id, self.days_back, self.usage_type, self.selected_role_id)
+        self.last_emoji_data = await self.cog.get_channel_emoji_stats(
+            self.guild, self.channel.id, self.start_time, self.end_time, self.usage_type, self.selected_role_id)
 
-        total_emojis = len(emoji_data)
+        total_emojis = len(self.last_emoji_data)
         total_pages = max(
             1, (total_emojis + EmojiConfig.EMOJIS_PER_PAGE - 1) // EmojiConfig.EMOJIS_PER_PAGE)
 
@@ -1474,9 +1668,9 @@ class ChannelEmojiLeaderboardView(discord.ui.View):
 
         return await generate_emoji_leaderboard_image(
             guild=self.guild,
-            leaderboard_data=emoji_data,
+            leaderboard_data=self.last_emoji_data,
             leaderboard_type='channel',
-            days_back=self.days_back,
+            display_text=self.display_text,
             role_id=self.selected_role_id,
             role_name=role_name,
             usage_type=self.usage_type,
@@ -1509,15 +1703,23 @@ class ChannelEmojiLeaderboardView(discord.ui.View):
 
 # EMOJI CATEGORY LEADERBOARD VIEW
 class CategoryEmojiLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, category: discord.CategoryChannel, days_back: int = 14, page: int = 0, selected_role_id: str = None, usage_type: str = 'all'):
+    def __init__(self, cog_instance, guild: discord.Guild, category: discord.CategoryChannel,
+                 start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14,
+                 display_text: str = "14 days", page: int = 0, selected_role_id: str = None,
+                 usage_type: str = 'all', using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.category = category
-        self.days_back = days_back
+        self.start_time = start_time
+        self.end_time = end_time if end_time else datetime.now(timezone.utc)
+        self.days_back_equiv = days_back_equiv
+        self.display_text = display_text
         self.page = page
         self.selected_role_id = selected_role_id
         self.usage_type = usage_type
+        self.using_server_default = using_server_default
+        self.last_emoji_data = []
         self.show_time_buttons = False
         self.message = None
 
@@ -1546,10 +1748,11 @@ class CategoryEmojiLeaderboardView(discord.ui.View):
         self.add_item(TimeSettingsButton())
 
         if self.show_time_buttons:
-            self.add_item(Days7Button(self.days_back))
-            self.add_item(Days14Button(self.days_back))
-            self.add_item(Days30Button(self.days_back))
-            self.add_item(DaysCustomButton(self.days_back))
+            self.add_item(AllTimeButton())
+            self.add_item(Days7Button())
+            self.add_item(Days14Button())
+            self.add_item(Days30Button())
+            self.add_item(DaysCustomButton())
 
     async def generate_image(self):
         # Get role name from database
@@ -1569,9 +1772,10 @@ class CategoryEmojiLeaderboardView(discord.ui.View):
                 except:
                     pass
 
-        emoji_data = await self.cog.get_category_emoji_stats(self.guild, self.category.id, self.days_back, self.usage_type, self.selected_role_id)
+        self.last_emoji_data = await self.cog.get_category_emoji_stats(
+            self.guild, self.category.id, self.start_time, self.end_time, self.usage_type, self.selected_role_id)
 
-        total_emojis = len(emoji_data)
+        total_emojis = len(self.last_emoji_data)
         total_pages = max(
             1, (total_emojis + EmojiConfig.EMOJIS_PER_PAGE - 1) // EmojiConfig.EMOJIS_PER_PAGE)
 
@@ -1580,9 +1784,9 @@ class CategoryEmojiLeaderboardView(discord.ui.View):
 
         return await generate_emoji_leaderboard_image(
             guild=self.guild,
-            leaderboard_data=emoji_data,
+            leaderboard_data=self.last_emoji_data,
             leaderboard_type='category',
-            days_back=self.days_back,
+            display_text=self.display_text,
             role_id=self.selected_role_id,
             role_name=role_name,
             usage_type=self.usage_type,
@@ -1616,17 +1820,23 @@ class CategoryEmojiLeaderboardView(discord.ui.View):
 # USER SPECIFIC EMOJI LEADERBOARD VIEW
 class UserSpecificEmojiLeaderboardView(discord.ui.View):
     def __init__(self, cog_instance, guild: discord.Guild, target_user: discord.Member,
-                 days_back: int = 14, page: int = 0, selected_role_id: str = None,
-                 usage_type: str = 'all', target_location=None):
+                 start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14,
+                 display_text: str = "14 days", page: int = 0, selected_role_id: str = None,
+                 usage_type: str = 'all', target_location=None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.target_user = target_user
-        self.days_back = days_back
+        self.start_time = start_time
+        self.end_time = end_time if end_time else datetime.now(timezone.utc)
+        self.days_back_equiv = days_back_equiv
+        self.display_text = display_text
         self.page = page
         self.selected_role_id = selected_role_id
         self.usage_type = usage_type
         self.target_location = target_location
+        self.using_server_default = using_server_default
+        self.last_emoji_data = []
         self.show_time_buttons = False
         self.message = None
 
@@ -1655,10 +1865,11 @@ class UserSpecificEmojiLeaderboardView(discord.ui.View):
         self.add_item(TimeSettingsButton())
 
         if self.show_time_buttons:
-            self.add_item(Days7Button(self.days_back))
-            self.add_item(Days14Button(self.days_back))
-            self.add_item(Days30Button(self.days_back))
-            self.add_item(DaysCustomButton(self.days_back))
+            self.add_item(AllTimeButton())
+            self.add_item(Days7Button())
+            self.add_item(Days14Button())
+            self.add_item(Days30Button())
+            self.add_item(DaysCustomButton())
 
     async def generate_image(self):
         # Get role name from database
@@ -1680,29 +1891,29 @@ class UserSpecificEmojiLeaderboardView(discord.ui.View):
 
         if self.target_location:
             if isinstance(self.target_location, discord.TextChannel):
-                emoji_data = await self.cog.get_user_top_emojis(
+                self.last_emoji_data = await self.cog.get_user_top_emojis(
                     self.guild, self.target_user.id,
-                    self.days_back, self.usage_type, self.selected_role_id,
+                    self.start_time, self.end_time, self.usage_type, self.selected_role_id,
                     channel_id=self.target_location.id
                 )
             elif isinstance(self.target_location, discord.CategoryChannel):
-                emoji_data = await self.cog.get_user_top_emojis(
+                self.last_emoji_data = await self.cog.get_user_top_emojis(
                     self.guild, self.target_user.id,
-                    self.days_back, self.usage_type, self.selected_role_id,
+                    self.start_time, self.end_time, self.usage_type, self.selected_role_id,
                     category_id=self.target_location.id
                 )
             else:
-                emoji_data = await self.cog.get_user_top_emojis(
+                self.last_emoji_data = await self.cog.get_user_top_emojis(
                     self.guild, self.target_user.id,
-                    self.days_back, self.usage_type, self.selected_role_id
+                    self.start_time, self.end_time, self.usage_type, self.selected_role_id
                 )
         else:
-            emoji_data = await self.cog.get_user_top_emojis(
+            self.last_emoji_data = await self.cog.get_user_top_emojis(
                 self.guild, self.target_user.id,
-                self.days_back, self.usage_type, self.selected_role_id
+                self.start_time, self.end_time, self.usage_type, self.selected_role_id
             )
 
-        total_emojis = len(emoji_data)
+        total_emojis = len(self.last_emoji_data)
         total_pages = max(
             1, (total_emojis + EmojiConfig.EMOJIS_PER_PAGE -
                 1) // EmojiConfig.EMOJIS_PER_PAGE
@@ -1713,9 +1924,9 @@ class UserSpecificEmojiLeaderboardView(discord.ui.View):
 
         img_bytes = await generate_emoji_leaderboard_image(
             guild=self.guild,
-            leaderboard_data=emoji_data,
+            leaderboard_data=self.last_emoji_data,
             leaderboard_type='server',
-            days_back=self.days_back,
+            display_text=self.display_text,
             role_id=self.selected_role_id,
             role_name=role_name,
             target_member=self.target_user,
@@ -1790,10 +2001,118 @@ class EmojiLeaderboard(commands.Cog):
     async def cog_load(self):
         self.initialized = True
 
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild_id: int) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                end = datetime.now(timezone.utc)
+                start = end - timedelta(days=EmojiConfig.DEFAULT_DAYS_BACK)
+                return (start, end, f"{EmojiConfig.DEFAULT_DAYS_BACK} days", EmojiConfig.DEFAULT_DAYS_BACK)
+
+            settings = await settings_cog.get_guild_settings(guild_id)
+            mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.now(timezone.utc)
+
+            if mode == 'all_time':
+                return (None, now, "All Time", 999999)
+
+            elif mode == 'days_back':
+                days = settings.get(
+                    'default_days_back') or EmojiConfig.DEFAULT_DAYS_BACK
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+
+                # Add timezone awareness guards
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Custom"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=EmojiConfig.DEFAULT_DAYS_BACK)
+            return (start, end, f"{EmojiConfig.DEFAULT_DAYS_BACK} days", EmojiConfig.DEFAULT_DAYS_BACK)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=EmojiConfig.DEFAULT_DAYS_BACK)
+            return (start, end, f"{EmojiConfig.DEFAULT_DAYS_BACK} days", EmojiConfig.DEFAULT_DAYS_BACK)
+
     async def get_database_cog(self):
         return self.bot.get_cog('DatabaseStats')
 
-    async def get_emoji_stats(self, guild: discord.Guild, days_back: int, usage_type: str = 'all', role_id: str = None):
+    async def get_emoji_stats(self, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                              usage_type: str = 'all', role_id: str = None):
         """Server-wide emoji stats using emoji_usage_hourly table"""
         db_cog = await self.get_database_cog()
         if not db_cog:
@@ -1804,9 +2123,6 @@ class EmojiLeaderboard(commands.Cog):
             role = guild.get_role(int(role_id))
             if role:
                 role_filter_ids = [role.id]
-
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(days=days_back)
 
         emoji_data = await db_cog.q_emoji_server_leaderboard(
             guild_id=guild.id,
@@ -1843,7 +2159,8 @@ class EmojiLeaderboard(commands.Cog):
 
         return formatted_data
 
-    async def get_user_emoji_stats(self, guild: discord.Guild, days_back: int, usage_type: str = 'all', role_id: str = None, channel_id: int = None, category_id: int = None):
+    async def get_user_emoji_stats(self, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                                   usage_type: str = 'all', role_id: str = None, channel_id: int = None, category_id: int = None):
         """User emoji leaderboard using emoji_usage_hourly table"""
         db_cog = await self.get_database_cog()
         if not db_cog:
@@ -1854,9 +2171,6 @@ class EmojiLeaderboard(commands.Cog):
             role = guild.get_role(int(role_id))
             if role:
                 role_filter_ids = [role.id]
-
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(days=days_back)
 
         user_data = await db_cog.q_emoji_user_leaderboard(
             guild_id=guild.id,
@@ -1895,7 +2209,8 @@ class EmojiLeaderboard(commands.Cog):
 
         return formatted_data
 
-    async def get_channel_emoji_stats(self, guild: discord.Guild, channel_id: int, days_back: int, usage_type: str = 'all', role_id: str = None):
+    async def get_channel_emoji_stats(self, guild: discord.Guild, channel_id: int, start_time: datetime = None,
+                                      end_time: datetime = None, usage_type: str = 'all', role_id: str = None):
         """Channel emoji stats using emoji_usage_hourly table"""
         db_cog = await self.get_database_cog()
         if not db_cog:
@@ -1906,9 +2221,6 @@ class EmojiLeaderboard(commands.Cog):
             role = guild.get_role(int(role_id))
             if role:
                 role_filter_ids = [role.id]
-
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(days=days_back)
 
         emoji_data = await db_cog.q_emoji_channel_leaderboard(
             guild_id=guild.id,
@@ -1946,7 +2258,8 @@ class EmojiLeaderboard(commands.Cog):
 
         return formatted_data
 
-    async def get_category_emoji_stats(self, guild: discord.Guild, category_id: int, days_back: int, usage_type: str = 'all', role_id: str = None):
+    async def get_category_emoji_stats(self, guild: discord.Guild, category_id: int, start_time: datetime = None,
+                                       end_time: datetime = None, usage_type: str = 'all', role_id: str = None):
         """Category emoji stats using emoji_usage_hourly table"""
         db_cog = await self.get_database_cog()
         if not db_cog:
@@ -1957,9 +2270,6 @@ class EmojiLeaderboard(commands.Cog):
             role = guild.get_role(int(role_id))
             if role:
                 role_filter_ids = [role.id]
-
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(days=days_back)
 
         emoji_data = await db_cog.q_emoji_category_leaderboard(
             guild_id=guild.id,
@@ -1997,7 +2307,9 @@ class EmojiLeaderboard(commands.Cog):
 
         return formatted_data
 
-    async def get_user_top_emojis(self, guild: discord.Guild, user_id: int, days_back: int, usage_type: str = 'all', role_id: str = None, channel_id: int = None, category_id: int = None):
+    async def get_user_top_emojis(self, guild: discord.Guild, user_id: int, start_time: datetime = None,
+                                  end_time: datetime = None, usage_type: str = 'all', role_id: str = None,
+                                  channel_id: int = None, category_id: int = None):
         """User's top emojis using emoji_usage_hourly table"""
         db_cog = await self.get_database_cog()
         if not db_cog:
@@ -2008,9 +2320,6 @@ class EmojiLeaderboard(commands.Cog):
             role = guild.get_role(int(role_id))
             if role:
                 role_filter_ids = [role.id]
-
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(days=days_back)
 
         emoji_data = await db_cog.q_user_top_emojis(
             guild_id=guild.id,
@@ -2078,8 +2387,10 @@ class EmojiLeaderboard(commands.Cog):
             except:
                 pass
 
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
+
             # Default parameters
-            days_back = EmojiConfig.DEFAULT_DAYS_BACK
             selected_role_id = "none"
             usage_type = "all"
 
@@ -2087,8 +2398,10 @@ class EmojiLeaderboard(commands.Cog):
             if command_type == "server":
                 # Server-wide emoji leaderboard
                 view = EmojiLeaderboardView(
-                    self, guild, days_back=days_back,
-                    selected_role_id=selected_role_id, usage_type=usage_type
+                    self, guild, start_time=start_time, end_time=end_time,
+                    days_back_equiv=days_back_equiv, display_text=display_text,
+                    selected_role_id=selected_role_id, usage_type=usage_type,
+                    using_server_default=True
                 )
 
             elif command_type == "channel":
@@ -2103,8 +2416,10 @@ class EmojiLeaderboard(commands.Cog):
                     return
 
                 view = ChannelEmojiLeaderboardView(
-                    self, guild, channel, days_back=days_back,
-                    selected_role_id=selected_role_id, usage_type=usage_type
+                    self, guild, channel, start_time=start_time, end_time=end_time,
+                    days_back_equiv=days_back_equiv, display_text=display_text,
+                    selected_role_id=selected_role_id, usage_type=usage_type,
+                    using_server_default=True
                 )
 
             elif command_type == "category":
@@ -2124,8 +2439,10 @@ class EmojiLeaderboard(commands.Cog):
                     return
 
                 view = CategoryEmojiLeaderboardView(
-                    self, guild, category, days_back=days_back,
-                    selected_role_id=selected_role_id, usage_type=usage_type
+                    self, guild, category, start_time=start_time, end_time=end_time,
+                    days_back_equiv=days_back_equiv, display_text=display_text,
+                    selected_role_id=selected_role_id, usage_type=usage_type,
+                    using_server_default=True
                 )
 
             elif command_type == "user_stats":
@@ -2143,9 +2460,10 @@ class EmojiLeaderboard(commands.Cog):
                     target_location = None
 
                 view = UserSpecificEmojiLeaderboardView(
-                    self, guild, target_user, days_back=days_back,
+                    self, guild, target_user, start_time=start_time, end_time=end_time,
+                    days_back_equiv=days_back_equiv, display_text=display_text,
                     selected_role_id=selected_role_id, usage_type=usage_type,
-                    target_location=target_location
+                    target_location=target_location, using_server_default=True
                 )
 
             elif command_type == "user_leaderboard":
@@ -2158,18 +2476,28 @@ class EmojiLeaderboard(commands.Cog):
                     target_location = None
 
                 view = UserEmojiLeaderboardView(
-                    self, guild, days_back=days_back,
+                    self, guild, start_time=start_time, end_time=end_time,
+                    days_back_equiv=days_back_equiv, display_text=display_text,
                     selected_role_id=selected_role_id, usage_type=usage_type,
-                    target_location=target_location
+                    target_location=target_location, using_server_default=True
                 )
             else:
                 await ctx.send("❌ Invalid command type.", delete_after=5)
                 return
 
             # Generate and send the image
+            # Generate and send the image
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(img_bytes, filename="emoji_leaderboard.png")
-            msg = await ctx.send(file=file, view=view)
+
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
+            msg = await ctx.send(content=content, file=file, view=view)
             view.message = msg
 
             # Update buttons
@@ -2346,13 +2674,25 @@ class EmojiLeaderboard(commands.Cog):
 
             await interaction.response.defer()
 
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
+
             view = EmojiLeaderboardView(
-                self, guild, days_back=EmojiConfig.DEFAULT_DAYS_BACK)
+                self, guild, start_time=start_time, end_time=end_time,
+                days_back_equiv=days_back_equiv, display_text=display_text,
+                using_server_default=True)
 
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(img_bytes, filename="emoji_leaderboard.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2392,15 +2732,26 @@ class EmojiLeaderboard(commands.Cog):
 
             await interaction.response.defer()
 
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
+
             view = UserEmojiLeaderboardView(
-                self, guild, days_back=EmojiConfig.DEFAULT_DAYS_BACK,
-                target_location=target_location)
+                self, guild, start_time=start_time, end_time=end_time,
+                days_back_equiv=days_back_equiv, display_text=display_text,
+                target_location=target_location, using_server_default=True)
 
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(
                 img_bytes, filename="user_emoji_leaderboard.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2428,14 +2779,26 @@ class EmojiLeaderboard(commands.Cog):
 
             await interaction.response.defer()
 
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
+
             view = ChannelEmojiLeaderboardView(
-                self, guild, channel, days_back=EmojiConfig.DEFAULT_DAYS_BACK)
+                self, guild, channel, start_time=start_time, end_time=end_time,
+                days_back_equiv=days_back_equiv, display_text=display_text,
+                using_server_default=True)
 
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(
                 img_bytes, filename="channel_emoji_leaderboard.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2463,14 +2826,26 @@ class EmojiLeaderboard(commands.Cog):
 
             await interaction.response.defer()
 
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
+
             view = CategoryEmojiLeaderboardView(
-                self, guild, category, days_back=EmojiConfig.DEFAULT_DAYS_BACK)
+                self, guild, category, start_time=start_time, end_time=end_time,
+                days_back_equiv=days_back_equiv, display_text=display_text,
+                using_server_default=True)
 
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(
                 img_bytes, filename="category_emoji_leaderboard.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2512,14 +2887,25 @@ class EmojiLeaderboard(commands.Cog):
 
             await interaction.response.defer()
 
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
+
             view = UserSpecificEmojiLeaderboardView(
-                self, guild, user, days_back=EmojiConfig.DEFAULT_DAYS_BACK,
-                target_location=target_location)
+                self, guild, user, start_time=start_time, end_time=end_time,
+                days_back_equiv=days_back_equiv, display_text=display_text,
+                target_location=target_location, using_server_default=True)
 
             img_bytes, total_pages = await view.generate_image()
             file = discord.File(img_bytes, filename="user_emoji_stats.png")
 
-            await interaction.followup.send(file=file, view=view)
+            db_cog = await self.get_database_cog()
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message

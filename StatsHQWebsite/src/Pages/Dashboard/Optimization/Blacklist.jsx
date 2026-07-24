@@ -58,7 +58,39 @@ class ServerDataCache {
   }
 }
 
+// Simple cache for user profiles with size limit (no avatars)
+class ProfileCache {
+  constructor(maxSize = 500) {
+    this.cache = new Map();
+    this.maxSize = maxSize;
+  }
+
+  get(key) {
+    const value = this.cache.get(key);
+    if (value && value.name && !value.name.startsWith('User ')) {
+      this.cache.delete(key);
+      this.cache.set(key, value);
+      return value;
+    }
+    if (value) {
+      this.cache.delete(key);
+    }
+    return null;
+  }
+
+  set(key, value) {
+    if (value.name && !value.name.startsWith('User ')) {
+      if (this.cache.size >= this.maxSize) {
+        const firstKey = this.cache.keys().next().value;
+        this.cache.delete(firstKey);
+      }
+      this.cache.set(key, value);
+    }
+  }
+}
+
 // Initialize caches
+const profileCache = new ProfileCache(500);
 const serverDataCache = new ServerDataCache(30, 5 * 60 * 1000);
 const blacklistCache = new ServerDataCache(20, 2 * 60 * 1000);
 
@@ -78,6 +110,73 @@ const getCacheKey = (type, id, params) => {
   
   const sortedParams = sortObject(params || {});
   return `${type}:${id}:${JSON.stringify(sortedParams)}`;
+};
+
+const batchFetchUserBasicInfo = async (userIds, guildId) => {
+  if (!userIds || userIds.length === 0) return {};
+  
+  const uniqueIds = [...new Set(userIds.map(id => String(id)))];
+  const results = {};
+  const uncachedIds = [];
+  
+  for (const id of uniqueIds) {
+    const cached = profileCache.get(id);
+    if (cached && cached.name && !cached.name.startsWith('User ')) {
+      results[id] = cached;
+    } else {
+      uncachedIds.push(id);
+    }
+  }
+  
+  if (uncachedIds.length === 0) return results;
+  
+  try {
+    const fetchPromises = uncachedIds.map(async (userId) => {
+      const response = await fetch(`${API_BASE_URL}/api/username/any-table/${guildId}/${userId}`, {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.username && !data.username.startsWith('User ')) {
+          return { userId, username: data.username };
+        }
+      }
+      return { userId, username: null };
+    });
+    
+    const fetchedResults = await Promise.all(fetchPromises);
+    
+    for (const { userId, username } of fetchedResults) {
+      if (username) {
+        const userData = {
+          id: userId,
+          username: username,
+          global_name: username,
+          name: username
+        };
+        results[userId] = userData;
+        profileCache.set(userId, userData);
+      }
+    }
+  } catch (error) {
+    console.error('Error batch fetching usernames:', error);
+  }
+  
+  for (const id of uncachedIds) {
+    if (!results[id]) {
+      const fallback = {
+        id: id,
+        username: `User ${id.slice(-4)}`,
+        global_name: `User ${id.slice(-4)}`,
+        name: `User ${id.slice(-4)}`
+      };
+      results[id] = fallback;
+    }
+  }
+  
+  return results;
 };
 
 // Access Denied Component - UPDATED TO MATCH SETTINGS STYLE
@@ -1007,13 +1106,30 @@ const BlacklistDashboard = () => {
     } else {
       const searchLower = userSearch.toLowerCase();
       setFilteredUsers(users.filter(user => 
-        (user.display_name?.toLowerCase().includes(searchLower) ||
-         user.username?.toLowerCase().includes(searchLower) ||
-         user.global_name?.toLowerCase().includes(searchLower) ||
-         user.id?.includes(searchLower))
+        (user.name?.toLowerCase().includes(searchLower) ||
+        user.username?.toLowerCase().includes(searchLower) ||
+        user.global_name?.toLowerCase().includes(searchLower) ||
+        user.id?.includes(searchLower))
       ));
     }
   }, [userSearch, users]);
+
+  useEffect(() => {
+    if (showUserDropdown && filteredUsers.length > 0 && usersLoaded) {
+      const usersWithoutNames = filteredUsers.filter(u => !u.name);
+      if (usersWithoutNames.length > 0 && currentServer) {
+        const userIds = usersWithoutNames.map(u => u.id);
+        batchFetchUserBasicInfo(userIds, currentServer.id).then(results => {
+          setUsers(prev => prev.map(u => 
+            results[u.id] ? { ...u, name: results[u.id].name, username: results[u.id].username } : u
+          ));
+          setFilteredUsers(prev => prev.map(u => 
+            results[u.id] ? { ...u, name: results[u.id].name, username: results[u.id].username } : u
+          ));
+        });
+      }
+    }
+  }, [showUserDropdown, filteredUsers, usersLoaded, currentServer]);
 
   useEffect(() => {
     if (channelSearch.trim() === "") {
@@ -1223,14 +1339,20 @@ const BlacklistDashboard = () => {
         return;
       }
       
-      const response = await fetch(`${API_BASE_URL}/api/server/real-users?guild_id=${currentServer.id}&limit=500`, {
+      const response = await fetch(`${API_BASE_URL}/api/messages/users?guild_id=${currentServer.id}`, {
         credentials: 'include'
       });
       if (response.ok) {
         const data = await response.json();
-        setUsers(data);
-        setFilteredUsers(data);
-        serverDataCache.set(cacheKey, data);
+        const userList = (data.user_ids || []).map(userId => ({
+          id: String(userId),
+          username: null,
+          global_name: null,
+          name: null
+        }));
+        setUsers(userList);
+        setFilteredUsers(userList);
+        serverDataCache.set(cacheKey, userList);
       }
     } catch (error) {
       console.error('Error fetching users:', error);
@@ -1692,18 +1814,15 @@ const BlacklistDashboard = () => {
                             className="entity-option"
                             onMouseDown={() => {
                               setTempUserId(user.id);
-                              setTempUserName(user.display_name || user.username || user.global_name || user.name);
-                              setUserSearch(user.display_name || user.username || user.global_name || user.name);
+                              setTempUserName(user.name || user.username || user.global_name || `User ${user.id}`);
+                              setUserSearch(user.name || user.username || user.global_name || `User ${user.id}`);
                               setShowApplyUser(true);
                               setShowUserDropdown(false);
                             }}
                           >
                             <div className="entity-option-info">
-                              {user.avatar && (
-                                <img src={user.avatar} alt="" className="entity-avatar" />
-                              )}
                               <span className="entity-name">
-                                {user.display_name || user.global_name || user.username || `User ${user.id}`}
+                                {user.name || user.username || user.global_name || `User ${user.id}`}
                               </span>
                             </div>
                             <span className="entity-subtext">ID: {user.id}</span>
@@ -1999,10 +2118,7 @@ const BlacklistDashboard = () => {
                     {selectedView === 'user' && currentItems.map(user => (
                       <tr key={user.id}>
                         <td>
-                          <div className="user-cell">
-                            {user.avatar && <img src={user.avatar} alt="" className="user-avatar-small" />}
-                            <span style={{ wordBreak: 'break-word' }}>{user.name}</span>
-                          </div>
+                          <span style={{ wordBreak: 'break-word' }}>{user.name}</span>
                         </td>
                         <td style={{ wordBreak: 'break-all' }}>{user.id}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>{formatDate(user.added_at)}</td>

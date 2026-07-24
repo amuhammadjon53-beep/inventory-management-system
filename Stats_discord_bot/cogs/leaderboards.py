@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import timedelta, datetime, timezone
 import time
 import asyncio
 import os
@@ -51,6 +51,49 @@ class Config:
     }
 
 
+class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
+    def __init__(self, view, total_pages):
+        super().__init__(timeout=60)
+        self.view = view
+        self.total_pages = total_pages
+        self.rate_limiter = get_rate_limiter()
+
+        self.page_number = discord.ui.TextInput(
+            label=f'Enter page number (1-{total_pages})',
+            placeholder=f'1 to {total_pages}',
+            min_length=1,
+            max_length=4,
+            required=True
+        )
+        self.add_item(self.page_number)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            page = int(self.page_number.value) - 1
+
+            if page < 0 or page >= self.total_pages:
+                embed = discord.Embed(
+                    title="❌ Invalid Page",
+                    description=f"Page {page + 1} does not exist. Please enter a number between 1 and {self.total_pages}.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            await interaction.response.defer()
+            self.view.page = page
+            await self.view.update_message(interaction)
+
+        except ValueError:
+            embed = discord.Embed(
+                title="❌ Invalid Input",
+                description="Please enter a valid page number.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class UnicodeNormalizer:
     @staticmethod
     def normalize_text(text: str) -> str:
@@ -77,6 +120,16 @@ def format_voice_time(seconds):
         days = seconds // 86400
         hours = (seconds % 86400) // 3600
         return f"{int(days)}d {int(hours)}h"
+
+
+def format_count_with_k(value):
+    """Format a count, abbreviating thousands as e.g. 31.512 -> '31.5k' (max 1 decimal)."""
+    try:
+        if value >= 1000:
+            return f"{value / 1000:.1f}k"
+        return f"{value:,}"
+    except Exception:
+        return str(value)
 
 
 class ImageGenerator:
@@ -245,20 +298,19 @@ class ImageGenerator:
                     item_id = int(item_id)
 
                 if leaderboard_type in ['top_text_users', 'top_voice_users', 'channel_text', 'channel_voice',
-                                        'top_users_messages', 'top_users_voice', 'mentions', 'users',
+                                        'top_users_messages', 'top_users_voice',
                                         'category_top_users_messages', 'category_top_users_voice']:
                     member = guild.get_member(item_id)
                     if member:
-                        name = str(member)  # Still in server
+                        name = str(member)
                     elif cog and hasattr(cog, '_fetch_user_with_rate_limit'):
-                        # Left the server - fetch globally with rate limiting
                         user = await cog._fetch_user_with_rate_limit(item_id)
                         if user:
                             name = user.name
                         else:
                             name = f"User {item_id}"
                     elif bot:
-                        user = bot.get_user(item_id)  # Fallback to cache
+                        user = bot.get_user(item_id)
                         if user:
                             name = user.name
                         else:
@@ -546,7 +598,7 @@ async def generate_message_leaderboard_image(
     guild: discord.Guild,
     leaderboard_data: list,
     target_name: str,
-    days_back: int,
+    display_text: str,
     role_id: str = None,
     role_name: str = None,
     total_value: int = None,
@@ -574,9 +626,8 @@ async def generate_message_leaderboard_image(
     ImageGenerator.draw_text_with_stroke(
         draw, (70, 424), role_text, font_small, "white", "black", 1)
 
-    time_text = f"{days_back} days"
     ImageGenerator.draw_text_with_stroke(
-        draw, (630, 422), time_text, font_small, "white", "black", 1)
+        draw, (630, 422), display_text, font_small, "white", "black", 1)
     ImageGenerator.draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
         "%B %d, %Y"), font_small, "white", "black", 1)
 
@@ -645,7 +696,7 @@ async def generate_message_leaderboard_image(
             ImageGenerator.draw_rounded_rectangle(draw, [box_x, box_y, box_x + placement_width, box_y + box_height],
                                                   radius=8, fill=placement_color, outline=None)
 
-            value_text = f"{value:,}"
+            value_text = format_count_with_k(value)
 
             if total_value and total_value > 0:
                 perc = (value / total_value) * 100
@@ -702,7 +753,7 @@ async def generate_voice_leaderboard_image(
     guild: discord.Guild,
     leaderboard_data: list,
     target_name: str,
-    days_back: int,
+    display_text: str,
     role_id: str = None,
     role_name: str = None,
     total_value: int = None,
@@ -730,9 +781,8 @@ async def generate_voice_leaderboard_image(
     ImageGenerator.draw_text_with_stroke(
         draw, (70, 424), role_text, font_small, "white", "black", 1)
 
-    time_text = f"{days_back} days"
     ImageGenerator.draw_text_with_stroke(
-        draw, (630, 422), time_text, font_small, "white", "black", 1)
+        draw, (630, 422), display_text, font_small, "white", "black", 1)
     ImageGenerator.draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
         "%B %d, %Y"), font_small, "white", "black", 1)
 
@@ -854,7 +904,7 @@ async def generate_invite_leaderboard_image(
     guild: discord.Guild,
     leaderboard_data: list,
     target_name: str,
-    days_back: int,
+    display_text: str,
     role_id: str = None,
     role_name: str = None,
     total_value: int = None,
@@ -882,9 +932,8 @@ async def generate_invite_leaderboard_image(
     ImageGenerator.draw_text_with_stroke(
         draw, (70, 424), role_text, font_small, "white", "black", 1)
 
-    time_text = f"{days_back} days"
     ImageGenerator.draw_text_with_stroke(
-        draw, (630, 422), time_text, font_small, "white", "black", 1)
+        draw, (630, 422), display_text, font_small, "white", "black", 1)
     ImageGenerator.draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
         "%B %d, %Y"), font_small, "white", "black", 1)
 
@@ -994,7 +1043,7 @@ async def generate_invite_leaderboard_image(
 
 
 async def generate_server_leaderboard_image(guild: discord.Guild, leaderboard_data: list,
-                                            leaderboard_type: str, days_back: int, role_id: str = None,
+                                            leaderboard_type: str, display_text: str, role_id: str = None,
                                             total_value: int = None, user_count: int = 10, page: int = 0,
                                             is_real_time: bool = False, pool=None, cog=None):
 
@@ -1003,7 +1052,7 @@ async def generate_server_leaderboard_image(guild: discord.Guild, leaderboard_da
             guild=guild,
             leaderboard_data=leaderboard_data,
             target_name=UnicodeNormalizer.normalize_text(guild.name),
-            days_back=days_back,
+            display_text=display_text,
             role_id=role_id,
             total_value=total_value,
             page=page,
@@ -1015,7 +1064,7 @@ async def generate_server_leaderboard_image(guild: discord.Guild, leaderboard_da
             guild=guild,
             leaderboard_data=leaderboard_data,
             target_name=UnicodeNormalizer.normalize_text(guild.name),
-            days_back=days_back,
+            display_text=display_text,
             role_id=role_id,
             total_value=total_value,
             page=page,
@@ -1026,7 +1075,7 @@ async def generate_server_leaderboard_image(guild: discord.Guild, leaderboard_da
 
 async def generate_category_leaderboard_image(guild: discord.Guild, category: discord.CategoryChannel,
                                               leaderboard_data: list, leaderboard_type: str,
-                                              days_back: int, role_id: str = None, total_value: int = None,
+                                              display_text: str, role_id: str = None, total_value: int = None,
                                               user_count: int = 10, page: int = 0, is_real_time: bool = False, pool=None, cog=None):
 
     target_name = UnicodeNormalizer.normalize_text(
@@ -1037,7 +1086,7 @@ async def generate_category_leaderboard_image(guild: discord.Guild, category: di
             guild=guild,
             leaderboard_data=leaderboard_data,
             target_name=target_name,
-            days_back=days_back,
+            display_text=display_text,
             role_id=role_id,
             total_value=total_value,
             page=page,
@@ -1049,7 +1098,7 @@ async def generate_category_leaderboard_image(guild: discord.Guild, category: di
             guild=guild,
             leaderboard_data=leaderboard_data,
             target_name=target_name,
-            days_back=days_back,
+            display_text=display_text,
             role_id=role_id,
             total_value=total_value,
             page=page,
@@ -1058,26 +1107,9 @@ async def generate_category_leaderboard_image(guild: discord.Guild, category: di
         )
 
 
-async def generate_mentions_leaderboard_image(guild: discord.Guild, target_member: discord.Member,
-                                              leaderboard_data: list, days_back: int, role_id: str = None,
-                                              user_count: int = 10, page: int = 0, is_real_time: bool = False, pool=None, cog=None):
-    return await generate_message_leaderboard_image(
-        guild=guild,
-        leaderboard_data=leaderboard_data,
-        target_name=UnicodeNormalizer.normalize_text(
-            target_member.name if target_member else "[Unknown User]"),
-        days_back=days_back,
-        role_id=role_id,
-        total_value=None,
-        page=page,
-        pool=pool,
-        cog=cog
-    )
-
-
 async def generate_channel_leaderboard_image(guild: discord.Guild, channel: discord.abc.GuildChannel,
                                              leaderboard_data: list, leaderboard_type: str,
-                                             days_back: int, role_id: str = None,
+                                             display_text: str, role_id: str = None,
                                              total_value: int = None, user_count: int = 10, page: int = 0,
                                              is_real_time: bool = False, pool=None, cog=None):
 
@@ -1096,7 +1128,7 @@ async def generate_channel_leaderboard_image(guild: discord.Guild, channel: disc
             guild=guild,
             leaderboard_data=leaderboard_data,
             target_name=channel_name,
-            days_back=days_back,
+            display_text=display_text,
             role_id=role_id,
             total_value=total_value,
             page=page,
@@ -1108,7 +1140,7 @@ async def generate_channel_leaderboard_image(guild: discord.Guild, channel: disc
             guild=guild,
             leaderboard_data=leaderboard_data,
             target_name=channel_name,
-            days_back=days_back,
+            display_text=display_text,
             role_id=role_id,
             total_value=total_value,
             page=page,
@@ -1118,7 +1150,7 @@ async def generate_channel_leaderboard_image(guild: discord.Guild, channel: disc
 
 
 async def generate_role_leaderboard_image(guild: discord.Guild, leaderboard_data: list,
-                                          leaderboard_type: str, days_back: int,
+                                          leaderboard_type: str, display_text: str,
                                           channel: discord.abc.GuildChannel = None,
                                           category: discord.CategoryChannel = None,
                                           role_id: str = None, total_value: int = None,
@@ -1141,7 +1173,7 @@ async def generate_role_leaderboard_image(guild: discord.Guild, leaderboard_data
             guild=guild,
             leaderboard_data=leaderboard_data,
             target_name=target_name,
-            days_back=days_back,
+            display_text=display_text,
             role_id=role_id,
             total_value=total_value,
             page=page,
@@ -1154,7 +1186,7 @@ async def generate_role_leaderboard_image(guild: discord.Guild, leaderboard_data
             guild=guild,
             leaderboard_data=leaderboard_data,
             target_name=target_name,
-            days_back=days_back,
+            display_text=display_text,
             role_id=role_id,
             total_value=total_value,
             page=page,
@@ -1167,7 +1199,7 @@ async def generate_role_leaderboard_image(guild: discord.Guild, leaderboard_data
             guild=guild,
             leaderboard_data=leaderboard_data,
             target_name=target_name,
-            days_back=days_back,
+            display_text=display_text,
             role_id=role_id,
             total_value=total_value,
             page=page,
@@ -1187,6 +1219,7 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.guild = guild
         self.channel = channel
         self.leaderboard_type = leaderboard_type
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -1196,6 +1229,7 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1210,7 +1244,12 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 await interaction.followup.send("❌ Could not find the leaderboard view. Please try the command again.", ephemeral=True)
                 return
 
-            view.current_days = days
+            now = datetime.utcnow()
+            view.current_start_time = now - timedelta(days=days)
+            view.current_end_time = now
+            view.current_days_back_equiv = days
+            view.current_display_text = f"{days} days"
+            view.using_server_default = False
             view.show_time_buttons = False
             view.page = 0
 
@@ -1219,16 +1258,16 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 if original_message:
                     if isinstance(self.channel, discord.TextChannel):
                         leaderboard_data = await self.cog.get_channel_text_leaderboard(
-                            self.guild, self.channel, days, view.selected_role_id
+                            self.guild, self.channel, view.current_start_time, view.current_end_time, view.selected_role_id
                         )
                     elif isinstance(self.channel, discord.VoiceChannel):
                         if self.leaderboard_type == "top_voice_users":
                             leaderboard_data = await self.cog.get_channel_voice_leaderboard(
-                                self.guild, self.channel, days, view.selected_role_id
+                                self.guild, self.channel, view.current_start_time, view.current_end_time, view.selected_role_id
                             )
                         else:
                             leaderboard_data = await self.cog.get_channel_text_leaderboard(
-                                self.guild, self.channel, days, view.selected_role_id
+                                self.guild, self.channel, view.current_start_time, view.current_end_time, view.selected_role_id
                             )
                     else:
                         leaderboard_data = []
@@ -1242,6 +1281,8 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
                     img_bytes = await view.generate_image()
 
+                    view._update_buttons()
+
                     for child in view.children:
                         if isinstance(child, PageIndicator):
                             child.label = f"Page {view.page + 1}/{total_pages}"
@@ -1251,8 +1292,6 @@ class ChannelLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                         elif isinstance(child, NextButton):
                             child.disabled = (
                                 view.page >= total_pages - 1 or total_pages <= 1)
-
-                    view._update_buttons()
 
                     file = discord.File(
                         img_bytes, filename="channel_leaderboard.png")
@@ -1276,6 +1315,7 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -1285,6 +1325,7 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1299,7 +1340,12 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 await interaction.followup.send("❌ Could not find the leaderboard view. Please try the command again.", ephemeral=True)
                 return
 
-            view.current_days = days
+            now = datetime.utcnow()
+            view.current_start_time = now - timedelta(days=days)
+            view.current_end_time = now
+            view.current_days_back_equiv = days
+            view.current_display_text = f"{days} days"
+            view.using_server_default = False
             view.show_time_buttons = False
             view.page = 0
 
@@ -1307,12 +1353,12 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 original_message = await interaction.channel.fetch_message(self.original_message_id)
                 if original_message:
                     if view.leaderboard_type in ["top_users_voice", "top_voice_channels", "top_voice_categories"]:
-                        data = await self.cog.get_server_voice_data(self.guild, days, view.selected_role_id)
+                        data = await self.cog.get_server_voice_data(self.guild, view.current_start_time, view.current_end_time, view.selected_role_id)
                         leaderboard_data = data.get("users", []) if view.leaderboard_type == "top_users_voice" else \
                             data.get("channels", []) if view.leaderboard_type in ["top_voice_channels"] else \
                             data.get("voice_categories", [])
                     else:
-                        data = await self.cog.get_server_message_data(self.guild, days, view.selected_role_id)
+                        data = await self.cog.get_server_message_data(self.guild, view.current_start_time, view.current_end_time, view.selected_role_id)
                         leaderboard_data = data.get("users", []) if view.leaderboard_type == "top_users_messages" else \
                             data.get("channels", []) if view.leaderboard_type == "top_text_channels" else \
                             data.get("message_categories", [])
@@ -1326,6 +1372,8 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
                     img_bytes = await view.generate_image()
 
+                    view._update_buttons()
+
                     for child in view.children:
                         if isinstance(child, PageIndicator):
                             child.label = f"Page {view.page + 1}/{total_pages}"
@@ -1335,8 +1383,6 @@ class ServerLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                         elif isinstance(child, NextButton):
                             child.disabled = (
                                 view.page >= total_pages - 1 or total_pages <= 1)
-
-                    view._update_buttons()
 
                     file = discord.File(
                         img_bytes, filename="server_leaderboard.png")
@@ -1361,6 +1407,7 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
         self.original_message_id = original_message_id
         self.guild = guild
         self.category = category
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -1370,6 +1417,7 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1384,14 +1432,19 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
                 await interaction.followup.send("❌ Could not find the leaderboard view. Please try the command again.", ephemeral=True)
                 return
 
-            view.current_days = days
+            now = datetime.utcnow()
+            view.current_start_time = now - timedelta(days=days)
+            view.current_end_time = now
+            view.current_days_back_equiv = days
+            view.current_display_text = f"{days} days"
+            view.using_server_default = False
             view.show_time_buttons = False
             view.page = 0
 
             try:
                 original_message = await interaction.channel.fetch_message(self.original_message_id)
                 if original_message:
-                    data = await self.cog.get_category_data(self.guild, self.category, days,
+                    data = await self.cog.get_category_data(self.guild, self.category, view.current_start_time, view.current_end_time,
                                                             view.leaderboard_type, view.selected_role_id)
 
                     if view.leaderboard_type in ["top_users_messages", "top_users_voice"]:
@@ -1408,6 +1461,8 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
 
                     img_bytes = await view.generate_image()
 
+                    view._update_buttons()
+
                     for child in view.children:
                         if isinstance(child, PageIndicator):
                             child.label = f"Page {view.page + 1}/{total_pages}"
@@ -1417,8 +1472,6 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
                         elif isinstance(child, NextButton):
                             child.disabled = (
                                 view.page >= total_pages - 1 or total_pages <= 1)
-
-                    view._update_buttons()
 
                     file = discord.File(
                         img_bytes, filename="category_leaderboard.png")
@@ -1436,83 +1489,6 @@ class CategoryLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period')
             await interaction.followup.send("❌ An error occurred while updating the leaderboard.", ephemeral=True)
 
 
-class MentionsLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
-    def __init__(self, cog_instance, original_message_id, guild, target_user):
-        super().__init__(timeout=300)
-        self.cog = cog_instance
-        self.original_message_id = original_message_id
-        self.guild = guild
-        self.target_user = target_user
-
-    days = discord.ui.TextInput(
-        label='Enter number of days',
-        placeholder='e.g., 7, 14, 30, 90...',
-        min_length=1,
-        max_length=4,
-        required=True
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            days = int(self.days.value)
-            if days <= 0 or days > Config.MAX_CUSTOM_DAYS:
-                await interaction.response.send_message(f"❌ Please enter a number between 1 and {Config.MAX_CUSTOM_DAYS} days.", ephemeral=True)
-                return
-
-            await interaction.response.defer()
-
-            view = self.cog.active_views.get(self.original_message_id)
-            if not view:
-                await interaction.followup.send("❌ Could not find the leaderboard view. Please try the command again.", ephemeral=True)
-                return
-
-            view.current_days = days
-            view.show_time_buttons = False
-            view.page = 0
-
-            try:
-                original_message = await interaction.channel.fetch_message(self.original_message_id)
-                if original_message:
-                    leaderboard_data = await self.cog.get_mentions_leaderboard(self.guild, self.target_user,
-                                                                               days, view.selected_role_id)
-
-                    total_users = len(leaderboard_data)
-                    total_pages = max(
-                        1, (total_users + Config.USERS_PER_PAGE - 1) // Config.USERS_PER_PAGE)
-
-                    if view.page >= total_pages:
-                        view.page = max(0, total_pages - 1)
-
-                    img_bytes = await view.generate_image()
-
-                    for child in view.children:
-                        if isinstance(child, PageIndicator):
-                            child.label = f"Page {view.page + 1}/{total_pages}"
-                        elif isinstance(child, PrevButton):
-                            child.disabled = (
-                                view.page == 0 or total_pages <= 1)
-                        elif isinstance(child, NextButton):
-                            child.disabled = (
-                                view.page >= total_pages - 1 or total_pages <= 1)
-
-                    view._update_buttons()
-
-                    file = discord.File(
-                        img_bytes, filename="mentions_leaderboard.png")
-                    await original_message.edit(attachments=[file], view=view)
-                else:
-                    await interaction.followup.send("❌ Could not find the original message.", ephemeral=True)
-            except discord.NotFound:
-                await interaction.followup.send("❌ The original message was not found. Please try the command again.", ephemeral=True)
-
-        except ValueError:
-            await interaction.response.send_message("❌ Please enter a valid number.", ephemeral=True)
-        except Exception as e:
-            logger.error(f"Error in mentions modal submit: {e}")
-            traceback.print_exc()
-            await interaction.followup.send("❌ An error occurred while updating the leaderboard.", ephemeral=True)
-
-
 class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
     def __init__(self, cog_instance, original_message_id, guild, target=None):
         super().__init__(timeout=300)
@@ -1520,6 +1496,7 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.original_message_id = original_message_id
         self.guild = guild
         self.target = target
+        self.rate_limiter = get_rate_limiter()
 
         self.channel = target if isinstance(
             target, (discord.TextChannel, discord.VoiceChannel)) else None
@@ -1534,6 +1511,7 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -1548,7 +1526,12 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 await interaction.followup.send("❌ Could not find the leaderboard view. Please try the command again.", ephemeral=True)
                 return
 
-            view.current_days = days
+            now = datetime.utcnow()
+            view.current_start_time = now - timedelta(days=days)
+            view.current_end_time = now
+            view.current_days_back_equiv = days
+            view.current_display_text = f"{days} days"
+            view.using_server_default = False
             view.show_time_buttons = False
             view.page = 0
 
@@ -1556,7 +1539,7 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 original_message = await interaction.channel.fetch_message(self.original_message_id)
                 if original_message:
                     leaderboard_data = await self.cog.get_role_leaderboard_data(
-                        self.guild, days, view.leaderboard_type,
+                        self.guild, view.current_start_time, view.current_end_time, view.leaderboard_type,
                         self.channel, self.category, view.selected_role_id
                     )
 
@@ -1569,6 +1552,8 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
                     img_bytes = await view.generate_image()
 
+                    view._update_buttons()
+
                     for child in view.children:
                         if isinstance(child, PageIndicator):
                             child.label = f"Page {view.page + 1}/{total_pages}"
@@ -1578,8 +1563,6 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
                         elif isinstance(child, NextButton):
                             child.disabled = (
                                 view.page >= total_pages - 1 or total_pages <= 1)
-
-                    view._update_buttons()
 
                     file = discord.File(
                         img_bytes, filename="role_leaderboard.png")
@@ -1597,12 +1580,13 @@ class RoleLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
             await interaction.followup.send("❌ An error occurred while updating the leaderboard.", ephemeral=True)
 
 
-class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
+class RoleIdModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, cog_instance, original_message_id, guild):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.original_message_id = original_message_id
         self.guild = guild
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID',
@@ -1612,6 +1596,7 @@ class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_id_value = self.role_id.value.strip()
@@ -1665,8 +1650,10 @@ class RoleIdModal(discord.ui.Modal, title='Input Role ID'):
 class RoleIdButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
-                         label="Input Role ID", custom_id="input_role_id")
+                         label="Filter By Role", custom_id="input_role_id")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         if hasattr(view, 'guild'):
@@ -1677,8 +1664,10 @@ class RoleIdButton(discord.ui.Button):
 class PrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⬅️", custom_id="leaderboard_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="leaderboard_prev")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1696,8 +1685,10 @@ class PrevButton(discord.ui.Button):
 class NextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="➡️", custom_id="leaderboard_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="leaderboard_next")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if self.disabled:
             await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1714,7 +1705,37 @@ class NextButton(discord.ui.Button):
 class PageIndicator(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary,
-                         label="Page 1/1", custom_id="leaderboard_page", disabled=True)
+                         label="Page 1/1", custom_id="leaderboard_page", disabled=False)
+        self.rate_limiter = get_rate_limiter()
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+
+        if hasattr(view, 'get_total_pages'):
+            total_pages = await view.get_total_pages()
+        else:
+            if hasattr(view, 'leaderboard_type'):
+                if view.leaderboard_type in ["top_users_voice", "top_voice_channels", "top_voice_categories"]:
+                    data = await view.cog.get_server_voice_data(view.guild, view.current_start_time, view.current_end_time, view.selected_role_id)
+                else:
+                    data = await view.cog.get_server_message_data(view.guild, view.current_start_time, view.current_end_time, view.selected_role_id)
+
+                if view.leaderboard_type == "top_users_messages" or view.leaderboard_type == "top_users_voice":
+                    leaderboard_data = data.get("users", [])
+                elif view.leaderboard_type == "top_text_channels" or view.leaderboard_type == "top_voice_channels":
+                    leaderboard_data = data.get("channels", [])
+                else:
+                    leaderboard_data = data.get("message_categories", [
+                    ]) if view.leaderboard_type == "top_message_categories" else data.get("voice_categories", [])
+
+                total_pages = max(
+                    1, (len(leaderboard_data) + Config.USERS_PER_PAGE - 1) // Config.USERS_PER_PAGE)
+            else:
+                total_pages = 1
+
+        modal = PageJumpModal(view, total_pages)
+        await interaction.response.send_modal(modal)
 
 
 class ChannelLeaderboardTypeSelect(discord.ui.Select):
@@ -1739,7 +1760,9 @@ class ChannelLeaderboardTypeSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select leaderboard type...",
                          options=options, custom_id="channel_leaderboard_type")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -1772,7 +1795,9 @@ class ServerLeaderboardTypeSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select leaderboard type...",
                          options=options, custom_id="server_leaderboard_type")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -1801,7 +1826,9 @@ class CategoryLeaderboardTypeSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select leaderboard type...",
                          options=options, custom_id="category_leaderboard_type")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -1832,7 +1859,9 @@ class RoleLeaderboardTypeSelect(discord.ui.Select):
 
         super().__init__(placeholder="Select leaderboard type...",
                          options=options, custom_id="role_leaderboard_type")
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -1845,13 +1874,24 @@ class RoleLeaderboardTypeSelect(discord.ui.Select):
 
 class ChannelLeaderboardView(discord.ui.View):
     def __init__(self, cog_instance, guild: discord.Guild, channel: Union[discord.TextChannel, discord.VoiceChannel],
-                 days_back: int, leaderboard_type: str = "top_text_users", page: int = 0,
-                 selected_role_id: str = None, pool=None):
+                 start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = Config.DEFAULT_DAYS_BACK,
+                 display_text: str = f"{Config.DEFAULT_DAYS_BACK} days", leaderboard_type: str = "top_text_users", page: int = 0,
+                 selected_role_id: str = None, pool=None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.channel = channel
         self.pool = pool
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
+        self.leaderboard_type = leaderboard_type
+        self.page = page
+        self.selected_role_id = selected_role_id
+        self.using_server_default = using_server_default
+        self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
 
         if isinstance(channel, discord.TextChannel):
             self.channel_type = "text"
@@ -1865,107 +1905,95 @@ class ChannelLeaderboardView(discord.ui.View):
             self.channel_type = "unknown"
             leaderboard_type = "top_text_users"
 
-        self.current_days = days_back
-        self.leaderboard_type = leaderboard_type
-        self.page = page
-        self.selected_role_id = selected_role_id
-        self.show_time_buttons = False
         self._update_buttons()
 
     def _update_buttons(self):
         self.clear_items()
 
-        # Row 0: Pagination buttons
-        self.add_item(PrevButton())
-        self.add_item(PageIndicator())
-        self.add_item(NextButton())
-
-        # Row 1: Dropdown menu (BEFORE role filter)
         if self.channel_type in ["text", "voice"]:
             self.add_item(ChannelLeaderboardTypeSelect(
                 self.leaderboard_type, self.channel_type))
 
-        # Row 2: Role filter button
+        self.add_item(PrevButton())
+        self.add_item(PageIndicator())
+        self.add_item(NextButton())
+
         self.add_item(RoleIdButton())
 
-        # Row 3: Refresh and Time Settings buttons
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="channel_refresh",
-            row=3
+            row=4
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="channel_time_settings",
-            row=3
+            row=4
         )
         time_settings_button.callback = self.time_settings_callback
 
         self.add_item(refresh_button)
         self.add_item(time_settings_button)
 
-        # Row 4: Time period buttons (if visible)
         if self.show_time_buttons:
-            row = 4
-            days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
-                label="7 Days",
-                custom_id="channel_days_7",
+            row = 5
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="channel_all_time",
                 row=row
             )
-            days_7_button.callback = self.days_7_callback
-            self.add_item(days_7_button)
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
 
-            days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
-                label="14 Days",
-                custom_id="channel_days_14",
-                row=row
-            )
-            days_14_button.callback = self.days_14_callback
-            self.add_item(days_14_button)
-
-            days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
-                label="30 Days",
-                custom_id="channel_days_30",
-                row=row
-            )
-            days_30_button.callback = self.days_30_callback
-            self.add_item(days_30_button)
+            for days in Config.TIME_PERIODS:
+                days_button = discord.ui.Button(
+                    style=discord.ButtonStyle.primary if self.current_days_back_equiv == days else discord.ButtonStyle.secondary,
+                    label=f"{days} Days",
+                    custom_id=f"channel_days_{days}",
+                    row=row
+                )
+                days_button.callback = self.create_days_callback(days)
+                self.add_item(days_button)
 
             custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success if self.current_days not in [
-                    7, 14, 30] else discord.ButtonStyle.secondary,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in [
-                    7, 14, 30] else "Custom",
+                style=discord.ButtonStyle.success if self.current_days_back_equiv not in Config.TIME_PERIODS and self.current_days_back_equiv != 999999 else discord.ButtonStyle.secondary,
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in Config.TIME_PERIODS and self.current_days_back_equiv != 999999 else "Custom",
                 custom_id="channel_custom_days",
                 row=row
             )
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
-    async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 7)
+    def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+        async def callback(bound_self, interaction: discord.Interaction):
+            now = datetime.utcnow()
+            await bound_self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
+        return callback.__get__(self, type(self))
 
-    async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 14)
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def all_time_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
-    async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 30)
-
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
-        await self.handle_custom_days(interaction)
+        modal = ChannelLeaderboardTimeModal(
+            self.cog, interaction.message.id, self.guild, self.channel, self.leaderboard_type)
+        await interaction.response.send_modal(modal)
 
     async def handle_refresh(self, interaction: discord.Interaction):
         if interaction.response.is_done():
@@ -1983,20 +2011,19 @@ class ChannelLeaderboardView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+    async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
         if interaction.response.is_done():
             return
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
+        self.using_server_default = False
         self.show_time_buttons = False
         self.page = 0
         await self.update_message(interaction)
-
-    async def handle_custom_days(self, interaction: discord.Interaction):
-        modal = ChannelLeaderboardTimeModal(
-            self.cog, interaction.message.id, self.guild, self.channel, self.leaderboard_type)
-        await interaction.response.send_modal(modal)
 
     async def generate_image(self):
         pool = self.pool
@@ -2004,7 +2031,7 @@ class ChannelLeaderboardView(discord.ui.View):
         if isinstance(self.channel, discord.TextChannel):
             if self.leaderboard_type == "top_text_users":
                 leaderboard_data = await self.cog.get_channel_text_leaderboard(
-                    self.guild, self.channel, self.current_days, self.selected_role_id
+                    self.guild, self.channel, self.current_start_time, self.current_end_time, self.selected_role_id
                 )
                 total_value = sum(
                     count for _, count in leaderboard_data) if leaderboard_data else 0
@@ -2013,7 +2040,7 @@ class ChannelLeaderboardView(discord.ui.View):
                     guild=self.guild,
                     leaderboard_data=leaderboard_data,
                     target_name=f"#{UnicodeNormalizer.normalize_text(self.channel.name)}",
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=total_value,
                     page=self.page,
@@ -2027,7 +2054,7 @@ class ChannelLeaderboardView(discord.ui.View):
                     guild=self.guild,
                     leaderboard_data=leaderboard_data,
                     target_name=f"#{UnicodeNormalizer.normalize_text(self.channel.name)}",
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=0,
                     page=self.page,
@@ -2039,7 +2066,7 @@ class ChannelLeaderboardView(discord.ui.View):
         elif isinstance(self.channel, discord.VoiceChannel):
             if self.leaderboard_type == "top_voice_users":
                 leaderboard_data = await self.cog.get_channel_voice_leaderboard(
-                    self.guild, self.channel, self.current_days, self.selected_role_id
+                    self.guild, self.channel, self.current_start_time, self.current_end_time, self.selected_role_id
                 )
                 total_value = sum(
                     seconds for _, seconds in leaderboard_data) if leaderboard_data else 0
@@ -2048,7 +2075,7 @@ class ChannelLeaderboardView(discord.ui.View):
                     guild=self.guild,
                     leaderboard_data=leaderboard_data,
                     target_name=f"🔊{UnicodeNormalizer.normalize_text(self.channel.name)}",
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=total_value,
                     page=self.page,
@@ -2058,7 +2085,7 @@ class ChannelLeaderboardView(discord.ui.View):
                 )
             elif self.leaderboard_type == "top_text_users":
                 leaderboard_data = await self.cog.get_channel_text_leaderboard(
-                    self.guild, self.channel, self.current_days, self.selected_role_id
+                    self.guild, self.channel, self.current_start_time, self.current_end_time, self.selected_role_id
                 )
                 total_value = sum(
                     count for _, count in leaderboard_data) if leaderboard_data else 0
@@ -2067,7 +2094,7 @@ class ChannelLeaderboardView(discord.ui.View):
                     guild=self.guild,
                     leaderboard_data=leaderboard_data,
                     target_name=f"🔊{UnicodeNormalizer.normalize_text(self.channel.name)}",
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=total_value,
                     page=self.page,
@@ -2081,7 +2108,7 @@ class ChannelLeaderboardView(discord.ui.View):
                     guild=self.guild,
                     leaderboard_data=leaderboard_data,
                     target_name=f"🔊{UnicodeNormalizer.normalize_text(self.channel.name)}",
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=0,
                     page=self.page,
@@ -2094,7 +2121,7 @@ class ChannelLeaderboardView(discord.ui.View):
             guild=self.guild,
             leaderboard_data=[],
             target_name="Unknown",
-            days_back=self.current_days,
+            display_text=self.current_display_text,
             role_id=self.selected_role_id,
             page=self.page,
             pool=pool,
@@ -2106,16 +2133,16 @@ class ChannelLeaderboardView(discord.ui.View):
         try:
             if isinstance(self.channel, discord.TextChannel):
                 leaderboard_data = await self.cog.get_channel_text_leaderboard(
-                    self.guild, self.channel, self.current_days, self.selected_role_id
+                    self.guild, self.channel, self.current_start_time, self.current_end_time, self.selected_role_id
                 )
             elif isinstance(self.channel, discord.VoiceChannel):
                 if self.leaderboard_type == "top_voice_users":
                     leaderboard_data = await self.cog.get_channel_voice_leaderboard(
-                        self.guild, self.channel, self.current_days, self.selected_role_id
+                        self.guild, self.channel, self.current_start_time, self.current_end_time, self.selected_role_id
                     )
                 else:
                     leaderboard_data = await self.cog.get_channel_text_leaderboard(
-                        self.guild, self.channel, self.current_days, self.selected_role_id
+                        self.guild, self.channel, self.current_start_time, self.current_end_time, self.selected_role_id
                     )
             else:
                 leaderboard_data = []
@@ -2129,6 +2156,13 @@ class ChannelLeaderboardView(discord.ui.View):
 
             img_bytes = await self.generate_image()
 
+            # NOTE: rebuild the view FIRST (so the Select's `default=` reflects
+            # the current leaderboard_type), THEN apply the freshly-computed
+            # pagination labels/disabled state to the NEW children. Doing this
+            # in the opposite order (old behavior) meant _update_buttons()
+            # silently threw away the label/disabled updates every time.
+            self._update_buttons()
+
             for child in self.children:
                 if isinstance(child, PageIndicator):
                     child.label = f"Page {self.page + 1}/{total_pages}"
@@ -2137,8 +2171,6 @@ class ChannelLeaderboardView(discord.ui.View):
                 elif isinstance(child, NextButton):
                     child.disabled = (
                         self.page >= total_pages - 1 or total_pages <= 1)
-
-            self._update_buttons()
 
             file = discord.File(img_bytes, filename="channel_leaderboard.png")
 
@@ -2160,112 +2192,111 @@ class ChannelLeaderboardView(discord.ui.View):
 
 
 class ServerLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int,
+    def __init__(self, cog_instance, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = Config.DEFAULT_DAYS_BACK, display_text: str = f"{Config.DEFAULT_DAYS_BACK} days",
                  leaderboard_type: str = "top_users_messages", page: int = 0,
-                 selected_role_id: str = None, pool=None):
+                 selected_role_id: str = None, pool=None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.leaderboard_type = leaderboard_type
         self.page = page
         self.selected_role_id = selected_role_id
         self.pool = pool
+        self.using_server_default = using_server_default
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
         self.clear_items()
 
-        # Row 0: Pagination buttons
+        self.add_item(ServerLeaderboardTypeSelect(self.leaderboard_type))
+
         self.add_item(PrevButton())
         self.add_item(PageIndicator())
         self.add_item(NextButton())
 
-        # Row 1: Dropdown menu (BEFORE role filter)
-        self.add_item(ServerLeaderboardTypeSelect(self.leaderboard_type))
-
-        # Row 2: Role filter button
         self.add_item(RoleIdButton())
 
-        # Row 3: Refresh and Time Settings buttons
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="server_refresh",
-            row=3
+            row=4
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="server_time_settings",
-            row=3
+            row=4
         )
         time_settings_button.callback = self.time_settings_callback
 
         self.add_item(refresh_button)
         self.add_item(time_settings_button)
 
-        # Row 4: Time period buttons (if visible)
         if self.show_time_buttons:
-            row = 4
-            days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
-                label="7 Days",
-                custom_id="server_days_7",
+            row = 5
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="server_all_time",
                 row=row
             )
-            days_7_button.callback = self.days_7_callback
-            self.add_item(days_7_button)
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
 
-            days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
-                label="14 Days",
-                custom_id="server_days_14",
-                row=row
-            )
-            days_14_button.callback = self.days_14_callback
-            self.add_item(days_14_button)
-
-            days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
-                label="30 Days",
-                custom_id="server_days_30",
-                row=row
-            )
-            days_30_button.callback = self.days_30_callback
-            self.add_item(days_30_button)
+            for days in Config.TIME_PERIODS:
+                days_button = discord.ui.Button(
+                    style=discord.ButtonStyle.primary if self.current_days_back_equiv == days else discord.ButtonStyle.secondary,
+                    label=f"{days} Days",
+                    custom_id=f"server_days_{days}",
+                    row=row
+                )
+                days_button.callback = self.create_days_callback(days)
+                self.add_item(days_button)
 
             custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success if self.current_days not in [
-                    7, 14, 30] else discord.ButtonStyle.secondary,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in [
-                    7, 14, 30] else "Custom",
+                style=discord.ButtonStyle.success if self.current_days_back_equiv not in Config.TIME_PERIODS and self.current_days_back_equiv != 999999 else discord.ButtonStyle.secondary,
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in Config.TIME_PERIODS and self.current_days_back_equiv != 999999 else "Custom",
                 custom_id="server_custom_days",
                 row=row
             )
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
-    async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 7)
+    def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+        async def callback(bound_self, interaction: discord.Interaction):
+            now = datetime.utcnow()
+            await bound_self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
+        return callback.__get__(self, type(self))
 
-    async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 14)
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def all_time_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
-    async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 30)
-
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
-        await self.handle_custom_days(interaction)
+        modal = ServerLeaderboardTimeModal(
+            self.cog, interaction.message.id, self.guild)
+        await interaction.response.send_modal(modal)
 
     async def handle_refresh(self, interaction: discord.Interaction):
         if interaction.response.is_done():
@@ -2283,26 +2314,25 @@ class ServerLeaderboardView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+    async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
         if interaction.response.is_done():
             return
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
+        self.using_server_default = False
         self.show_time_buttons = False
         self.page = 0
         await self.update_message(interaction)
-
-    async def handle_custom_days(self, interaction: discord.Interaction):
-        modal = ServerLeaderboardTimeModal(
-            self.cog, interaction.message.id, self.guild)
-        await interaction.response.send_modal(modal)
 
     async def generate_image(self):
         pool = self.pool
 
         if self.leaderboard_type in ["top_users_voice", "top_voice_channels", "top_voice_categories"]:
-            data = await self.cog.get_server_voice_data(self.guild, self.current_days, self.selected_role_id)
+            data = await self.cog.get_server_voice_data(self.guild, self.current_start_time, self.current_end_time, self.selected_role_id)
 
             if self.leaderboard_type == "top_users_voice":
                 leaderboard_data = data.get("users", [])
@@ -2313,7 +2343,7 @@ class ServerLeaderboardView(discord.ui.View):
                     leaderboard_data=leaderboard_data,
                     target_name=UnicodeNormalizer.normalize_text(
                         self.guild.name),
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=total_value,
                     page=self.page,
@@ -2330,7 +2360,7 @@ class ServerLeaderboardView(discord.ui.View):
                     leaderboard_data=leaderboard_data,
                     target_name=UnicodeNormalizer.normalize_text(
                         self.guild.name),
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=total_value,
                     page=self.page,
@@ -2338,7 +2368,7 @@ class ServerLeaderboardView(discord.ui.View):
                     data_type="channels",
                     cog=self.cog
                 )
-            else:  # top_voice_categories
+            else:
                 leaderboard_data = data.get("voice_categories", [])
                 total_value = sum(
                     seconds for _, seconds in leaderboard_data) if leaderboard_data else 0
@@ -2347,7 +2377,7 @@ class ServerLeaderboardView(discord.ui.View):
                     leaderboard_data=leaderboard_data,
                     target_name=UnicodeNormalizer.normalize_text(
                         self.guild.name),
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=total_value,
                     page=self.page,
@@ -2356,7 +2386,7 @@ class ServerLeaderboardView(discord.ui.View):
                     cog=self.cog
                 )
         else:
-            data = await self.cog.get_server_message_data(self.guild, self.current_days, self.selected_role_id)
+            data = await self.cog.get_server_message_data(self.guild, self.current_start_time, self.current_end_time, self.selected_role_id)
 
             if self.leaderboard_type == "top_users_messages":
                 leaderboard_data = data.get("users", [])
@@ -2367,7 +2397,7 @@ class ServerLeaderboardView(discord.ui.View):
                     leaderboard_data=leaderboard_data,
                     target_name=UnicodeNormalizer.normalize_text(
                         self.guild.name),
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=total_value,
                     page=self.page,
@@ -2384,7 +2414,7 @@ class ServerLeaderboardView(discord.ui.View):
                     leaderboard_data=leaderboard_data,
                     target_name=UnicodeNormalizer.normalize_text(
                         self.guild.name),
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=total_value,
                     page=self.page,
@@ -2392,7 +2422,7 @@ class ServerLeaderboardView(discord.ui.View):
                     data_type="channels",
                     cog=self.cog
                 )
-            else:  # top_message_categories
+            else:
                 leaderboard_data = data.get("message_categories", [])
                 total_value = sum(
                     count for _, count in leaderboard_data) if leaderboard_data else 0
@@ -2401,7 +2431,7 @@ class ServerLeaderboardView(discord.ui.View):
                     leaderboard_data=leaderboard_data,
                     target_name=UnicodeNormalizer.normalize_text(
                         self.guild.name),
-                    days_back=self.current_days,
+                    display_text=self.current_display_text,
                     role_id=self.selected_role_id,
                     total_value=total_value,
                     page=self.page,
@@ -2415,12 +2445,12 @@ class ServerLeaderboardView(discord.ui.View):
             img_bytes = await self.generate_image()
 
             if self.leaderboard_type in ["top_users_voice", "top_voice_channels", "top_voice_categories"]:
-                data = await self.cog.get_server_voice_data(self.guild, self.current_days, self.selected_role_id)
+                data = await self.cog.get_server_voice_data(self.guild, self.current_start_time, self.current_end_time, self.selected_role_id)
                 leaderboard_data = data.get("users", []) if self.leaderboard_type == "top_users_voice" else \
                     data.get("channels", []) if self.leaderboard_type in ["top_voice_channels"] else \
                     data.get("voice_categories", [])
             else:
-                data = await self.cog.get_server_message_data(self.guild, self.current_days, self.selected_role_id)
+                data = await self.cog.get_server_message_data(self.guild, self.current_start_time, self.current_end_time, self.selected_role_id)
                 leaderboard_data = data.get("users", []) if self.leaderboard_type == "top_users_messages" else \
                     data.get("channels", []) if self.leaderboard_type == "top_text_channels" else \
                     data.get("message_categories", [])
@@ -2431,6 +2461,15 @@ class ServerLeaderboardView(discord.ui.View):
 
             if self.page >= total_pages:
                 self.page = max(0, total_pages - 1)
+
+            # FIX: this view was previously missing the _update_buttons() call
+            # entirely, which is why the "Top Message/Voice Users/etc" dropdown
+            # always reverted to the default option instead of showing your
+            # actual selection - the Select's `default=` flags never got
+            # rebuilt against the new leaderboard_type. Rebuild FIRST, then
+            # stamp the freshly-created Prev/Next/PageIndicator with the
+            # correct pagination state.
+            self._update_buttons()
 
             for child in self.children:
                 if isinstance(child, PageIndicator):
@@ -2461,112 +2500,111 @@ class ServerLeaderboardView(discord.ui.View):
 
 class CategoryLeaderboardView(discord.ui.View):
     def __init__(self, cog_instance, guild: discord.Guild, category: discord.CategoryChannel,
-                 days_back: int, leaderboard_type: str = "top_text_channels", page: int = 0,
-                 selected_role_id: str = None, pool=None):
+                 start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = Config.DEFAULT_DAYS_BACK,
+                 display_text: str = f"{Config.DEFAULT_DAYS_BACK} days", leaderboard_type: str = "top_text_channels", page: int = 0,
+                 selected_role_id: str = None, pool=None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.category = category
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.leaderboard_type = leaderboard_type
         self.page = page
         self.selected_role_id = selected_role_id
         self.pool = pool
+        self.using_server_default = using_server_default
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
         self.clear_items()
 
-        # Row 0: Pagination buttons
+        self.add_item(CategoryLeaderboardTypeSelect(self.leaderboard_type))
+
         self.add_item(PrevButton())
         self.add_item(PageIndicator())
         self.add_item(NextButton())
 
-        # Row 1: Dropdown menu (BEFORE role filter)
-        self.add_item(CategoryLeaderboardTypeSelect(self.leaderboard_type))
-
-        # Row 2: Role filter button
         self.add_item(RoleIdButton())
 
-        # Row 3: Refresh and Time Settings buttons
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="category_refresh",
-            row=3
+            row=4
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="category_time_settings",
-            row=3
+            row=4
         )
         time_settings_button.callback = self.time_settings_callback
 
         self.add_item(refresh_button)
         self.add_item(time_settings_button)
 
-        # Row 4: Time period buttons (if visible)
         if self.show_time_buttons:
-            row = 4
-            days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
-                label="7 Days",
-                custom_id="category_days_7",
+            row = 5
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="category_all_time",
                 row=row
             )
-            days_7_button.callback = self.days_7_callback
-            self.add_item(days_7_button)
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
 
-            days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
-                label="14 Days",
-                custom_id="category_days_14",
-                row=row
-            )
-            days_14_button.callback = self.days_14_callback
-            self.add_item(days_14_button)
-
-            days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
-                label="30 Days",
-                custom_id="category_days_30",
-                row=row
-            )
-            days_30_button.callback = self.days_30_callback
-            self.add_item(days_30_button)
+            for days in Config.TIME_PERIODS:
+                days_button = discord.ui.Button(
+                    style=discord.ButtonStyle.primary if self.current_days_back_equiv == days else discord.ButtonStyle.secondary,
+                    label=f"{days} Days",
+                    custom_id=f"category_days_{days}",
+                    row=row
+                )
+                days_button.callback = self.create_days_callback(days)
+                self.add_item(days_button)
 
             custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success if self.current_days not in [
-                    7, 14, 30] else discord.ButtonStyle.secondary,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in [
-                    7, 14, 30] else "Custom",
+                style=discord.ButtonStyle.success if self.current_days_back_equiv not in Config.TIME_PERIODS and self.current_days_back_equiv != 999999 else discord.ButtonStyle.secondary,
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in Config.TIME_PERIODS and self.current_days_back_equiv != 999999 else "Custom",
                 custom_id="category_custom_days",
                 row=row
             )
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
-    async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 7)
+    def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+        async def callback(bound_self, interaction: discord.Interaction):
+            now = datetime.utcnow()
+            await bound_self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
+        return callback.__get__(self, type(self))
 
-    async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 14)
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def all_time_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
-    async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 30)
-
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
-        await self.handle_custom_days(interaction)
+        modal = CategoryLeaderboardTimeModal(
+            self.cog, interaction.message.id, self.guild, self.category)
+        await interaction.response.send_modal(modal)
 
     async def handle_refresh(self, interaction: discord.Interaction):
         if interaction.response.is_done():
@@ -2584,25 +2622,24 @@ class CategoryLeaderboardView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+    async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
         if interaction.response.is_done():
             return
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
+        self.using_server_default = False
         self.show_time_buttons = False
         self.page = 0
         await self.update_message(interaction)
 
-    async def handle_custom_days(self, interaction: discord.Interaction):
-        modal = CategoryLeaderboardTimeModal(
-            self.cog, interaction.message.id, self.guild, self.category)
-        await interaction.response.send_modal(modal)
-
     async def generate_image(self):
         pool = self.pool
 
-        data = await self.cog.get_category_data(self.guild, self.category, self.current_days,
+        data = await self.cog.get_category_data(self.guild, self.category, self.current_start_time, self.current_end_time,
                                                 self.leaderboard_type, self.selected_role_id)
 
         target_name = UnicodeNormalizer.normalize_text(self.category.name)
@@ -2615,7 +2652,7 @@ class CategoryLeaderboardView(discord.ui.View):
                 guild=self.guild,
                 leaderboard_data=leaderboard_data,
                 target_name=target_name,
-                days_back=self.current_days,
+                display_text=self.current_display_text,
                 role_id=self.selected_role_id,
                 total_value=total_value,
                 page=self.page,
@@ -2631,7 +2668,7 @@ class CategoryLeaderboardView(discord.ui.View):
                 guild=self.guild,
                 leaderboard_data=leaderboard_data,
                 target_name=target_name,
-                days_back=self.current_days,
+                display_text=self.current_display_text,
                 role_id=self.selected_role_id,
                 total_value=total_value,
                 page=self.page,
@@ -2647,7 +2684,7 @@ class CategoryLeaderboardView(discord.ui.View):
                 guild=self.guild,
                 leaderboard_data=leaderboard_data,
                 target_name=target_name,
-                days_back=self.current_days,
+                display_text=self.current_display_text,
                 role_id=self.selected_role_id,
                 total_value=total_value,
                 page=self.page,
@@ -2663,7 +2700,7 @@ class CategoryLeaderboardView(discord.ui.View):
                 guild=self.guild,
                 leaderboard_data=leaderboard_data,
                 target_name=target_name,
-                days_back=self.current_days,
+                display_text=self.current_display_text,
                 role_id=self.selected_role_id,
                 total_value=total_value,
                 page=self.page,
@@ -2679,7 +2716,7 @@ class CategoryLeaderboardView(discord.ui.View):
                 guild=self.guild,
                 leaderboard_data=leaderboard_data,
                 target_name=target_name,
-                days_back=self.current_days,
+                display_text=self.current_display_text,
                 role_id=self.selected_role_id,
                 total_value=total_value,
                 page=self.page,
@@ -2690,7 +2727,7 @@ class CategoryLeaderboardView(discord.ui.View):
 
     async def update_message(self, interaction: discord.Interaction):
         try:
-            data = await self.cog.get_category_data(self.guild, self.category, self.current_days,
+            data = await self.cog.get_category_data(self.guild, self.category, self.current_start_time, self.current_end_time,
                                                     self.leaderboard_type, self.selected_role_id)
 
             if self.leaderboard_type in ["top_users_messages", "top_users_voice"]:
@@ -2707,6 +2744,8 @@ class CategoryLeaderboardView(discord.ui.View):
 
             img_bytes = await self.generate_image()
 
+            self._update_buttons()
+
             for child in self.children:
                 if isinstance(child, PageIndicator):
                     child.label = f"Page {self.page + 1}/{total_pages}"
@@ -2715,8 +2754,6 @@ class CategoryLeaderboardView(discord.ui.View):
                 elif isinstance(child, NextButton):
                     child.disabled = (
                         self.page >= total_pages - 1 or total_pages <= 1)
-
-            self._update_buttons()
 
             file = discord.File(img_bytes, filename="category_leaderboard.png")
 
@@ -2736,216 +2773,25 @@ class CategoryLeaderboardView(discord.ui.View):
                 pass
 
 
-class MentionsLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, target_user: discord.Member,
-                 days_back: int, page: int = 0, selected_role_id: str = None, pool=None):
-        super().__init__(timeout=600)
-        self.cog = cog_instance
-        self.guild = guild
-        self.target_user = target_user
-        self.current_days = days_back
-        self.page = page
-        self.selected_role_id = selected_role_id
-        self.pool = pool
-        self.show_time_buttons = False
-        self._update_buttons()
-
-    def _update_buttons(self):
-        self.clear_items()
-
-        # Row 0: Pagination buttons
-        self.add_item(PrevButton())
-        self.add_item(PageIndicator())
-        self.add_item(NextButton())
-
-        # Row 1: Role filter button (no dropdown for mentions)
-        self.add_item(RoleIdButton())
-
-        # Row 2: Refresh and Time Settings buttons
-        refresh_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
-            custom_id="mentions_refresh",
-            row=2
-        )
-        refresh_button.callback = self.refresh_callback
-
-        time_settings_button = discord.ui.Button(
-            style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
-            custom_id="mentions_time_settings",
-            row=2
-        )
-        time_settings_button.callback = self.time_settings_callback
-
-        self.add_item(refresh_button)
-        self.add_item(time_settings_button)
-
-        # Row 3: Time period buttons (if visible)
-        if self.show_time_buttons:
-            row = 3
-            days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
-                label="7 Days",
-                custom_id="mentions_days_7",
-                row=row
-            )
-            days_7_button.callback = self.days_7_callback
-            self.add_item(days_7_button)
-
-            days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
-                label="14 Days",
-                custom_id="mentions_days_14",
-                row=row
-            )
-            days_14_button.callback = self.days_14_callback
-            self.add_item(days_14_button)
-
-            days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
-                label="30 Days",
-                custom_id="mentions_days_30",
-                row=row
-            )
-            days_30_button.callback = self.days_30_callback
-            self.add_item(days_30_button)
-
-            custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success if self.current_days not in [
-                    7, 14, 30] else discord.ButtonStyle.secondary,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in [
-                    7, 14, 30] else "Custom",
-                custom_id="mentions_custom_days",
-                row=row
-            )
-            custom_button.callback = self.custom_days_callback
-            self.add_item(custom_button)
-
-    async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 7)
-
-    async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 14)
-
-    async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 30)
-
-    async def refresh_callback(self, interaction: discord.Interaction):
-        await self.handle_refresh(interaction)
-
-    async def time_settings_callback(self, interaction: discord.Interaction):
-        await self.handle_time_settings(interaction)
-
-    async def custom_days_callback(self, interaction: discord.Interaction):
-        await self.handle_custom_days(interaction)
-
-    async def handle_refresh(self, interaction: discord.Interaction):
-        if interaction.response.is_done():
-            return
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=False, thinking=False)
-        await self.update_message(interaction)
-
-    async def handle_time_settings(self, interaction: discord.Interaction):
-        if interaction.response.is_done():
-            return
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=False, thinking=False)
-        self.show_time_buttons = not self.show_time_buttons
-        self._update_buttons()
-        await interaction.edit_original_response(view=self)
-
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
-        if interaction.response.is_done():
-            return
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=False, thinking=False)
-        self.current_days = days
-        self.show_time_buttons = False
-        self.page = 0
-        await self.update_message(interaction)
-
-    async def handle_custom_days(self, interaction: discord.Interaction):
-        modal = MentionsLeaderboardTimeModal(
-            self.cog, interaction.message.id, self.guild, self.target_user)
-        await interaction.response.send_modal(modal)
-
-    async def generate_image(self):
-        pool = self.pool
-
-        leaderboard_data = await self.cog.get_mentions_leaderboard(self.guild, self.target_user,
-                                                                   self.current_days, self.selected_role_id)
-
-        return await generate_message_leaderboard_image(
-            guild=self.guild,
-            leaderboard_data=leaderboard_data,
-            target_name=UnicodeNormalizer.normalize_text(
-                self.target_user.name),
-            days_back=self.current_days,
-            role_id=self.selected_role_id,
-            page=self.page,
-            pool=pool,
-            cog=self.cog
-        )
-
-    async def update_message(self, interaction: discord.Interaction):
-        try:
-            leaderboard_data = await self.cog.get_mentions_leaderboard(self.guild, self.target_user,
-                                                                       self.current_days, self.selected_role_id)
-
-            total_users = len(leaderboard_data)
-            total_pages = max(
-                1, (total_users + Config.USERS_PER_PAGE - 1) // Config.USERS_PER_PAGE)
-
-            if self.page >= total_pages:
-                self.page = max(0, total_pages - 1)
-
-            img_bytes = await self.generate_image()
-
-            for child in self.children:
-                if isinstance(child, PageIndicator):
-                    child.label = f"Page {self.page + 1}/{total_pages}"
-                elif isinstance(child, PrevButton):
-                    child.disabled = (self.page == 0 or total_pages <= 1)
-                elif isinstance(child, NextButton):
-                    child.disabled = (
-                        self.page >= total_pages - 1 or total_pages <= 1)
-
-            self._update_buttons()
-
-            file = discord.File(img_bytes, filename="mentions_leaderboard.png")
-
-            if interaction.response.is_done():
-                await interaction.edit_original_response(attachments=[file], view=self)
-            else:
-                await interaction.response.edit_message(attachments=[file], view=self)
-
-        except Exception as e:
-            logger.error(f"Error updating mentions leaderboard message: {e}")
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message("❌ An error occurred while updating the leaderboard.", ephemeral=True)
-                else:
-                    await interaction.followup.send("❌ An error occurred while updating the leaderboard.", ephemeral=True)
-            except:
-                pass
-
-
 class RoleLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int,
+    def __init__(self, cog_instance, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = Config.DEFAULT_DAYS_BACK, display_text: str = f"{Config.DEFAULT_DAYS_BACK} days",
                  leaderboard_type: str = "top_roles_messages", page: int = 0,
                  selected_role_id: str = None, target: Optional[Union[discord.abc.GuildChannel, discord.CategoryChannel]] = None,
-                 pool=None):
+                 pool=None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.leaderboard_type = leaderboard_type
         self.page = page
         self.selected_role_id = selected_role_id
         self.target = target
         self.pool = pool
+        self.using_server_default = using_server_default
 
         self.channel = target if isinstance(
             target, (discord.TextChannel, discord.VoiceChannel)) else None
@@ -2953,103 +2799,97 @@ class RoleLeaderboardView(discord.ui.View):
             target, discord.CategoryChannel) else None
 
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
         self.clear_items()
 
-        # Row 0: Pagination buttons
-        self.add_item(PrevButton())
-        self.add_item(PageIndicator())
-        self.add_item(NextButton())
-
-        # Row 1: Dropdown menu (BEFORE role filter)
         has_channel_or_category = (self.channel is not None) or (
             self.category is not None)
         self.add_item(RoleLeaderboardTypeSelect(
             self.leaderboard_type, has_channel_or_category))
 
-        # Row 2: Role filter button
+        self.add_item(PrevButton())
+        self.add_item(PageIndicator())
+        self.add_item(NextButton())
+
         self.add_item(RoleIdButton())
 
-        # Row 3: Refresh and Time Settings buttons
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="role_refresh",
-            row=3
+            row=4
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="role_time_settings",
-            row=3
+            row=4
         )
         time_settings_button.callback = self.time_settings_callback
 
         self.add_item(refresh_button)
         self.add_item(time_settings_button)
 
-        # Row 4: Time period buttons (if visible)
         if self.show_time_buttons:
-            row = 4
-            days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
-                label="7 Days",
-                custom_id="role_days_7",
+            row = 5
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="role_all_time",
                 row=row
             )
-            days_7_button.callback = self.days_7_callback
-            self.add_item(days_7_button)
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
 
-            days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
-                label="14 Days",
-                custom_id="role_days_14",
-                row=row
-            )
-            days_14_button.callback = self.days_14_callback
-            self.add_item(days_14_button)
-
-            days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
-                label="30 Days",
-                custom_id="role_days_30",
-                row=row
-            )
-            days_30_button.callback = self.days_30_callback
-            self.add_item(days_30_button)
+            for days in Config.TIME_PERIODS:
+                days_button = discord.ui.Button(
+                    style=discord.ButtonStyle.primary if self.current_days_back_equiv == days else discord.ButtonStyle.secondary,
+                    label=f"{days} Days",
+                    custom_id=f"role_days_{days}",
+                    row=row
+                )
+                days_button.callback = self.create_days_callback(days)
+                self.add_item(days_button)
 
             custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success if self.current_days not in [
-                    7, 14, 30] else discord.ButtonStyle.secondary,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in [
-                    7, 14, 30] else "Custom",
+                style=discord.ButtonStyle.success if self.current_days_back_equiv not in Config.TIME_PERIODS and self.current_days_back_equiv != 999999 else discord.ButtonStyle.secondary,
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in Config.TIME_PERIODS and self.current_days_back_equiv != 999999 else "Custom",
                 custom_id="role_custom_days",
                 row=row
             )
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
-    async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 7)
+    def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+        async def callback(bound_self, interaction: discord.Interaction):
+            now = datetime.utcnow()
+            await bound_self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
+        return callback.__get__(self, type(self))
 
-    async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 14)
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def all_time_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
 
-    async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_time_period_change(interaction, 30)
-
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
-        await self.handle_custom_days(interaction)
+        modal = RoleLeaderboardTimeModal(
+            self.cog, interaction.message.id, self.guild, self.target)
+        await interaction.response.send_modal(modal)
 
     async def handle_refresh(self, interaction: discord.Interaction):
         if interaction.response.is_done():
@@ -3067,26 +2907,25 @@ class RoleLeaderboardView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+    async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
         if interaction.response.is_done():
             return
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
+        self.using_server_default = False
         self.show_time_buttons = False
         self.page = 0
         await self.update_message(interaction)
-
-    async def handle_custom_days(self, interaction: discord.Interaction):
-        modal = RoleLeaderboardTimeModal(
-            self.cog, interaction.message.id, self.guild, self.target)
-        await interaction.response.send_modal(modal)
 
     async def generate_image(self):
         pool = self.pool
 
         leaderboard_data = await self.cog.get_role_leaderboard_data(
-            self.guild, self.current_days, self.leaderboard_type,
+            self.guild, self.current_start_time, self.current_end_time, self.leaderboard_type,
             self.channel, self.category, self.selected_role_id
         )
 
@@ -3107,7 +2946,7 @@ class RoleLeaderboardView(discord.ui.View):
                 guild=self.guild,
                 leaderboard_data=leaderboard_data,
                 target_name=target_name,
-                days_back=self.current_days,
+                display_text=self.current_display_text,
                 role_id=self.selected_role_id,
                 total_value=total_value,
                 page=self.page,
@@ -3120,7 +2959,7 @@ class RoleLeaderboardView(discord.ui.View):
                 guild=self.guild,
                 leaderboard_data=leaderboard_data,
                 target_name=target_name,
-                days_back=self.current_days,
+                display_text=self.current_display_text,
                 role_id=self.selected_role_id,
                 total_value=total_value,
                 page=self.page,
@@ -3133,7 +2972,7 @@ class RoleLeaderboardView(discord.ui.View):
                 guild=self.guild,
                 leaderboard_data=leaderboard_data,
                 target_name=target_name,
-                days_back=self.current_days,
+                display_text=self.current_display_text,
                 role_id=self.selected_role_id,
                 total_value=total_value,
                 page=self.page,
@@ -3145,7 +2984,7 @@ class RoleLeaderboardView(discord.ui.View):
     async def update_message(self, interaction: discord.Interaction):
         try:
             leaderboard_data = await self.cog.get_role_leaderboard_data(
-                self.guild, self.current_days, self.leaderboard_type,
+                self.guild, self.current_start_time, self.current_end_time, self.leaderboard_type,
                 self.channel, self.category, self.selected_role_id
             )
 
@@ -3158,6 +2997,8 @@ class RoleLeaderboardView(discord.ui.View):
 
             img_bytes = await self.generate_image()
 
+            self._update_buttons()
+
             for child in self.children:
                 if isinstance(child, PageIndicator):
                     child.label = f"Page {self.page + 1}/{total_pages}"
@@ -3166,8 +3007,6 @@ class RoleLeaderboardView(discord.ui.View):
                 elif isinstance(child, NextButton):
                     child.disabled = (
                         self.page >= total_pages - 1 or total_pages <= 1)
-
-            self._update_buttons()
 
             file = discord.File(img_bytes, filename="role_leaderboard.png")
 
@@ -3225,24 +3064,19 @@ class Leaderboards(commands.Cog):
         self.active_views = {}
         self.users_per_page = Config.USERS_PER_PAGE
         self.rate_limiter = get_rate_limiter()
-        self.user_cache = {}  # Cache for fetched users
-        # Start cache cleanup task
+        self.user_cache = {}
         self.clean_cache_task.start()
 
     def cog_unload(self):
-        """Cancel the cache cleanup task when cog is unloaded"""
         self.clean_cache_task.cancel()
 
     @tasks.loop(hours=1)
     async def clean_cache_task(self):
-        """Periodically clean the user cache to prevent memory bloat"""
         self.user_cache.clear()
         gc.collect()
 
     @rate_limited(RateLimitType.API, timeout=1.0)
     async def _fetch_user_with_rate_limit(self, user_id: int):
-        """Fetch user globally with rate limiting. Only used as fallback."""
-        # Check cache first
         if user_id in self.user_cache:
             return self.user_cache[user_id]
 
@@ -3273,6 +3107,113 @@ class Leaderboards(commands.Cog):
             logger.warning(
                 "⚠️ Leaderboards: DatabaseStats cog not found after waiting!")
 
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                end = datetime.now(timezone.utc)
+                start = end - timedelta(days=Config.DEFAULT_DAYS_BACK)
+                return (start, end, f"{Config.DEFAULT_DAYS_BACK} days", Config.DEFAULT_DAYS_BACK)
+
+            settings = await settings_cog.get_guild_settings(guild.id)
+            mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.now(timezone.utc)
+
+            if mode == 'all_time':
+                return (None, now, "All Time", 999999)
+
+            elif mode == 'days_back':
+                days = settings.get(
+                    'default_days_back') or Config.DEFAULT_DAYS_BACK
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+
+                # Add timezone awareness guards
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Custom"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=Config.DEFAULT_DAYS_BACK)
+            return (start, end, f"{Config.DEFAULT_DAYS_BACK} days", Config.DEFAULT_DAYS_BACK)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=Config.DEFAULT_DAYS_BACK)
+            return (start, end, f"{Config.DEFAULT_DAYS_BACK} days", Config.DEFAULT_DAYS_BACK)
+
     async def _filter_members_by_role(self, guild: discord.Guild, role_id: str) -> List[int]:
         if not guild or not role_id or role_id == "none":
             return []
@@ -3294,7 +3235,7 @@ class Leaderboards(commands.Cog):
             return []
 
     async def get_channel_voice_leaderboard(self, guild: discord.Guild, channel: discord.VoiceChannel,
-                                            days_back: int, role_id: str = None):
+                                            start_time: datetime = None, end_time: datetime = None, role_id: str = None):
         if not self.db_cog:
             logger.warning("DatabaseStats cog not available")
             return []
@@ -3306,9 +3247,6 @@ class Leaderboards(commands.Cog):
             if role_id and role_id != "none":
                 role_id_int = int(role_id)
                 role_filter_ids = [role_id_int]
-
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
 
             top_users = await self.db_cog.q_leaderboard_voice_users_in_channel(
                 guild_id=guild_id_int,
@@ -3335,7 +3273,7 @@ class Leaderboards(commands.Cog):
             return []
 
     async def get_channel_text_leaderboard(self, guild: discord.Guild, channel: discord.TextChannel,
-                                           days_back: int, role_id: str = None):
+                                           start_time: datetime = None, end_time: datetime = None, role_id: str = None):
         if not self.db_cog:
             logger.warning("DatabaseStats cog not available")
             return []
@@ -3347,9 +3285,6 @@ class Leaderboards(commands.Cog):
             if role_id and role_id != "none":
                 role_id_int = int(role_id)
                 role_filter_ids = [role_id_int]
-
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
 
             top_users = await self.db_cog.q_leaderboard_text_users_in_channel(
                 guild_id=guild_id_int,
@@ -3375,7 +3310,7 @@ class Leaderboards(commands.Cog):
             traceback.print_exc()
             return []
 
-    async def get_server_message_data(self, guild: discord.Guild, days_back: int,
+    async def get_server_message_data(self, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
                                       role_id: str = None):
         if not self.db_cog:
             logger.warning("DatabaseStats cog not available")
@@ -3396,11 +3331,13 @@ class Leaderboards(commands.Cog):
                 role_id_int = int(role_id)
                 role_filter_ids = [role_id_int]
 
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
-
-            top_users = await self.db_cog.q_server_top3_users_messages(
+            # FIX: was calling q_server_top3_users_messages (hard-capped at 3,
+            # no `limit` param) instead of a proper limited leaderboard query.
+            # Now uses q_leaderboard_server_top_users_messages with limit=100,
+            # matching every other leaderboard query in this cog.
+            top_users = await self.db_cog.q_leaderboard_server_top_users_messages(
                 guild_id=guild_id_int,
+                limit=100,
                 role_filter_ids=role_filter_ids,
                 start_time=start_time,
                 end_time=end_time
@@ -3450,7 +3387,7 @@ class Leaderboards(commands.Cog):
 
         return result
 
-    async def get_server_voice_data(self, guild: discord.Guild, days_back: int,
+    async def get_server_voice_data(self, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
                                     role_id: str = None):
         if not self.db_cog:
             logger.warning("DatabaseStats cog not available")
@@ -3470,11 +3407,13 @@ class Leaderboards(commands.Cog):
                 role_id_int = int(role_id)
                 role_filter_ids = [role_id_int]
 
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
-
-            top_users = await self.db_cog.q_server_top3_users_voice(
+            # FIX: was calling q_server_top3_users_voice (hard-capped at 3,
+            # no `limit` param) instead of a proper limited leaderboard query.
+            # Now uses q_leaderboard_server_top_users_voice with limit=100,
+            # matching every other leaderboard query in this cog.
+            top_users = await self.db_cog.q_leaderboard_server_top_users_voice(
                 guild_id=guild_id_int,
+                limit=100,
                 role_filter_ids=role_filter_ids,
                 start_time=start_time,
                 end_time=end_time
@@ -3525,7 +3464,7 @@ class Leaderboards(commands.Cog):
         return result
 
     async def get_category_data(self, guild: discord.Guild, category: discord.CategoryChannel,
-                                days_back: int, leaderboard_type: str, role_id: str = None):
+                                start_time: datetime = None, end_time: datetime = None, leaderboard_type: str = None, role_id: str = None):
         if not self.db_cog:
             logger.warning("DatabaseStats cog not available")
             return {"users": [], "channels": []}
@@ -3542,9 +3481,6 @@ class Leaderboards(commands.Cog):
             if role_id and role_id != "none":
                 role_id_int = int(role_id)
                 role_filter_ids = [role_id_int]
-
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
 
             if leaderboard_type == "top_users_messages":
                 top_users = await self.db_cog.q_leaderboard_category_users_messages(
@@ -3620,49 +3556,8 @@ class Leaderboards(commands.Cog):
 
         return result
 
-    async def get_mentions_leaderboard(self, guild: discord.Guild, target_user: discord.Member,
-                                       days_back: int, role_id: str = None):
-        if not self.db_cog:
-            logger.warning("DatabaseStats cog not available")
-            return []
-
-        try:
-            guild_id_int = int(guild.id)
-
-            role_filter_ids = None
-            if role_id and role_id != "none":
-                role_id_int = int(role_id)
-                role_filter_ids = [role_id_int]
-
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
-
-            mention_data = await self.db_cog.q_leaderboard_mentions_target_user(
-                guild_id=guild_id_int,
-                mentioned_user_id=target_user.id,
-                limit=100,
-                role_filter_ids=role_filter_ids,
-                start_time=start_time,
-                end_time=end_time
-            )
-
-            user_stats = []
-            for mention in mention_data:
-                user_id = mention.get('user_id')
-                mention_count = mention.get('mention_count', 0)
-
-                if user_id and mention_count > 0:
-                    user_stats.append((str(user_id), mention_count))
-
-            return user_stats
-
-        except Exception as e:
-            logger.error(f"Error getting mentions leaderboard: {e}")
-            traceback.print_exc()
-            return []
-
-    async def get_role_leaderboard_data(self, guild: discord.Guild, days_back: int,
-                                        leaderboard_type: str, channel: discord.abc.GuildChannel = None,
+    async def get_role_leaderboard_data(self, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                                        leaderboard_type: str = None, channel: discord.abc.GuildChannel = None,
                                         category: discord.CategoryChannel = None, role_id: str = None):
         if not self.db_cog:
             logger.warning("DatabaseStats cog not available")
@@ -3675,9 +3570,6 @@ class Leaderboards(commands.Cog):
             if role_id and role_id != "none":
                 role_id_int = int(role_id)
                 role_filter_ids = [role_id_int]
-
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
 
             if leaderboard_type == "top_roles_messages":
                 if channel:
@@ -3846,8 +3738,10 @@ class Leaderboards(commands.Cog):
 
             pool = self.db_cog.pool if hasattr(self.db_cog, 'pool') else None
 
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild)
+
             if command_type == "server":
-                data = await self.get_server_message_data(guild, Config.DEFAULT_DAYS_BACK)
+                data = await self.get_server_message_data(guild, start_time, end_time)
                 leaderboard_data = data["users"]
                 total_messages = sum(
                     count for _, count in leaderboard_data) if leaderboard_data else 0
@@ -3856,7 +3750,7 @@ class Leaderboards(commands.Cog):
                     guild=guild,
                     leaderboard_data=leaderboard_data,
                     target_name=UnicodeNormalizer.normalize_text(guild.name),
-                    days_back=Config.DEFAULT_DAYS_BACK,
+                    display_text=display_text,
                     total_value=total_messages,
                     page=0,
                     pool=pool,
@@ -3865,7 +3759,7 @@ class Leaderboards(commands.Cog):
                 file = discord.File(
                     img_bytes, filename="server_leaderboard.png")
                 view = ServerLeaderboardView(
-                    self, guild, days_back=Config.DEFAULT_DAYS_BACK, pool=pool)
+                    self, guild, start_time=start_time, end_time=end_time, days_back_equiv=days_back_equiv, display_text=display_text, pool=pool, using_server_default=True)
 
             elif command_type == "channel":
                 if target is None:
@@ -3885,7 +3779,7 @@ class Leaderboards(commands.Cog):
 
                 if isinstance(channel, discord.TextChannel):
                     leaderboard_type = "top_text_users"
-                    leaderboard_data = await self.get_channel_text_leaderboard(guild, channel, Config.DEFAULT_DAYS_BACK)
+                    leaderboard_data = await self.get_channel_text_leaderboard(guild, channel, start_time, end_time)
                     total_value = sum(
                         count for _, count in leaderboard_data) if leaderboard_data else 0
 
@@ -3893,7 +3787,7 @@ class Leaderboards(commands.Cog):
                         guild=guild,
                         leaderboard_data=leaderboard_data,
                         target_name=f"#{UnicodeNormalizer.normalize_text(channel.name)}",
-                        days_back=Config.DEFAULT_DAYS_BACK,
+                        display_text=display_text,
                         total_value=total_value,
                         page=0,
                         pool=pool,
@@ -3901,7 +3795,7 @@ class Leaderboards(commands.Cog):
                     )
                 else:
                     leaderboard_type = "top_voice_users"
-                    leaderboard_data = await self.get_channel_voice_leaderboard(guild, channel, Config.DEFAULT_DAYS_BACK)
+                    leaderboard_data = await self.get_channel_voice_leaderboard(guild, channel, start_time, end_time)
                     total_value = sum(
                         seconds for _, seconds in leaderboard_data) if leaderboard_data else 0
 
@@ -3909,7 +3803,7 @@ class Leaderboards(commands.Cog):
                         guild=guild,
                         leaderboard_data=leaderboard_data,
                         target_name=f"🔊{UnicodeNormalizer.normalize_text(channel.name)}",
-                        days_back=Config.DEFAULT_DAYS_BACK,
+                        display_text=display_text,
                         total_value=total_value,
                         page=0,
                         pool=pool,
@@ -3919,7 +3813,7 @@ class Leaderboards(commands.Cog):
                 file = discord.File(
                     img_bytes, filename="channel_leaderboard.png")
                 view = ChannelLeaderboardView(
-                    self, guild, channel, days_back=Config.DEFAULT_DAYS_BACK, leaderboard_type=leaderboard_type, pool=pool)
+                    self, guild, channel, start_time=start_time, end_time=end_time, days_back_equiv=days_back_equiv, display_text=display_text, leaderboard_type=leaderboard_type, pool=pool, using_server_default=True)
 
             elif command_type == "category":
                 if target is None:
@@ -3939,7 +3833,7 @@ class Leaderboards(commands.Cog):
                 else:
                     category = target
 
-                data = await self.get_category_data(guild, category, Config.DEFAULT_DAYS_BACK, "top_text_channels")
+                data = await self.get_category_data(guild, category, start_time, end_time, "top_text_channels")
                 leaderboard_data = data["channels"]
                 total_value = sum(
                     count for _, count in leaderboard_data) if leaderboard_data else 0
@@ -3949,7 +3843,7 @@ class Leaderboards(commands.Cog):
                     leaderboard_data=leaderboard_data,
                     target_name=UnicodeNormalizer.normalize_text(
                         category.name),
-                    days_back=Config.DEFAULT_DAYS_BACK,
+                    display_text=display_text,
                     total_value=total_value,
                     page=0,
                     pool=pool,
@@ -3959,33 +3853,13 @@ class Leaderboards(commands.Cog):
                 file = discord.File(
                     img_bytes, filename="category_leaderboard.png")
                 view = CategoryLeaderboardView(
-                    self, guild, category, days_back=Config.DEFAULT_DAYS_BACK, pool=pool)
-
-            elif command_type == "mentions":
-                if target_user is None:
-                    target_user = user
-
-                leaderboard_data = await self.get_mentions_leaderboard(guild, target_user, Config.DEFAULT_DAYS_BACK)
-
-                img_bytes = await generate_message_leaderboard_image(
-                    guild=guild,
-                    leaderboard_data=leaderboard_data,
-                    target_name=UnicodeNormalizer.normalize_text(
-                        target_user.name),
-                    days_back=Config.DEFAULT_DAYS_BACK,
-                    page=0,
-                    pool=pool,
-                    cog=self
-                )
-                file = discord.File(
-                    img_bytes, filename="mentions_leaderboard.png")
-                view = MentionsLeaderboardView(
-                    self, guild, target_user, days_back=Config.DEFAULT_DAYS_BACK, pool=pool)
+                    self, guild, category, start_time=start_time, end_time=end_time, days_back_equiv=days_back_equiv, display_text=display_text, pool=pool, using_server_default=True)
 
             elif command_type == "role":
                 leaderboard_data = await self.get_role_leaderboard_data(
                     guild,
-                    Config.DEFAULT_DAYS_BACK,
+                    start_time,
+                    end_time,
                     "top_roles_messages",
                     channel=target if isinstance(
                         target, (discord.TextChannel, discord.VoiceChannel)) else None,
@@ -4010,7 +3884,7 @@ class Leaderboards(commands.Cog):
                     guild=guild,
                     leaderboard_data=leaderboard_data,
                     target_name=target_name,
-                    days_back=Config.DEFAULT_DAYS_BACK,
+                    display_text=display_text,
                     total_value=total_value,
                     page=0,
                     pool=pool,
@@ -4019,7 +3893,7 @@ class Leaderboards(commands.Cog):
                 )
                 file = discord.File(img_bytes, filename="role_leaderboard.png")
                 view = RoleLeaderboardView(
-                    self, guild, days_back=Config.DEFAULT_DAYS_BACK, target=target, pool=pool)
+                    self, guild, start_time=start_time, end_time=end_time, days_back_equiv=days_back_equiv, display_text=display_text, target=target, pool=pool, using_server_default=True)
 
             else:
                 if is_interaction:
@@ -4028,10 +3902,19 @@ class Leaderboards(commands.Cog):
                     await ctx_or_interaction.send("❌ Invalid command type.", delete_after=10)
                 return
 
+            required_stat = ['track_voice'] if (command_type == "channel" and isinstance(
+                channel, discord.VoiceChannel)) else ['track_messages']
+
+            retention_alert_text = await self.db_cog.maybe_get_retention_alert(guild.id) if self.db_cog else None
+            stat_type_warning = await self.db_cog.check_stat_types_enabled(guild.id, required_stat) if self.db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                msg = await send_method(content=content, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await send_method(content=content, file=file, view=view, delete_after=300)
 
             self.active_views[msg.id] = view
 
@@ -4055,7 +3938,6 @@ class Leaderboards(commands.Cog):
                        "- `leaderboard server` or `ls` - Server-wide leaderboards\n"
                        "- `leaderboard channel [channel]` or `lch [channel]` - Channel leaderboards\n"
                        "- `leaderboard category [category]` or `lca [category]` - Category leaderboards\n"
-                       "- `leaderboard mentions [user]` or `lm [user]` - Mentions leaderboard\n"
                        "- `leaderboard role [channel/category]` or `lr [channel/category]` - Role leaderboards")
 
     @leaderboard_group_prefix.command(name="server")
@@ -4069,10 +3951,6 @@ class Leaderboards(commands.Cog):
     @leaderboard_group_prefix.command(name="category")
     async def leaderboard_category_prefix(self, ctx: commands.Context, category: Optional[discord.CategoryChannel] = None):
         await self._handle_leaderboard_command(ctx, "category", target=category, is_interaction=False)
-
-    @leaderboard_group_prefix.command(name="mentions")
-    async def leaderboard_mentions_prefix(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        await self._handle_leaderboard_command(ctx, "mentions", target_user=member, is_interaction=False)
 
     @leaderboard_group_prefix.command(name="role")
     async def leaderboard_role_prefix(self, ctx: commands.Context, target: Optional[Union[discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel]] = None):
@@ -4089,10 +3967,6 @@ class Leaderboards(commands.Cog):
     @commands.command(name="lca")
     async def leaderboard_category_shortcut(self, ctx: commands.Context, category: Optional[discord.CategoryChannel] = None):
         await self._handle_leaderboard_command(ctx, "category", target=category, is_interaction=False)
-
-    @commands.command(name="lm")
-    async def leaderboard_mentions_shortcut(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        await self._handle_leaderboard_command(ctx, "mentions", target_user=member, is_interaction=False)
 
     @commands.command(name="lr")
     async def leaderboard_role_shortcut(self, ctx: commands.Context, target: Optional[Union[discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel]] = None):
@@ -4115,11 +3989,6 @@ class Leaderboards(commands.Cog):
     async def category_leaderboard(self, interaction: discord.Interaction, category: Optional[discord.CategoryChannel] = None):
         await self._handle_leaderboard_command(interaction, "category", target=category, is_interaction=True)
 
-    @leaderboard_group.command(name="mentions", description="Show users who mentioned a specific user the most")
-    @app_commands.describe(target_user="The user to check mentions for (optional - defaults to you)")
-    async def mentions_leaderboard(self, interaction: discord.Interaction, target_user: Optional[discord.Member] = None):
-        await self._handle_leaderboard_command(interaction, "mentions", target_user=target_user, is_interaction=True)
-
     @leaderboard_group.command(name="role", description="Show top roles by messages, voice activity, or invites")
     @app_commands.describe(target="Optional: Show roles in a specific channel or category")
     async def role_leaderboard(self, interaction: discord.Interaction,
@@ -4129,7 +3998,6 @@ class Leaderboards(commands.Cog):
     @channel_leaderboard.error
     @server_leaderboard.error
     @category_leaderboard.error
-    @mentions_leaderboard.error
     @role_leaderboard.error
     async def leaderboard_error_handler(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         try:

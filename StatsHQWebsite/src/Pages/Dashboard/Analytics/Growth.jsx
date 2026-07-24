@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import NavBar from "../../../Components/NavBar.jsx";
 import Footer from "../../../Components/Footer.jsx";
@@ -13,6 +13,22 @@ const PUBLIC_GUILD_ID = '1424021358680998022';
 
 // PRIVILEGED USERS - bypass all access levels
 const PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229'];
+
+// Maximum forecast horizon, in days. The projected-growth charts previously
+// used the *lookback* window (up to 2000/1825 days for "All Time" / custom
+// ranges) as the forecast horizon too, which made the backend compute a
+// multi-year projection on every load and made the page extremely slow.
+// The forecast horizon now scales with the lookback but is capped here.
+const PROJECTION_CAP_DAYS = 90;
+
+// Scales the forecast horizon with the lookback, but never exceeds the cap.
+// "all" and custom-range (where days is null) fall back to the full cap.
+const getProjectionDays = (days) => {
+  if (days !== null && days !== undefined && !isNaN(days)) {
+    return Math.min(days, PROJECTION_CAP_DAYS);
+  }
+  return PROJECTION_CAP_DAYS;
+};
 
 // ============================================
 // ADVANCED CACHING SYSTEM
@@ -193,6 +209,8 @@ const GrowthDashboard = () => {
   const [dashboardAccessLevel, setDashboardAccessLevel] = useState('Member');
   const [apiError, setApiError] = useState(null);
   const [serverTimezone, setServerTimezone] = useState('UTC');
+  const [retentionAlert, setRetentionAlert] = useState(null);
+  const [retentionDismissed, setRetentionDismissed] = useState(false);
   
   // Loading states
   const [loadingServerStats, setLoadingServerStats] = useState(true);
@@ -233,6 +251,8 @@ const GrowthDashboard = () => {
   const rolesRef = useRef([]);
   const fetchedRef = useRef(false);
   const initialDataLoadedRef = useRef(false);
+  const didInitRef = useRef(false);
+  const inFlightRequestsRef = useRef({});
   const prevFiltersRef = useRef(JSON.stringify({
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
     selectedRoleId
@@ -275,8 +295,133 @@ const GrowthDashboard = () => {
 
   // Load everything on mount
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     loadInitialData();
   }, []);
+
+  useEffect(() => {
+    if (!currentServer || isPublicMode || hasAccess === null) { setRetentionAlert(null); return; }
+    let cancelled = false;
+    const fetchRetentionStatus = async () => {
+      try {
+        const r = await fetch(`${API_BASE_URL}/api/retention/status?guild_id=${currentServer.id}`, {
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!cancelled) {
+          setRetentionAlert(d.show_alert ? { message: d.message } : null);
+          setRetentionDismissed(false);
+        }
+      } catch {
+        if (!cancelled) setRetentionAlert(null);
+      }
+    };
+    fetchRetentionStatus();
+    return () => { cancelled = true; };
+  }, [currentServer, isPublicMode, hasAccess]);
+
+  // FIXED: applyServerTimePeriod now returns computed values
+  const applyServerTimePeriod = (settings) => {
+    const mode = settings.default_time_mode || 'days_back';
+    const result = {};
+
+    if (mode === 'all_time') {
+      setTimePeriod('all');
+      result.timePeriod = 'all';
+    } else if (mode === 'days_back') {
+      const days = settings.default_days_back || 14;
+      const presets = ['7', '14', '30', '60', '90'];
+      if (presets.includes(String(days))) {
+        setTimePeriod(String(days));
+        result.timePeriod = String(days);
+      } else {
+        setTimePeriod('custom-lookback');
+        setCustomDaysBack(String(days));
+        result.timePeriod = 'custom-lookback';
+        result.customDaysBack = String(days);
+      }
+    } else if (mode === 'date_range') {
+      setTimePeriod('custom-range');
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      
+      let fromDate = null;
+      let toDate = null;
+      
+      if (settings.default_from_date) {
+        fromDate = settings.default_from_date.split('T')[0];
+        setCustomStartDate(fromDate);
+      }
+      if (settings.default_to_date) {
+        toDate = settings.default_to_date.split('T')[0];
+        setCustomEndDate(toDate);
+      }
+      
+      if (fromDate && !toDate) {
+        toDate = formattedToday;
+        setCustomEndDate(toDate);
+      } else if (!fromDate && toDate) {
+        fromDate = '';
+        setCustomStartDate('');
+      }
+      
+      result.timePeriod = 'custom-range';
+      result.customStartDate = fromDate || '';
+      result.customEndDate = toDate || '';
+    } else if (mode === 'rolling_window') {
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      let startDate = null;
+      
+      if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
+        const targetWeekday = settings.default_rolling_value;
+        const currentWeekday = today.getDay();
+        const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
+        
+        let daysToSubtract;
+        if (currentWeekdayMonday >= targetWeekday) {
+          daysToSubtract = currentWeekdayMonday - targetWeekday;
+        } else {
+          daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
+        }
+        
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - daysToSubtract);
+        
+      } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
+        const targetDay = settings.default_rolling_value;
+        const currentDate = today.getDate();
+        
+        startDate = new Date(today);
+        
+        if (currentDate >= targetDay) {
+          startDate.setDate(targetDay);
+        } else {
+          startDate.setMonth(today.getMonth() - 1);
+          const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+          startDate.setDate(Math.min(targetDay, lastDayOfMonth));
+        }
+      }
+      
+      if (startDate) {
+        const formattedStartDate = startDate.toISOString().split('T')[0];
+        setTimePeriod('custom-range');
+        setCustomStartDate(formattedStartDate);
+        setCustomEndDate(formattedToday);
+        result.timePeriod = 'custom-range';
+        result.customStartDate = formattedStartDate;
+        result.customEndDate = formattedToday;
+      } else {
+        setTimePeriod('all');
+        result.timePeriod = 'all';
+      }
+    }
+    
+    return result;
+  };
 
   const loadInitialData = async () => {
     setLoadingServers(true);
@@ -443,17 +588,310 @@ const GrowthDashboard = () => {
         }
         
         setHasAccess(hasAccessFlag);
-        setLoading(false);
+        // NOTE: time-period application and the data fetch now happen exactly
+        // once, in the unified [currentServer, hasAccess] effect below —
+        // this function's only job is to resolve access.
         
       } else {
         console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
-        setLoading(false);
       }
     } catch (error) {
       console.error('Error checking server access:', error);
       setHasAccess(false);
+    } finally {
       setLoading(false);
+    }
+  };
+
+  // NEW: fetchDataWithParams - uses overrides instead of state, with in-flight dedup
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer || !hasAccess) return;
+    
+    const requestKey = `${currentServer.id}:${selectedView}:${JSON.stringify(overrides)}`;
+    if (inFlightRequestsRef.current[requestKey]) {
+      // An identical request is already in flight — reuse it instead of firing another
+      return inFlightRequestsRef.current[requestKey];
+    }
+    
+    const promise = (async () => {
+      setLoading(true);
+      setApiError(null);
+      
+      const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+      const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+      const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+      const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+      
+      let startDate = null;
+      let endDate = null;
+      let days = null;
+      
+      if (effectiveTimePeriod === "all") {
+        days = 2000;
+      } else if (effectiveTimePeriod === "custom-lookback") {
+        if (effectiveCustomDaysBack && parseInt(effectiveCustomDaysBack) > 0) {
+          days = parseInt(effectiveCustomDaysBack);
+          endDate = new Date();
+          startDate = new Date();
+          startDate.setDate(startDate.getDate() - days);
+        }
+      } else if (effectiveTimePeriod === "custom-range") {
+        if (effectiveCustomStartDate && effectiveCustomEndDate) {
+          startDate = new Date(effectiveCustomStartDate);
+          endDate = new Date(effectiveCustomEndDate);
+          days = null;
+        }
+      } else {
+        days = parseInt(effectiveTimePeriod);
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+      }
+      
+      try {
+        if (selectedView === 'server') {
+          await fetchServerDataWithDates(startDate, endDate, days);
+        } else if (selectedView === 'role' && selectedRoleId) {
+          await fetchRoleDataWithDates(startDate, endDate, days);
+        }
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        setApiError(error.message);
+      } finally {
+        setLoading(false);
+        fetchedRef.current = true;
+        delete inFlightRequestsRef.current[requestKey];
+      }
+    })();
+    
+    inFlightRequestsRef.current[requestKey] = promise;
+    return promise;
+  };
+
+  // Helper functions for fetchDataWithParams
+  const fetchServerDataWithDates = async (startDate, endDate, days) => {
+    setLoadingServerStats(true);
+    setLoadingMemberChart(true);
+    setLoadingJoinsLeavesChart(true);
+    setLoadingProjectedChart(true);
+    
+    const isPublic = isPublicMode;
+    
+    try {
+      // 1. Fetch member timeseries
+      const memberRequestBody = { guild_id: currentServer.id };
+      if (days !== null && days !== undefined && !isNaN(days)) {
+        memberRequestBody.days = days;
+      }
+      if (startDate) memberRequestBody.start_time = startDate.toISOString();
+      if (endDate) memberRequestBody.end_time = endDate.toISOString();
+      
+      const memberEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/server/members/timeseries`, isPublic);
+      
+      const memberResponse = await fetch(memberEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(memberRequestBody)
+      });
+      
+      let memberData = [];
+      let currentMembers = 0;
+      
+      if (memberResponse.ok) {
+        const data = await memberResponse.json();
+        memberData = data.timeseries || [];
+        currentMembers = data.current_members || 0;
+        setMemberTimeseries(memberData);
+      }
+      
+      // 2. Fetch joins and leaves
+      const joinsLeavesRequestBody = { guild_id: currentServer.id };
+      if (days !== null && days !== undefined && !isNaN(days)) {
+        joinsLeavesRequestBody.days = days;
+      }
+      if (startDate) joinsLeavesRequestBody.start_time = startDate.toISOString();
+      if (endDate) joinsLeavesRequestBody.end_time = endDate.toISOString();
+      
+      const joinsLeavesEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/server/joins-leaves`, isPublic);
+      
+      const joinsLeavesResponse = await fetch(joinsLeavesEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(joinsLeavesRequestBody)
+      });
+      
+      let totalJoins = 0;
+      let totalLeaves = 0;
+      let joinsSeries = [];
+      let leavesSeries = [];
+      
+      if (joinsLeavesResponse.ok) {
+        const data = await joinsLeavesResponse.json();
+        totalJoins = data.total_joins || 0;
+        totalLeaves = data.total_leaves || 0;
+        joinsSeries = data.joins_timeseries || [];
+        leavesSeries = data.leaves_timeseries || [];
+        setJoinsLeavesTimeseries({ joins: joinsSeries, leaves: leavesSeries });
+      }
+      
+      const growthPercent = calculateGrowthPercentage(memberData);
+      
+      const newServerStats = {
+        currentMembers,
+        totalJoins,
+        totalLeaves,
+        netGrowth: totalJoins - totalLeaves,
+        growthPercentage: growthPercent
+      };
+      
+      setServerStats(newServerStats);
+      
+      // 3. Fetch projected growth
+      // Forecast horizon scales with the lookback but is capped at
+      // PROJECTION_CAP_DAYS so "All Time" / large custom ranges don't
+      // trigger a multi-year projection on every load.
+      const projectedDays = getProjectionDays(days);
+      const projectedRequestBody = {
+        guild_id: currentServer.id,
+        days: projectedDays
+      };
+      
+      const projectedEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/server/projected`, isPublic);
+      
+      const projectedResponse = await fetch(projectedEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(projectedRequestBody)
+      });
+      
+      let projectedData = { data: [], joins: [], leaves: [] };
+      
+      if (projectedResponse.ok) {
+        const data = await projectedResponse.json();
+        projectedData = {
+          data: data.projected_data || [],
+          joins: data.joins_forecast || [],
+          leaves: data.leaves_forecast || []
+        };
+        setProjectedTimeseries(projectedData);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching server data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoadingServerStats(false);
+      setLoadingMemberChart(false);
+      setLoadingJoinsLeavesChart(false);
+      setLoadingProjectedChart(false);
+    }
+  };
+
+  const fetchRoleDataWithDates = async (startDate, endDate, days) => {
+    if (!selectedRoleId) return;
+    
+    setLoadingRoleStats(true);
+    setLoadingRoleChart(true);
+    setLoadingRoleProjectedChart(true);
+    
+    const isPublic = isPublicMode;
+    
+    try {
+      const roleRequestBody = {
+        guild_id: currentServer.id,
+        role_id: selectedRoleId
+      };
+      
+      if (days !== null && days !== undefined && !isNaN(days)) {
+        roleRequestBody.days = days;
+      }
+      if (startDate) roleRequestBody.start_time = startDate.toISOString();
+      if (endDate) roleRequestBody.end_time = endDate.toISOString();
+      
+      const roleEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/role/additions-removals`, isPublic);
+      
+      const roleResponse = await fetch(roleEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(roleRequestBody)
+      });
+      
+      let addedSeries = [];
+      let removedSeries = [];
+      let totalAdded = 0;
+      let totalRemoved = 0;
+      
+      if (roleResponse.ok) {
+        const data = await roleResponse.json();
+        totalAdded = data.total_added || 0;
+        totalRemoved = data.total_removed || 0;
+        addedSeries = data.added_timeseries || [];
+        removedSeries = data.removed_timeseries || [];
+        setRoleTimeseries({ added: addedSeries, removed: removedSeries });
+      }
+      
+      const netGrowthArray = addedSeries.map((item, index) => ({
+        count: (addedSeries[index]?.count || 0) - (removedSeries[index]?.count || 0)
+      }));
+      const growthPercent = calculateGrowthPercentage(netGrowthArray);
+      
+      const roleName = roles.find(r => r.id === selectedRoleId)?.name || `Role ${selectedRoleId}`;
+      const roleColor = roleColors[selectedRoleId] || '#99aab5';
+      
+      const newRoleStats = {
+        totalAdded,
+        totalRemoved,
+        netGrowth: totalAdded - totalRemoved,
+        growthPercentage: growthPercent,
+        roleName,
+        roleColor
+      };
+      
+      setRoleStats(newRoleStats);
+      
+      // Forecast horizon scales with the lookback but is capped at
+      // PROJECTION_CAP_DAYS so "All Time" / large custom ranges don't
+      // trigger a multi-year projection on every load.
+      const projectedDays = getProjectionDays(days);
+      const projectedRequestBody = {
+        guild_id: currentServer.id,
+        role_id: selectedRoleId,
+        days: projectedDays
+      };
+      
+      const projectedEndpoint = getApiEndpoint(`${API_BASE_URL}/api/growth/role/projected`, isPublic);
+      
+      const projectedResponse = await fetch(projectedEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: isPublic ? 'omit' : 'include',
+        body: JSON.stringify(projectedRequestBody)
+      });
+      
+      let projectedData = { data: [], added: [], removed: [] };
+      
+      if (projectedResponse.ok) {
+        const data = await projectedResponse.json();
+        projectedData = {
+          data: data.projected_data || [],
+          added: data.added_forecast || [],
+          removed: data.removed_forecast || []
+        };
+        setRoleProjectedTimeseries(projectedData);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching role data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoadingRoleStats(false);
+      setLoadingRoleChart(false);
+      setLoadingRoleProjectedChart(false);
     }
   };
 
@@ -512,12 +950,16 @@ const GrowthDashboard = () => {
     }
   };
 
-  // Load data when server changes
+  // Load data when server changes — single unified effect owns the whole
+  // "server changed" lifecycle: reset -> fetch roles -> fetch settings ->
+  // apply time period -> fetch data with the resolved params -> sync the
+  // filter-watcher's ref so it doesn't fire a redundant extra fetch.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
     
     // Prevent re-running if already loaded for this server
     if (initialDataLoadedRef.current === currentServer.id) return;
+    initialDataLoadedRef.current = currentServer.id;
     
     fetchedRef.current = false;
     
@@ -525,7 +967,6 @@ const GrowthDashboard = () => {
     setLoadingMemberChart(true);
     setLoadingJoinsLeavesChart(true);
     setLoadingProjectedChart(true);
-    
     setLoading(true);
     
     setMemberTimeseries([]);
@@ -535,11 +976,45 @@ const GrowthDashboard = () => {
     setSelectedRoleName("");
     setRoleSearch("");
     
-    // Mark as loaded for this server
-    initialDataLoadedRef.current = currentServer.id;
+    const initializeServer = async () => {
+      // 1. roles can load in parallel, they don't gate the stats fetch
+      fetchRoles();
+      
+      // 2. get the server's configured default time period BEFORE any data fetch
+      let timeParams = {};
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          timeParams = applyServerTimePeriod(data); // sets state AND returns the values synchronously
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+      }
+      
+      // 3. sync prevFiltersRef to the resolved values BEFORE fetching, so the
+      //    filter-watcher effect sees no diff once fetchedRef flips true and
+      //    doesn't sneak in a redundant extra fetch right after init
+      const resolvedFilters = {
+        selectedView,
+        timePeriod: timeParams.timePeriod ?? timePeriod,
+        customDaysBack: timeParams.customDaysBack ?? customDaysBack,
+        customStartDate: timeParams.customStartDate ?? customStartDate,
+        customEndDate: timeParams.customEndDate ?? customEndDate,
+        selectedRoleId: ""
+      };
+      prevFiltersRef.current = JSON.stringify(resolvedFilters);
+      
+      // 4. fetch data ONCE, using the resolved params directly (not stale state)
+      await fetchDataWithParams(timeParams);
+    };
     
-    fetchRoles();
-    fetchServerData();
+    initializeServer();
   }, [currentServer, hasAccess]);
 
   // Fetch stats when filters change
@@ -708,7 +1183,6 @@ const GrowthDashboard = () => {
         totalLeaves = data.total_leaves || 0;
         joinsSeries = data.joins_timeseries || [];
         leavesSeries = data.leaves_timeseries || [];
-        // Data is correct - joins are joins, leaves are leaves
         setJoinsLeavesTimeseries({ joins: joinsSeries, leaves: leavesSeries });
       }
       
@@ -725,7 +1199,10 @@ const GrowthDashboard = () => {
       setServerStats(newServerStats);
       
       // 3. Fetch projected growth
-      const projectedDays = (days !== null && days !== undefined && !isNaN(days)) ? days : 1825;
+      // Forecast horizon scales with the lookback but is capped at
+      // PROJECTION_CAP_DAYS so "All Time" / large custom ranges don't
+      // trigger a multi-year projection on every load.
+      const projectedDays = getProjectionDays(days);
       const projectedRequestBody = {
         guild_id: currentServer.id,
         days: projectedDays
@@ -852,7 +1329,10 @@ const GrowthDashboard = () => {
       
       setRoleStats(newRoleStats);
       
-      const projectedDays = (days !== null && days !== undefined && !isNaN(days)) ? days : 1825;
+      // Forecast horizon scales with the lookback but is capped at
+      // PROJECTION_CAP_DAYS so "All Time" / large custom ranges don't
+      // trigger a multi-year projection on every load.
+      const projectedDays = getProjectionDays(days);
       const projectedRequestBody = {
         guild_id: currentServer.id,
         role_id: selectedRoleId,
@@ -903,7 +1383,9 @@ const GrowthDashboard = () => {
     setSelectedRoleName(role.name);
     setRoleSearch(role.name);
     setShowRoleDropdown(false);
-    setTimeout(() => fetchRoleData(), 100);
+    // No manual fetch here — the filter-watcher effect below fires
+    // automatically when selectedRoleId changes. Calling fetchRoleData()
+    // here too was firing a second, redundant request on every role pick.
   };
 
   const clearRoleSelection = () => {
@@ -923,30 +1405,41 @@ const GrowthDashboard = () => {
     { value: 'custom-range', label: 'Custom date range' },
   ];
 
-  // Chart data preparation
-  const prepareMemberChartData = () => {
+  // ============================================
+  // MEMOIZED CHART DATA
+  // ============================================
+  // These used to be plain functions (prepareMemberChartData(), etc.)
+  // called directly in JSX. That meant every render — including ones
+  // triggered by hovering a legend chip, opening the export menu, or any
+  // other unrelated state change — rebuilt these arrays from scratch as
+  // brand-new object references. MultiLineChart/Recharts has no way to
+  // know "this is the same data as before"; a new array reference looks
+  // like new data, so it redid all its internal work (and replayed the
+  // draw-in animation) on every incidental re-render. Wrapping these in
+  // useMemo means they're only recalculated when the underlying timeseries
+  // state actually changes.
+
+  const memberChartData = useMemo(() => {
     if (!memberTimeseries.length) return [];
-    
-    const sorted = [...memberTimeseries].sort((a, b) => {
-      return a.date.localeCompare(b.date);
-    });
-    
+
+    const sorted = [...memberTimeseries].sort((a, b) => a.date.localeCompare(b.date));
+
     return sorted.map(point => ({
       date: point.date,
       count: point.count
     }));
-  };
+  }, [memberTimeseries]);
 
-  const prepareJoinsLeavesChartData = () => {
+  const joinsLeavesChartData = useMemo(() => {
     const { joins, leaves } = joinsLeavesTimeseries;
     if (joins.length === 0 && leaves.length === 0) return [];
-    
+
     const dateMap = new Map();
-    
+
     joins.forEach(j => {
       dateMap.set(j.date, { date: j.date, joins: j.count, leaves: 0 });
     });
-    
+
     leaves.forEach(l => {
       const existing = dateMap.get(l.date);
       if (existing) {
@@ -955,39 +1448,31 @@ const GrowthDashboard = () => {
         dateMap.set(l.date, { date: l.date, joins: 0, leaves: l.count });
       }
     });
-    
-    const sorted = Array.from(dateMap.values()).sort((a, b) => {
-      return a.date.localeCompare(b.date);
-    });
-    
-    return sorted.map(point => ({
-      date: point.date,
-      joins: point.joins,
-      leaves: point.leaves
-    }));
-  };
 
-  const prepareProjectedChartData = () => {
+    return Array.from(dateMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [joinsLeavesTimeseries]);
+
+  const projectedChartData = useMemo(() => {
     const projectedData = projectedTimeseries.data || [];
     if (!projectedData.length) return [];
-    
+
     return projectedData.map(point => ({
       date: point.date,
       joins: point.joins,
       leaves: point.leaves
     }));
-  };
+  }, [projectedTimeseries]);
 
-  const prepareRoleChartData = () => {
+  const roleChartData = useMemo(() => {
     const { added, removed } = roleTimeseries;
     if (added.length === 0 && removed.length === 0) return [];
-    
+
     const dateMap = new Map();
-    
+
     added.forEach(a => {
       dateMap.set(a.date, { date: a.date, added: a.count, removed: 0 });
     });
-    
+
     removed.forEach(r => {
       const existing = dateMap.get(r.date);
       if (existing) {
@@ -996,28 +1481,20 @@ const GrowthDashboard = () => {
         dateMap.set(r.date, { date: r.date, added: 0, removed: r.count });
       }
     });
-    
-    const sorted = Array.from(dateMap.values()).sort((a, b) => {
-      return a.date.localeCompare(b.date);
-    });
-    
-    return sorted.map(point => ({
-      date: point.date,
-      added: point.added,
-      removed: point.removed
-    }));
-  };
 
-  const prepareRoleProjectedChartData = () => {
+    return Array.from(dateMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [roleTimeseries]);
+
+  const roleProjectedChartData = useMemo(() => {
     const projectedData = roleProjectedTimeseries.data || [];
     if (!projectedData.length) return [];
-    
+
     return projectedData.map(point => ({
       date: point.date,
       added: point.added,
       removed: point.removed
     }));
-  };
+  }, [roleProjectedTimeseries]);
 
   const getDisplayDays = () => {
     if (timePeriod === "all") return "All Time";
@@ -1169,6 +1646,11 @@ const GrowthDashboard = () => {
       border-color: #aa00ff;
       box-shadow: 0 0 0 3px rgba(170, 0, 255, 0.15);
     }
+
+    .retention-banner { width:100%; box-sizing:border-box; background:linear-gradient(135deg,#3a2f00 0%,#4a3a00 100%); border-bottom:1px solid #ffcc00; padding:12px 24px; display:flex; align-items:center; justify-content:center; gap:16px; position:relative; }
+    .retention-banner-text { color:#ffe066; font-size:14px; font-weight:500; text-align:center; max-width:900px; }
+    .retention-banner-close { background:none; border:none; color:#ffe066; font-size:14px; cursor:pointer; padding:4px 8px; border-radius:6px; line-height:1; flex-shrink:0; transition:background-color 0.15s,color 0.15s; }
+    .retention-banner-close:hover { background-color:rgba(255,224,102,0.15); color:#fff; }
 
     .date-input {
       display: flex;
@@ -1893,7 +2375,7 @@ const GrowthDashboard = () => {
                             <LoadingChart />
                           ) : memberTimeseries.length > 0 ? (
                             <MultiLineChart
-                              data={prepareMemberChartData()}
+                              data={memberChartData}
                               lines={[
                                 { dataKey: 'count', name: 'Member Count', color: '#aa00ff' }
                               ]}
@@ -1914,7 +2396,7 @@ const GrowthDashboard = () => {
                             <LoadingChart />
                           ) : joinsLeavesTimeseries.joins.length > 0 || joinsLeavesTimeseries.leaves.length > 0 ? (
                             <MultiLineChart
-                              data={prepareJoinsLeavesChartData()}
+                              data={joinsLeavesChartData}
                               lines={[
                                 { dataKey: 'joins', name: 'Joins', color: '#00ff00' },
                                 { dataKey: 'leaves', name: 'Leaves', color: '#ff0000' }
@@ -1930,13 +2412,13 @@ const GrowthDashboard = () => {
                       
                       {/* Projected Growth Chart - GREEN for Joins, RED for Leaves */}
                       <div className="charts-section">
-                        <h2 className="section-title">Projected Growth (Next {getDisplayDays()} Days)</h2>
+                        <h2 className="section-title">Projected Growth (Next {getProjectionDays(getDateRange().days)} Days)</h2>
                         <div className="chart-wrapper">
                           {loadingProjectedChart ? (
                             <LoadingChart />
                           ) : projectedTimeseries.data && projectedTimeseries.data.length > 0 ? (
                             <MultiLineChart
-                              data={prepareProjectedChartData()}
+                              data={projectedChartData}
                               lines={[
                                 { dataKey: 'joins', name: 'Projected Joins', color: '#00ff00' },
                                 { dataKey: 'leaves', name: 'Projected Leaves', color: '#ff0000' }
@@ -2004,7 +2486,7 @@ const GrowthDashboard = () => {
                                 <LoadingChart />
                               ) : roleTimeseries.added.length > 0 || roleTimeseries.removed.length > 0 ? (
                                 <MultiLineChart
-                                  data={prepareRoleChartData()}
+                                  data={roleChartData}
                                   lines={[
                                     { dataKey: 'added', name: 'Additions', color: '#00ff00' },
                                     { dataKey: 'removed', name: 'Removals', color: '#ff0000' }
@@ -2020,13 +2502,13 @@ const GrowthDashboard = () => {
                           
                           {/* Projected Role Growth Chart - GREEN for Additions, RED for Removals */}
                           <div className="charts-section">
-                            <h2 className="section-title">Projected Role Growth (Next {getDisplayDays()} Days)</h2>
+                            <h2 className="section-title">Projected Role Growth (Next {getProjectionDays(getDateRange().days)} Days)</h2>
                             <div className="chart-wrapper">
                               {loadingRoleProjectedChart ? (
                                 <LoadingChart />
                               ) : roleProjectedTimeseries.data && roleProjectedTimeseries.data.length > 0 ? (
                                 <MultiLineChart
-                                  data={prepareRoleProjectedChartData()}
+                                  data={roleProjectedChartData}
                                   lines={[
                                     { dataKey: 'added', name: 'Projected Additions', color: '#00ff00' },
                                     { dataKey: 'removed', name: 'Projected Removals', color: '#ff0000' }
@@ -2206,6 +2688,18 @@ const GrowthDashboard = () => {
   return (
     <>
       <NavBar />
+      {retentionAlert && !retentionDismissed && (
+        <div className="retention-banner">
+          <span className="retention-banner-text">⚠️ {retentionAlert.message}</span>
+          <button
+            className="retention-banner-close"
+            onClick={() => setRetentionDismissed(true)}
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div className="dashboard-page">
         <DashboardSidebar 
           currentServerId={currentServer?.id} 
@@ -2395,7 +2889,7 @@ const GrowthDashboard = () => {
                           <LoadingChart />
                         ) : memberTimeseries.length > 0 ? (
                           <MultiLineChart
-                            data={prepareMemberChartData()}
+                            data={memberChartData}
                             lines={[
                               { dataKey: 'count', name: 'Member Count', color: '#aa00ff' }
                             ]}
@@ -2416,7 +2910,7 @@ const GrowthDashboard = () => {
                           <LoadingChart />
                         ) : joinsLeavesTimeseries.joins.length > 0 || joinsLeavesTimeseries.leaves.length > 0 ? (
                           <MultiLineChart
-                            data={prepareJoinsLeavesChartData()}
+                            data={joinsLeavesChartData}
                             lines={[
                               { dataKey: 'joins', name: 'Joins', color: '#00ff00' },
                               { dataKey: 'leaves', name: 'Leaves', color: '#ff0000' }
@@ -2432,13 +2926,13 @@ const GrowthDashboard = () => {
                     
                     {/* Projected Growth Chart - GREEN for Joins, RED for Leaves */}
                     <div className="charts-section">
-                      <h2 className="section-title">Projected Growth (Next {getDisplayDays()} Days)</h2>
+                      <h2 className="section-title">Projected Growth (Next {getProjectionDays(getDateRange().days)} Days)</h2>
                       <div className="chart-wrapper">
                         {loadingProjectedChart ? (
                           <LoadingChart />
                         ) : projectedTimeseries.data && projectedTimeseries.data.length > 0 ? (
                           <MultiLineChart
-                            data={prepareProjectedChartData()}
+                            data={projectedChartData}
                             lines={[
                               { dataKey: 'joins', name: 'Projected Joins', color: '#00ff00' },
                               { dataKey: 'leaves', name: 'Projected Leaves', color: '#ff0000' }
@@ -2506,7 +3000,7 @@ const GrowthDashboard = () => {
                               <LoadingChart />
                             ) : roleTimeseries.added.length > 0 || roleTimeseries.removed.length > 0 ? (
                               <MultiLineChart
-                                data={prepareRoleChartData()}
+                                data={roleChartData}
                                 lines={[
                                   { dataKey: 'added', name: 'Additions', color: '#00ff00' },
                                   { dataKey: 'removed', name: 'Removals', color: '#ff0000' }
@@ -2522,13 +3016,13 @@ const GrowthDashboard = () => {
                         
                         {/* Projected Role Growth Chart - GREEN for Additions, RED for Removals */}
                         <div className="charts-section">
-                          <h2 className="section-title">Projected Role Growth (Next {getDisplayDays()} Days)</h2>
+                          <h2 className="section-title">Projected Role Growth (Next {getProjectionDays(getDateRange().days)} Days)</h2>
                           <div className="chart-wrapper">
                             {loadingRoleProjectedChart ? (
                               <LoadingChart />
                             ) : roleProjectedTimeseries.data && roleProjectedTimeseries.data.length > 0 ? (
                               <MultiLineChart
-                                data={prepareRoleProjectedChartData()}
+                                data={roleProjectedChartData}
                                 lines={[
                                   { dataKey: 'added', name: 'Projected Additions', color: '#00ff00' },
                                   { dataKey: 'removed', name: 'Projected Removals', color: '#ff0000' }

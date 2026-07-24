@@ -32,8 +32,14 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+CHART_STAT_TOGGLE_MAP = {
+    "messages": "track_messages",
+    "voice_activity": "track_voice",
+    "invites": "track_invites",
+}
 
 # DRAWING FUNCTIONS
+
 
 def draw_text_with_stroke(draw, position, text, font, text_color, stroke_color, stroke_width):
 
@@ -63,12 +69,57 @@ def draw_text_with_stroke_and_emoji(pilmoji_draw, position, text, font, text_col
                       emoji_position_offset=(0, 0))
 
 
+# PAGE JUMP MODAL
+class PageJumpModal(discord.ui.Modal, title='Jump to Interval'):
+    def __init__(self, view, total_intervals):
+        super().__init__(timeout=60)
+        self.view = view
+        self.total_intervals = total_intervals
+        self.rate_limiter = get_rate_limiter()
+
+        self.interval_number = discord.ui.TextInput(
+            label=f'Enter interval number (1-{total_intervals})',
+            placeholder=f'1 to {total_intervals}',
+            min_length=1,
+            max_length=4,
+            required=True
+        )
+        self.add_item(self.interval_number)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            interval = int(self.interval_number.value) - 1
+
+            if interval < 0 or interval >= self.total_intervals:
+                embed = discord.Embed(
+                    title="❌ Invalid Interval",
+                    description=f"Interval {interval + 1} does not exist. Please enter a number between 1 and {self.total_intervals}.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            await interaction.response.defer()
+            # For charts, interval selection doesn't make sense, but we'll keep for consistency
+            await self.view.update_chart(interaction)
+
+        except ValueError:
+            embed = discord.Embed(
+                title="❌ Invalid Input",
+                description="Please enter a valid interval number.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 # ROLE INPUT MODAL
 
-class RoleInputModal(discord.ui.Modal, title='Input Role ID'):
+class RoleInputModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID or "none" for no filter',
@@ -78,6 +129,7 @@ class RoleInputModal(discord.ui.Modal, title='Input Role ID'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             role_input = self.role_id.value.strip()
@@ -138,6 +190,7 @@ class ChartTimeModal(discord.ui.Modal, title='Custom Time Period'):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -147,6 +200,7 @@ class ChartTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -155,7 +209,12 @@ class ChartTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 return
 
             await interaction.response.defer()
-            self.view.current_days = days
+            now = datetime.now(pytz.UTC)
+            self.view.current_start_time = now - timedelta(days=days)
+            self.view.current_end_time = now
+            self.view.current_days_back_equiv = days
+            self.view.current_display_text = f"{days} days"
+            self.view.using_server_default = False
             self.view.show_time_buttons = False
             await self.view.update_chart(interaction)
 
@@ -190,7 +249,9 @@ class ChartSelectMenu(discord.ui.Select):
             min_values=1,
             max_values=1
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         view.current_selection = self.values[0]
@@ -201,18 +262,26 @@ class ChartSelectMenu(discord.ui.Select):
 # MAIN CHART VIEW
 
 class ChartView(discord.ui.View):
-    def __init__(self, cog, chart_type: str, target_id: int, guild_id: int, days: int = 14, role_id: Optional[str] = None, ctx=None):
+    def __init__(self, cog, chart_type: str, target_id: int, guild_id: int, start_time: datetime = None,
+                 end_time: datetime = None, days_back_equiv: int = 14, display_text: str = "14 days",
+                 role_id: Optional[str] = None, ctx=None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog
         self.chart_type = chart_type
         self.target_id = int(target_id)
         self.guild_id = int(guild_id)
-        self.current_days = int(days)
+        self.current_start_time = start_time
+        self.current_end_time = end_time if end_time else datetime.now(
+            pytz.UTC)
+        self.current_days_back_equiv = int(days_back_equiv)
+        self.current_display_text = display_text
         self.selected_role_id = role_id
         self.show_time_buttons = False
         self.guild = cog.bot.get_guild(self.guild_id)
-        self.ctx = ctx  # Store context for prefix commands
-        self.message = None  # Store message for prefix commands
+        self.ctx = ctx
+        self.message = None
+        self.using_server_default = using_server_default
+        self.rate_limiter = get_rate_limiter()
 
         if chart_type == "user" or chart_type == "server":
             self.chart_options = ["Messages", "Voice Activity", "Invites"]
@@ -237,18 +306,15 @@ class ChartView(discord.ui.View):
     async def _safe_send_or_edit(self, content=None, file=None, view=None):
         """Handle both interaction and context-based messages"""
         if self.message:
-            # For prefix commands, edit the existing message
             try:
                 await self.message.edit(content=content, attachments=[file] if file else [], view=view)
             except Exception as e:
                 print(f"Error editing message: {e}")
         elif self.ctx:
-            # For new prefix commands, send a new message
             try:
                 self.message = await self.ctx.send(content=content, file=file, view=view)
             except Exception as e:
                 print(f"Error sending message: {e}")
-        # For interactions, we handle in update_chart
 
     def _update_buttons(self):
         self.clear_items()
@@ -260,7 +326,7 @@ class ChartView(discord.ui.View):
         if self.chart_type != "user":
             role_button = discord.ui.Button(
                 style=discord.ButtonStyle.primary,
-                label="Input Role Id",
+                label="Filter By Role",
                 custom_id="chart_role_input",
                 row=1
             )
@@ -269,59 +335,69 @@ class ChartView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="chart_refresh",
-            row=2
+            row=1
         )
         refresh_button.callback = self.refresh_callback
         self.add_item(refresh_button)
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="chart_time_settings",
-            row=2
+            row=1
         )
         time_settings_button.callback = self.time_settings_callback
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="chart_all_time"
+            )
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
+
             days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
-                custom_id="chart_days_7",
-                row=3
+                custom_id="chart_days_7"
             )
             days_7_button.callback = self.days_7_callback
             self.add_item(days_7_button)
 
             days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 14 else discord.ButtonStyle.secondary,
                 label="14 Days",
-                custom_id="chart_days_14",
-                row=3
+                custom_id="chart_days_14"
             )
             days_14_button.callback = self.days_14_callback
             self.add_item(days_14_button)
 
             days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 30 else discord.ButtonStyle.secondary,
                 label="30 Days",
-                custom_id="chart_days_30",
-                row=3
+                custom_id="chart_days_30"
             )
             days_30_button.callback = self.days_30_callback
             self.add_item(days_30_button)
 
+            # Use display text for custom button label
+            custom_label = self.current_display_text if self.current_days_back_equiv not in [
+                7, 14, 30, 999999] else "Custom"
+            if len(custom_label) > 20:
+                custom_label = custom_label[:17] + "..."
             custom_button = discord.ui.Button(
                 style=discord.ButtonStyle.success,
-                label="Custom",
-                custom_id="chart_custom_days",
-                row=3
+                label=custom_label,
+                custom_id="chart_custom_days"
             )
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def role_input_callback(self, interaction: discord.Interaction):
         if not self.guild:
             embed = discord.Embed(
@@ -334,21 +410,35 @@ class ChartView(discord.ui.View):
         modal = RoleInputModal(self)
         await interaction.response.send_modal(modal)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def all_time_callback(self, interaction: discord.Interaction):
+        now = datetime.now(pytz.UTC)
+        await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=now, display_text="All Time")
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=7)
+        now = datetime.now(pytz.UTC)
+        await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=14)
+        now = datetime.now(pytz.UTC)
+        await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=30)
+        now = datetime.now(pytz.UTC)
+        await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         if not self.guild:
             await interaction.response.send_message("❌ Could not find guild information.", ephemeral=True)
@@ -357,12 +447,19 @@ class ChartView(discord.ui.View):
         modal = ChartTimeModal(self)
         await interaction.response.send_modal(modal)
 
-    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, days: int = None):
+    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False,
+                                  days_back_equiv: int = None, start_time: datetime = None,
+                                  end_time: datetime = None, display_text: str = None):
         try:
             await interaction.response.defer()
-            if days:
-                self.current_days = days
+            if days_back_equiv is not None:
+                self.current_start_time = start_time
+                self.current_end_time = end_time
+                self.current_days_back_equiv = days_back_equiv
+                self.using_server_default = False
                 self.show_time_buttons = False
+            if display_text is not None:
+                self.current_display_text = display_text
             await self.update_chart(interaction)
         except Exception as e:
             print(f"Error handling button click: {e}")
@@ -387,11 +484,9 @@ class ChartView(discord.ui.View):
         """Update chart, handling both interaction and context-based calls"""
 
         try:
-
             data = await self.fetch_chart_data()
 
             if not data:
-
                 if interaction:
                     await self._safe_edit_response(interaction, content="❌ No data available for the selected parameters", view=self)
                 else:
@@ -445,16 +540,29 @@ class ChartView(discord.ui.View):
             label = self.create_label(data)
 
             final_image_bytes = await self.cog.draw_chart_on_template(
-                chart_img, label, self.current_days, self.selected_role_id,
+                chart_img, label, self.current_display_text, self.selected_role_id,
                 role_name, timestamps, y_labels, self.current_selection, self.chart_type, self.target_id, self.guild_id)
 
             file = discord.File(final_image_bytes, filename='chart.png')
             self._update_buttons()
 
+            # Fetch retention alert + stat type warning
+            _db_stats = self.cog.bot.get_cog('DatabaseStats')
+            retention_alert = await _db_stats.maybe_get_retention_alert(self.guild_id) if _db_stats else None
+
+            required_stat = CHART_STAT_TOGGLE_MAP.get(self.current_selection)
+            stat_type_warning = await _db_stats.check_stat_types_enabled(
+                self.guild_id, [required_stat]
+            ) if (_db_stats and required_stat) else None
+
+            content_parts = [p for p in (
+                retention_alert, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
             if interaction:
-                await self._safe_edit_response(interaction, content=None, attachments=[file], view=self)
+                await self._safe_edit_response(interaction, content=content, attachments=[file], view=self)
             else:
-                await self._safe_send_or_edit(file=file, view=self)
+                await self._safe_send_or_edit(content=content, file=file, view=self)
 
         except Exception as e:
             print(f"\n❌❌❌ ERROR IN UPDATE_CHART: {e}")
@@ -500,12 +608,18 @@ class ChartView(discord.ui.View):
             tz = pytz.UTC
 
         # Use timezone for end time
-        end_time = datetime.now(tz)
-        start_time = end_time - timedelta(days=self.current_days)
+        if self.current_end_time:
+            end_time = self.current_end_time
+        else:
+            end_time = datetime.now(tz)
+
+        start_time = self.current_start_time
 
         # Convert to naive UTC for database queries
-        end_time_naive = end_time.replace(tzinfo=None)
-        start_time_naive = start_time.replace(tzinfo=None)
+        end_time_naive = end_time.replace(
+            tzinfo=None) if end_time.tzinfo else end_time
+        start_time_naive = start_time.replace(
+            tzinfo=None) if start_time else None
 
         role_filter_ids = None
         if self.selected_role_id and self.selected_role_id != "none":
@@ -523,31 +637,138 @@ class ChartView(discord.ui.View):
             return {'error': 'Guild not found'}
 
         try:
-            if self.current_days <= 2:
-                intervals = 24 * self.current_days
+            # Determine intervals based on days
+            days_back_equiv = self.current_days_back_equiv
+            if days_back_equiv == 999999:
+                # Get the actual date range for All Time
+                # First, try to get the min and max dates from the database
+                min_date = None
+                max_date = None
+
+                # IMPORTANT: this must look at the table that actually backs
+                # what's being charted. This used to always query
+                # activity_sessions_hourly (Discord "Activity"/game-presence
+                # tracking) no matter the chart type, which is frequently a
+                # much shorter, sparser history than message or voice
+                # tracking. That silently shrank the "All Time" window and
+                # dropped older data from the sum, which is exactly why
+                # "All Time" chart totals could read far lower than the
+                # Server Stats command (which queries message_tracking_hourly
+                # directly over the true full range).
+                earliest_table_map = {
+                    'messages': 'message_tracking_hourly',
+                    'voice_activity': 'voice_session_history_hourly',
+                }
+                earliest_table = earliest_table_map.get(
+                    chart_type, 'message_tracking_hourly')
+
+                try:
+                    async with db_stats.pool.acquire() as conn:
+                        # Get earliest recorded date for this guild, scoped
+                        # to the relevant target (user/channel/category) so
+                        # the window reflects the actual history of the
+                        # stat being viewed.
+                        earliest_query = f"SELECT MIN(hour) FROM {earliest_table} WHERE guild_id = $1"
+                        earliest_params = [self.guild_id]
+
+                        if self.chart_type == "user":
+                            earliest_query += " AND user_id = $2"
+                            earliest_params.append(self.target_id)
+                        elif self.chart_type == "channel":
+                            earliest_query += " AND channel_id = $2"
+                            earliest_params.append(self.target_id)
+                        elif self.chart_type == "category":
+                            earliest_query += " AND category_id = $2"
+                            earliest_params.append(self.target_id)
+
+                        earliest = await conn.fetchval(earliest_query, *earliest_params)
+
+                        if earliest:
+                            min_date = earliest.replace(tzinfo=None)
+                            max_date = end_time_naive
+
+                            # Calculate total days range
+                            total_days_range = (max_date - min_date).days
+                            if total_days_range <= 0:
+                                total_days_range = 30
+
+                            # Set intervals based on total range
+                            if total_days_range <= 30:
+                                intervals = total_days_range
+                                time_delta = timedelta(days=1)
+                            elif total_days_range <= 180:
+                                intervals = total_days_range // 7
+                                time_delta = timedelta(days=7)
+                            else:
+                                intervals = total_days_range // 30
+                                time_delta = timedelta(days=30)
+
+                            # Cap intervals at reasonable number
+                            intervals = min(intervals, 60)
+                        else:
+                            intervals = 30
+                            time_delta = timedelta(days=30)
+                except Exception as e:
+                    print(f"Error getting date range for All Time: {e}")
+                    intervals = 30
+                    time_delta = timedelta(days=30)
+
+            elif days_back_equiv <= 2:
+                intervals = 24 * days_back_equiv
                 time_delta = timedelta(hours=1)
-            elif self.current_days <= 30:
-                intervals = self.current_days
+            elif days_back_equiv <= 30:
+                intervals = days_back_equiv
                 time_delta = timedelta(days=1)
-            elif self.current_days <= 180:
-                intervals = self.current_days // 7
+            elif days_back_equiv <= 180:
+                intervals = days_back_equiv // 7
                 time_delta = timedelta(days=7)
             else:
-                intervals = self.current_days // 30
+                intervals = days_back_equiv // 30
                 time_delta = timedelta(days=30)
 
             points = []
             total = 0
 
             for i in range(intervals):
-                interval_end = end_time_naive - time_delta * i
-                interval_start = end_time_naive - time_delta * (i + 1)
-
-                # Create date object for display (not timezone aware)
-                if self.current_days <= 2:
-                    date_obj = interval_start  # Keep as datetime for hourly data
+                if start_time_naive is None:
+                    # For All Time, use the calculated min_date as reference
+                    if min_date:
+                        interval_end = max_date - time_delta * i
+                        interval_start = max_date - time_delta * (i + 1)
+                        if interval_start < min_date:
+                            interval_start = min_date
+                    else:
+                        interval_end = end_time_naive - time_delta * i
+                        interval_start = end_time_naive - time_delta * (i + 1)
                 else:
-                    date_obj = interval_start.date()  # Use date for daily/weekly/monthly
+                    interval_end = end_time_naive - time_delta * i
+                    interval_start = end_time_naive - time_delta * (i + 1)
+
+                    # Ensure we don't go before start_time
+                    if interval_start < start_time_naive:
+                        interval_start = start_time_naive
+
+                # IMPORTANT: the underlying q_* queries filter with an
+                # inclusive `hour >= start_time AND hour <= end_time`. Since
+                # interval i's start is exactly interval (i+1)'s end, the
+                # hourly bucket sitting exactly on that shared boundary would
+                # otherwise get pulled into BOTH intervals and counted twice.
+                # That's what made this chart's totals drift away from the
+                # single ranged query the Server Stats command uses. Only the
+                # most recent interval (i == 0) needs the true, unmodified
+                # end_time; every older interval gets its end nudged back by
+                # a microsecond so the shared boundary bucket is only ever
+                # counted once (by the newer interval's inclusive start).
+                query_end = interval_end if i == 0 else interval_end - \
+                    timedelta(microseconds=1)
+
+                # Create date object for display
+                if days_back_equiv == 999999:
+                    date_obj = interval_start.date()
+                elif days_back_equiv <= 2:
+                    date_obj = interval_start
+                else:
+                    date_obj = interval_start.date()
 
                 if self.chart_type == "user":
                     if chart_type == "messages":
@@ -556,7 +777,7 @@ class ChartView(discord.ui.View):
                             user_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_messages', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -568,7 +789,7 @@ class ChartView(discord.ui.View):
                             user_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         seconds = result.get('total_seconds', 0)
                         points.append(
@@ -580,7 +801,7 @@ class ChartView(discord.ui.View):
                             guild_id=self.guild_id,
                             user_id=self.target_id,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_invites', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -592,7 +813,7 @@ class ChartView(discord.ui.View):
                             guild_id=self.guild_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_messages', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -603,7 +824,7 @@ class ChartView(discord.ui.View):
                             guild_id=self.guild_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         seconds = result.get('total_seconds', 0)
                         points.append(
@@ -616,7 +837,7 @@ class ChartView(discord.ui.View):
                             limit=100,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = sum(item.get('valid_invites', 0)
                                     for item in leaderboard)
@@ -630,7 +851,7 @@ class ChartView(discord.ui.View):
                             channel_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_messages', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -642,7 +863,7 @@ class ChartView(discord.ui.View):
                             channel_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         seconds = result.get('total_seconds', 0)
                         points.append(
@@ -656,7 +877,7 @@ class ChartView(discord.ui.View):
                             category_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         count = result.get('total_messages', 0)
                         points.append({'date': date_obj, 'count': count})
@@ -668,7 +889,7 @@ class ChartView(discord.ui.View):
                             category_id=self.target_id,
                             role_filter_ids=role_filter_ids,
                             start_time=interval_start,
-                            end_time=interval_end
+                            end_time=query_end
                         )
                         seconds = result.get('total_seconds', 0)
                         points.append(
@@ -723,6 +944,112 @@ class ChartSystem(commands.Cog):
             print(f"⚠️ Error checking user blacklist via DatabaseStats: {e}")
             return False
 
+    # GET SERVER DEFAULT TIME RANGE
+    # GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild_id: int) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                end = datetime.now(pytz.UTC)
+                start = end - timedelta(days=14)
+                return (start, end, "14 days", 14)
+
+            settings = await settings_cog.get_guild_settings(guild_id)
+            mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.now(pytz.UTC)
+
+            if mode == 'all_time':
+                return (None, now, "All Time", 999999)
+
+            elif mode == 'days_back':
+                days = settings.get('default_days_back') or 14
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+
+                # Add timezone awareness guards
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=pytz.UTC)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=pytz.UTC)
+
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Custom"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=14)
+            return (start, end, "14 days", 14)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            end = datetime.now(pytz.UTC)
+            start = end - timedelta(days=14)
+            return (start, end, "14 days", 14)
+
     # PERMISSION CHECKING METHODS
     async def check_permission(self, interaction: discord.Interaction, target_user_id: Optional[int] = None) -> bool:
         """Check if user has permission to use chart commands based on settings"""
@@ -756,7 +1083,7 @@ class ChartSystem(commands.Cog):
         if ctx.author.guild_permissions.administrator:
             return True
 
-        return True  # Default to True for prefix commands - actual check would need async
+        return True
 
     async def send_permission_error(self, interaction: discord.Interaction, target_user_id: Optional[int] = None):
         """Send appropriate permission error message"""
@@ -810,7 +1137,6 @@ class ChartSystem(commands.Cog):
         datetime_dates = []
         for d in dates:
             if isinstance(d, date) and not isinstance(d, datetime):
-                # Convert date to datetime at midnight UTC
                 dt = datetime(d.year, d.month, d.day)
                 datetime_dates.append(dt)
             else:
@@ -838,21 +1164,22 @@ class ChartSystem(commands.Cog):
                         timestamps.append(f"{display_time.hour:02d}:00")
             return timestamps
 
-        elif total_days <= 30:
+        # NOTE: We always resolve to a real calendar date/format here rather
+        # than an ambiguous "Week N" label. "Week N" was especially
+        # misleading for "All Time" charts, which can easily span more than
+        # 30 days of history and would otherwise show week numbers instead
+        # of actual dates.
+        elif total_days <= 60:
             fmt = "%b %d"
-        elif total_days <= 180:
-            fmt = "Week %W"
+        elif total_days <= 730:
+            fmt = "%b %d, %Y"
         else:
             fmt = "%b %Y"
 
         timestamps = []
         for i in range(8):
             t = start_time + (delta * (i / 7))
-            if fmt == "Week %W":
-                week_num = t.isocalendar()[1]
-                timestamps.append(f"Week {week_num}")
-            else:
-                timestamps.append(t.strftime(fmt))
+            timestamps.append(t.strftime(fmt))
 
         return timestamps
 
@@ -905,7 +1232,6 @@ class ChartSystem(commands.Cog):
                 y_labels = []
                 for value in y_label_values:
                     if value >= 1000:
-
                         if value % 1000 == 0:
                             label = f"{int(value/1000)}k"
                         else:
@@ -995,15 +1321,11 @@ class ChartSystem(commands.Cog):
         avatar_x, avatar_y = 10, 10
         avatar_size = (52, 52)
 
-        # MOVED: Adjusted text_start_x to move name further left (was 78)
-        text_start_x = 70  # Reduced from 78 to move name left
+        text_start_x = 70
         text_start_y = 28
 
-        # MOVED: Adjusted rectangle position to match new name position
-        # center x reduced from 143 to 133
         username_rectangle = {"center": (133, 35), "width": 183, "height": 35}
 
-        # Get timezone for date display
         settings_cog = self.bot.get_cog('Settings')
         current_timezone = 'UTC'
         if settings_cog:
@@ -1029,7 +1351,6 @@ class ChartSystem(commands.Cog):
         if not guild:
             return template
 
-        # RECTANGLE FUNCTIONS
         def fit_text_to_rectangle(text, text_start_x, text_start_y, rect_center_x, rect_center_y, rect_width, rect_height):
             font_paths = [
                 BASE_DIR / "assets" / "fonts" / "HorndonD.ttf",
@@ -1184,8 +1505,6 @@ class ChartSystem(commands.Cog):
         if not ascii_name:
             ascii_name = target_name
 
-        # PROFILE PICTURE - RESTORE THIS EXACT WORKING CODE
-
         try:
             if use_server_icon:
                 if guild.icon:
@@ -1314,11 +1633,9 @@ class ChartSystem(commands.Cog):
                 pilmoji.text((text_start_x, text_start_y),
                              ascii_name, font=fallback_font, fill="white")
 
-        # DON'T CALL gc.collect() HERE - REMOVE IT
-
         return template
 
-    async def draw_chart_on_template(self, chart_img: Image.Image, label_text: str, days: int,
+    async def draw_chart_on_template(self, chart_img: Image.Image, label_text: str, display_text: str,
                                      role_id: Optional[str], role_name: Optional[str], timestamps: List[str],
                                      y_labels: List[Tuple[float, str]], chart_type: str,
                                      target_type: str, target_id: int, guild_id: int) -> io.BytesIO:
@@ -1364,9 +1681,8 @@ class ChartSystem(commands.Cog):
         text_color = "white"
         shadow_color = "black"
 
-        # TIME PERIOD
-        time_text = f"{days} days"
-        draw_text_with_stroke(draw, (133, 93), time_text,
+        # TIME PERIOD - Use display_text
+        draw_text_with_stroke(draw, (133, 93), display_text,
                               horndon_font, text_color, shadow_color, 1)
 
         # ROLE FILTER - USE DATABASE ROLE NAME
@@ -1551,9 +1867,14 @@ class ChartSystem(commands.Cog):
             if is_interaction:
                 await defer_method()
 
-            # Create view with context for prefix commands
-            view = ChartView(self, chart_type, int(target_id), int(
-                guild.id), days=14, ctx=ctx_or_interaction if not is_interaction else None)
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
+
+            # Create view with time range parameters
+            view = ChartView(self, chart_type, int(target_id), int(guild.id),
+                             start_time=start_time, end_time=end_time,
+                             days_back_equiv=days_back_equiv, display_text=display_text,
+                             ctx=ctx_or_interaction if not is_interaction else None, using_server_default=True)
 
             # Initial chart generation
             await view.update_chart(ctx_or_interaction if is_interaction else None)
@@ -1601,11 +1922,11 @@ class ChartSystem(commands.Cog):
     @commands.group(name="chart", invoke_without_command=True)
     async def chart_group_prefix(self, ctx: commands.Context):
         """Generate activity charts"""
-        await ctx.send("Available commands:\n- `chart user [user]` - Generate user activity charts\n- `chart server` - Generate server-wide charts\n- `chart channel [channel]` - Generate channel-specific charts\n- `chart category [category]` - Generate category-specific charts\n\nShortcuts:\n- `cu [user]` - User chart shortcut\n- `cs` - Server chart shortcut\n- `cch [channel]` - Channel chart shortcut\n- `cca [category]` - Category chart shortcut")
+        await ctx.send("Available commands:\n- `chart user [user]` - Generate user-specific activity charts\n- `chart server` - Generate server-wide charts\n- `chart channel [channel]` - Generate channel-specific charts\n- `chart category [category]` - Generate category-specific charts\n\nShortcuts:\n- `cu [user]` - User chart shortcut\n- `cs` - Server chart shortcut\n- `cch [channel]` - Channel chart shortcut\n- `cca [category]` - Category chart shortcut")
 
     @chart_group_prefix.command(name="user")
     async def chart_user_prefix(self, ctx: commands.Context, user: Optional[discord.User] = None):
-        """Generate user activity charts via prefix command"""
+        """Generate user-specific activity charts via prefix command"""
         await self._handle_chart_command(ctx, "user", user, is_interaction=False)
 
     @chart_group_prefix.command(name="server")
@@ -1629,7 +1950,7 @@ class ChartSystem(commands.Cog):
     chart_group = app_commands.Group(
         name="chart", description="Generate activity charts")
 
-    @chart_group.command(name="user", description="Generate user activity charts")
+    @chart_group.command(name="user", description="Generate user-specific activity charts")
     async def chart_user(self, interaction: discord.Interaction, user: discord.User):
 
         # Check permissions
@@ -1645,8 +1966,13 @@ class ChartSystem(commands.Cog):
                 await interaction.followup.send("❌ This user is blacklisted and cannot be tracked.", ephemeral=True)
                 return
 
-        view = ChartView(self, "user", int(user.id),
-                         int(interaction.guild.id), days=14)
+        # Get server default time range
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(interaction.guild.id)
+
+        view = ChartView(self, "user", int(user.id), int(interaction.guild.id),
+                         start_time=start_time, end_time=end_time,
+                         days_back_equiv=days_back_equiv, display_text=display_text,
+                         using_server_default=True)
         await view.update_chart(interaction)
 
     @chart_group.command(name="server", description="Generate server-wide charts")
@@ -1659,8 +1985,13 @@ class ChartSystem(commands.Cog):
 
         await interaction.response.defer()
 
-        view = ChartView(self, "server", int(
-            interaction.guild.id), int(interaction.guild.id), days=14)
+        # Get server default time range
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(interaction.guild.id)
+
+        view = ChartView(self, "server", int(interaction.guild.id), int(interaction.guild.id),
+                         start_time=start_time, end_time=end_time,
+                         days_back_equiv=days_back_equiv, display_text=display_text,
+                         using_server_default=True)
         await view.update_chart(interaction)
 
     @chart_group.command(name="channel", description="Generate channel-specific charts")
@@ -1675,8 +2006,13 @@ class ChartSystem(commands.Cog):
 
         await interaction.response.defer()
 
-        view = ChartView(self, "channel", int(channel.id),
-                         int(interaction.guild.id), days=14)
+        # Get server default time range
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(interaction.guild.id)
+
+        view = ChartView(self, "channel", int(channel.id), int(interaction.guild.id),
+                         start_time=start_time, end_time=end_time,
+                         days_back_equiv=days_back_equiv, display_text=display_text,
+                         using_server_default=True)
         await view.update_chart(interaction)
 
     @chart_group.command(name="category", description="Generate category-specific charts")
@@ -1689,8 +2025,13 @@ class ChartSystem(commands.Cog):
 
         await interaction.response.defer()
 
-        view = ChartView(self, "category", int(category.id),
-                         int(interaction.guild.id), days=14)
+        # Get server default time range
+        start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(interaction.guild.id)
+
+        view = ChartView(self, "category", int(category.id), int(interaction.guild.id),
+                         start_time=start_time, end_time=end_time,
+                         days_back_equiv=days_back_equiv, display_text=display_text,
+                         using_server_default=True)
         await view.update_chart(interaction)
 
 

@@ -6,7 +6,7 @@ const Footer = () => {
       <div className="footer-container">
         <div className="footer-links">
           <a 
-            href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=352807976696992&integration_type=0&scope=bot+applications.commands" 
+            href="https://discord.com/oauth2/authorize?client_id=1481328229909270568&permissions=277293943856&integration_type=0&scope=bot+applications.commands" 
             target="_blank" 
             rel="noopener noreferrer"
             className="footer-link"
@@ -26,7 +26,15 @@ const Footer = () => {
           <span className="footer-separator">|</span>
           
           <a 
-            href="/docs/index.html?page=privacy" 
+            href="/Premium/" 
+            className="footer-link premium-link"
+          >
+            Premium
+          </a>
+          <span className="footer-separator">|</span>
+          
+          <a 
+            href="/docs/?page=privacy" 
             className="footer-link"
           >
             Privacy Policy
@@ -34,7 +42,7 @@ const Footer = () => {
           <span className="footer-separator">|</span>
           
           <a 
-            href="/docs/index.html?page=terms" 
+            href="/docs/?page=terms" 
             className="footer-link"
           >
             Terms Of Service
@@ -42,7 +50,7 @@ const Footer = () => {
           <span className="footer-separator">|</span>
           
           <a 
-            href="/docs/index.html?page=cookies" 
+            href="/docs/?page=cookies" 
             className="footer-link"
           >
             Cookie Policy
@@ -85,12 +93,22 @@ const Footer = () => {
           color: #b0b0b0;
           text-decoration: none;
           font-size: 16px;
-          transition: color 0.2s ease;
+          transition: all 0.2s ease;
           white-space: nowrap;
         }
 
         .footer-link:hover {
           color: #aa00ff;
+        }
+
+        .premium-link {
+          position: relative;
+          font-weight: 500;
+        }
+
+        .premium-link:hover {
+          color: #ffd700;
+          text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
         }
 
         .footer-separator {

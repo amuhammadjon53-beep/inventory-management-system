@@ -275,6 +275,55 @@ def draw_text_with_stroke_and_emoji(pilmoji_draw, position, text, font, text_col
                       emoji_position_offset=(0, 0))
 
 # =========================================================
+# PAGE JUMP MODAL
+# =========================================================
+
+
+class GrowthPageJumpModal(discord.ui.Modal, title='Jump to Day'):
+    def __init__(self, view, total_days):
+        super().__init__(timeout=60)
+        self.view = view
+        self.total_days = total_days
+        self.rate_limiter = get_rate_limiter()
+
+        self.day_number = discord.ui.TextInput(
+            label=f'Enter day number (1-{total_days})',
+            placeholder=f'1 to {total_days}',
+            min_length=1,
+            max_length=4,
+            required=True
+        )
+        self.add_item(self.day_number)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            day = int(self.day_number.value) - 1
+
+            if day < 0 or day >= self.total_days:
+                embed = discord.Embed(
+                    title="❌ Invalid Day",
+                    description=f"Day {day + 1} does not exist. Please enter a number between 1 and {self.total_days}.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            await interaction.response.defer()
+            self.view.current_days = day + 1
+            self.view.show_time_buttons = False
+            await self.view.update_chart(interaction)
+
+        except ValueError:
+            embed = discord.Embed(
+                title="❌ Invalid Input",
+                description="Please enter a valid day number.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
 # TIME SETTINGS MODAL
 # =========================================================
 
@@ -283,6 +332,7 @@ class GrowthTimeModal(discord.ui.Modal, title='Custom Time Period'):
     def __init__(self, view):
         super().__init__(timeout=300)
         self.view = view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -292,6 +342,7 @@ class GrowthTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -300,7 +351,11 @@ class GrowthTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 return
 
             await interaction.response.defer()
-            self.view.current_days = days
+            self.view.current_start_time = datetime.utcnow() - timedelta(days=days)
+            self.view.current_end_time = datetime.utcnow()
+            self.view.current_days_back_equiv = days
+            self.view.current_display_text = f"{days} days"
+            self.view.using_server_default = False
             self.view.show_time_buttons = False
             await self.view.update_chart(interaction)
 
@@ -335,7 +390,7 @@ class GrowthSelectMenu(discord.ui.Select):
                     default=(current_selection == "joins_leaves")
                 ),
                 discord.SelectOption(
-                    label="Forecast & Analytics",
+                    label="Projected Growth",
                     value="forecast",
                     description="Advanced forecasting with trend analysis",
                     emoji="🔮",
@@ -356,7 +411,9 @@ class GrowthSelectMenu(discord.ui.Select):
             row=0,
             disabled=(growth_type != "member")
         )
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         try:
             view = self.view
@@ -374,35 +431,31 @@ class GrowthSelectMenu(discord.ui.Select):
 
 
 class GrowthView(discord.ui.View):
-    def __init__(self, cog, guild_id: int, days: int = 14, growth_type: str = "member_count",
-                 chart_type: str = "member", role_id: Optional[int] = None):
+    def __init__(self, cog, guild_id: int, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = 14, display_text: str = "14 days", growth_type: str = "member_count",
+                 chart_type: str = "member", role_id: Optional[int] = None, using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog
         self.guild_id = guild_id
         self.guild = cog.bot.get_guild(guild_id)
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.growth_type = growth_type
         self.current_selection = growth_type
         self.chart_type = chart_type
         self.role_id = role_id
         self.show_time_buttons = False
+        self.using_server_default = using_server_default
         self.message_id = None
         self.forecast_data = None
+        self.rate_limiter = get_rate_limiter()
 
         self._update_buttons()
 
-    def get_time_label(self, days: int = None) -> str:
-        if days is None:
-            days = self.current_days
-        if self.chart_type == "member":
-            if self.growth_type == "member_count":
-                return f"Last {days} Days"
-            elif self.growth_type == "joins_leaves":
-                return f"Last {days} Days"
-            else:
-                return f"Next {days} Days"
-        else:
-            return f"Last {days} Days"
+    def get_time_label(self) -> str:
+        return self.current_display_text
 
     def _update_buttons(self):
         self.clear_items()
@@ -414,7 +467,7 @@ class GrowthView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="growth_refresh",
             row=1
         )
@@ -423,7 +476,7 @@ class GrowthView(discord.ui.View):
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="growth_time_settings",
             row=1
         )
@@ -431,8 +484,17 @@ class GrowthView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="growth_all_time",
+                row=2
+            )
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
+
             days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
                 custom_id="growth_days_7",
                 row=2
@@ -441,7 +503,7 @@ class GrowthView(discord.ui.View):
             self.add_item(days_7_button)
 
             days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 14 else discord.ButtonStyle.secondary,
                 label="14 Days",
                 custom_id="growth_days_14",
                 row=2
@@ -450,7 +512,7 @@ class GrowthView(discord.ui.View):
             self.add_item(days_14_button)
 
             days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 30 else discord.ButtonStyle.secondary,
                 label="30 Days",
                 custom_id="growth_days_30",
                 row=2
@@ -467,21 +529,35 @@ class GrowthView(discord.ui.View):
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def all_time_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=now, display_text="All Time")
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=7)
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=14)
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=30)
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         if not self.guild:
             await interaction.response.send_message("❌ Could not find guild information.", ephemeral=True)
@@ -490,12 +566,18 @@ class GrowthView(discord.ui.View):
         modal = GrowthTimeModal(self)
         await interaction.response.send_modal(modal)
 
-    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, days: int = None):
+    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False,
+                                  days_back_equiv: int = None, start_time: datetime = None,
+                                  end_time: datetime = None, display_text: str = None):
         try:
             await interaction.response.defer()
 
-            if days:
-                self.current_days = days
+            if days_back_equiv is not None:
+                self.current_start_time = start_time
+                self.current_end_time = end_time
+                self.current_days_back_equiv = days_back_equiv
+                self.current_display_text = display_text
+                self.using_server_default = False
                 self.show_time_buttons = False
 
             await self.update_chart(interaction)
@@ -524,9 +606,9 @@ class GrowthView(discord.ui.View):
         try:
             if self.chart_type == "member":
                 if self.growth_type == "member_count":
-                    data = await self.cog.fetch_member_count_history(self.guild_id, self.current_days)
+                    data = await self.cog.fetch_member_count_history(self.guild_id, self.current_start_time, self.current_end_time, self.current_days_back_equiv)
                 else:
-                    data = await self.cog.fetch_historical_growth(self.guild_id, self.current_days)
+                    data = await self.cog.fetch_historical_growth(self.guild_id, self.current_start_time, self.current_end_time, self.current_days_back_equiv)
 
                 if not data or (self.growth_type == "member_count" and not data.get('counts')):
                     await self._safe_edit_response(interaction, content="❌ No member count data available", view=self)
@@ -535,7 +617,7 @@ class GrowthView(discord.ui.View):
                     await self._safe_edit_response(interaction, content="❌ No growth data available", view=self)
                     return
             else:
-                data = await self.cog.fetch_role_historical_growth(self.guild_id, self.role_id, self.current_days)
+                data = await self.cog.fetch_role_historical_growth(self.guild_id, self.role_id, self.current_start_time, self.current_end_time, self.current_days_back_equiv)
                 if not data or (not data.get('joins') and not data.get('leaves')):
                     await self._safe_edit_response(interaction, content="❌ No growth data available for this role", view=self)
                     return
@@ -544,29 +626,33 @@ class GrowthView(discord.ui.View):
                 forecast = await self.generate_forecast(data)
                 self.forecast_data = forecast
                 chart_img, timestamps, y_labels = self.cog.generate_forecast_chart(
-                    forecast, self.current_days
+                    forecast, self.current_days_back_equiv
                 )
                 total_joins_pred = sum(forecast.get('joins_forecast', []))
                 total_leaves_pred = sum(forecast.get('leaves_forecast', []))
-                label = f"Predicted Joins: {int(total_joins_pred)} | Predicted Leaves: {int(total_leaves_pred)}"
+                label = (
+                    f"Predicted Joins: {self.cog.format_number(total_joins_pred)} | "
+                    f"Predicted Leaves: {self.cog.format_number(total_leaves_pred)}"
+                )
             elif self.growth_type == "member_count" and self.chart_type == "member":
                 chart_img, timestamps, y_labels = self.cog.generate_member_count_chart(
-                    data, self.current_days
+                    data, self.current_days_back_equiv
                 )
                 counts = data.get('counts', [])
-                current_count = str(counts[-1]['count']) if counts else "0"
+                current_count = self.cog.format_number(
+                    counts[-1]['count']) if counts else "0"
                 label = current_count
             else:
                 chart_img, timestamps, y_labels = self.cog.generate_growth_chart(
-                    data, self.current_days, self.growth_type, self.chart_type
+                    data, self.current_days_back_equiv, self.growth_type, self.chart_type
                 )
                 if self.chart_type == "member":
-                    label = self.create_member_label(data, self.current_days)
+                    label = self.create_member_label(data)
                 else:
-                    label = self.create_role_label(data, self.current_days)
+                    label = self.create_role_label(data)
 
             final_image_bytes = await self.cog.draw_growth_on_template(
-                chart_img, label, self.current_days,
+                chart_img, label, self.current_display_text,
                 timestamps, y_labels, self.current_selection,
                 self.growth_type, self.guild_id, self.chart_type,
                 self.role_id, self.forecast_data if self.growth_type == "forecast" else None
@@ -594,19 +680,25 @@ class GrowthView(discord.ui.View):
         except:
             pass
 
-    def create_member_label(self, data: Dict, days: int) -> str:
+    def create_member_label(self, data: Dict) -> str:
         total_joins = data.get('total_joins', 0)
         total_leaves = data.get('total_leaves', 0)
-        return f"Joins: {total_joins} | Leaves: {total_leaves}"
+        return (
+            f"Joins: {self.cog.format_number(total_joins)} | "
+            f"Leaves: {self.cog.format_number(total_leaves)}"
+        )
 
-    def create_role_label(self, data: Dict, days: int) -> str:
+    def create_role_label(self, data: Dict) -> str:
         total_added = data.get('total_joins', 0)
         total_removed = data.get('total_leaves', 0)
-        return f"Added: {total_added} | Removed: {total_removed}"
+        return (
+            f"Added: {self.cog.format_number(total_added)} | "
+            f"Removed: {self.cog.format_number(total_removed)}"
+        )
 
     async def fetch_member_growth_data(self) -> Dict:
         if self.growth_type in ("joins_leaves", "forecast"):
-            return await self.cog.fetch_historical_growth(self.guild_id, self.current_days)
+            return await self.cog.fetch_historical_growth(self.guild_id, self.current_start_time, self.current_end_time, self.current_days_back_equiv)
         return self.cog._get_empty_growth_data()
 
     async def generate_forecast(self, historical_data: Dict) -> Dict:
@@ -628,9 +720,9 @@ class GrowthView(discord.ui.View):
             leaves_data) if leaves_data else None
 
         joins_forecast = forecaster_joins.forecast(
-            days_ahead=self.current_days) if forecaster_joins else {'future_predictions': []}
+            days_ahead=self.current_days_back_equiv) if forecaster_joins else {'future_predictions': []}
         leaves_forecast = forecaster_leaves.forecast(
-            days_ahead=self.current_days) if forecaster_leaves else {'future_predictions': []}
+            days_ahead=self.current_days_back_equiv) if forecaster_leaves else {'future_predictions': []}
 
         return {
             'joins_forecast': joins_forecast.get('future_predictions', []),
@@ -644,7 +736,7 @@ class GrowthView(discord.ui.View):
     async def fetch_role_growth_data(self) -> Dict:
         if not self.role_id:
             return self.cog._get_empty_growth_data()
-        return await self.cog.fetch_role_historical_growth(self.guild_id, self.role_id, self.current_days)
+        return await self.cog.fetch_role_historical_growth(self.guild_id, self.role_id, self.current_start_time, self.current_end_time, self.current_days_back_equiv)
 
 # =========================================================
 # MAIN COG
@@ -897,6 +989,118 @@ class GrowthSystem(commands.Cog):
             return True, None
 
     # =========================================================
+    # GET SERVER DEFAULT TIME RANGE
+    # =========================================================
+
+    # =========================================================
+    # GET SERVER DEFAULT TIME RANGE
+    # =========================================================
+
+    async def get_server_default_time_range(self, guild_id: int) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                end = datetime.now(timezone.utc)
+                start = end - timedelta(days=14)
+                return (start, end, "14 days", 14)
+
+            settings = await settings_cog.get_guild_settings(guild_id)
+            mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.now(timezone.utc)
+
+            if mode == 'all_time':
+                return (None, now, "All Time", 999999)
+
+            elif mode == 'days_back':
+                days = settings.get('default_days_back') or 14
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+
+                # Add timezone awareness guards
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Custom"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=14)
+            return (start, end, "14 days", 14)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=14)
+            return (start, end, "14 days", 14)
+
+    # =========================================================
     # BOT FILTER HELPER METHOD
     # =========================================================
 
@@ -1003,21 +1207,31 @@ class GrowthSystem(commands.Cog):
     # DATA FETCHING METHODS
     # =========================================================
 
-    async def fetch_member_count_history(self, guild_id: int, days: int) -> Dict:
+    async def fetch_member_count_history(self, guild_id: int, start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14) -> Dict:
         if not self.pool:
             return {'counts': []}
 
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=days)
+        # If end_time not provided, use current time
+        if end_time is None:
+            end_time = datetime.now(timezone.utc)
 
+        # If start_time is None (All Time), fetch all data
         try:
             async with self.pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT recorded_at, member_count
-                    FROM server_member_counts
-                    WHERE guild_id = $1 AND recorded_at >= $2
-                    ORDER BY recorded_at
-                """, guild_id, start)
+                if start_time is None:
+                    rows = await conn.fetch("""
+                        SELECT recorded_at, member_count
+                        FROM server_member_counts
+                        WHERE guild_id = $1
+                        ORDER BY recorded_at
+                    """, guild_id)
+                else:
+                    rows = await conn.fetch("""
+                        SELECT recorded_at, member_count
+                        FROM server_member_counts
+                        WHERE guild_id = $1 AND recorded_at >= $2 AND recorded_at <= $3
+                        ORDER BY recorded_at
+                    """, guild_id, start_time, end_time)
 
                 # If no historical data exists, take a current snapshot with bot filtering
                 if not rows:
@@ -1054,7 +1268,8 @@ class GrowthSystem(commands.Cog):
         except asyncpg.PostgresError as e:
             raise DatabaseQueryError(
                 "Failed to fetch member count history",
-                context={'guild_id': guild_id, 'days': days},
+                context={'guild_id': guild_id,
+                         'start_time': start_time, 'end_time': end_time},
                 original=e
             )
         except Exception as e:
@@ -1064,57 +1279,83 @@ class GrowthSystem(commands.Cog):
                 original=e
             )
 
-    async def fetch_historical_growth(self, guild_id: int, days: int = 14) -> Dict:
+    async def fetch_historical_growth(self, guild_id: int, start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14) -> Dict:
         """Fetch historical member growth data using hourly aggregated tables."""
-        current_utc = datetime.now(timezone.utc)
-
         try:
             if not self.pool:
                 return self._get_empty_growth_data()
 
-            async with self.pool.acquire() as conn:
-                start_date = current_utc.date() - timedelta(days=days - 1)
+            # If end_time not provided, use current time
+            if end_time is None:
+                end_time = datetime.now(timezone.utc)
 
+            # For All Time (start_time is None), get all available data
+            if start_time is None:
+                start_time = datetime(
+                    2020, 1, 1, tzinfo=timezone.utc)  # Far past
+
+            async with self.pool.acquire() as conn:
+                # Fetch joins
+                joins_query = """
+                    SELECT hour, COALESCE(SUM(join_count), 0) as count
+                    FROM member_joins_hourly 
+                    WHERE guild_id = $1 
+                    AND hour >= $2
+                    AND hour <= $3
+                    GROUP BY hour
+                    ORDER BY hour
+                """
+                joins_params = [guild_id, start_time, end_time]
+                joins_query, joins_params = await self._apply_bot_filter(
+                    joins_query, joins_params, guild_id, 'member_joins_hourly'
+                )
+                joins_rows = await conn.fetch(joins_query, *joins_params)
+
+                # Fetch leaves
+                leaves_query = """
+                    SELECT hour, COALESCE(SUM(leave_count), 0) as count
+                    FROM member_leaves_hourly 
+                    WHERE guild_id = $1 
+                    AND hour >= $2
+                    AND hour <= $3
+                    GROUP BY hour
+                    ORDER BY hour
+                """
+                leaves_params = [guild_id, start_time, end_time]
+                leaves_query, leaves_params = await self._apply_bot_filter(
+                    leaves_query, leaves_params, guild_id, 'member_leaves_hourly'
+                )
+                leaves_rows = await conn.fetch(leaves_query, *leaves_params)
+
+                # Aggregate by day
+                joins_by_day = {}
+                for row in joins_rows:
+                    date_key = row['hour'].date()
+                    joins_by_day[date_key] = joins_by_day.get(
+                        date_key, 0) + row['count']
+
+                leaves_by_day = {}
+                for row in leaves_rows:
+                    date_key = row['hour'].date()
+                    leaves_by_day[date_key] = leaves_by_day.get(
+                        date_key, 0) + row['count']
+
+                # Create list of all dates in range
+                current_date = start_time.date()
+                end_date = end_time.date()
                 joins_points = []
                 leaves_points = []
 
-                for day_offset in range(days):
-                    current_date = start_date + timedelta(days=day_offset)
-                    day_start = datetime.combine(
-                        current_date, datetime.min.time()).replace(tzinfo=timezone.utc)
-                    day_end = datetime.combine(
-                        current_date, datetime.max.time()).replace(tzinfo=timezone.utc)
-
-                    joins_query = """
-                        SELECT COALESCE(SUM(join_count), 0) 
-                        FROM member_joins_hourly 
-                        WHERE guild_id = $1 
-                        AND hour >= $2
-                        AND hour <= $3
-                    """
-                    joins_params = [guild_id, day_start, day_end]
-                    joins_query, joins_params = await self._apply_bot_filter(
-                        joins_query, joins_params, guild_id, 'member_joins_hourly'
-                    )
-                    daily_joins = await conn.fetchval(joins_query, *joins_params) or 0
-
-                    leaves_query = """
-                        SELECT COALESCE(SUM(leave_count), 0) 
-                        FROM member_leaves_hourly 
-                        WHERE guild_id = $1 
-                        AND hour >= $2
-                        AND hour <= $3
-                    """
-                    leaves_params = [guild_id, day_start, day_end]
-                    leaves_query, leaves_params = await self._apply_bot_filter(
-                        leaves_query, leaves_params, guild_id, 'member_leaves_hourly'
-                    )
-                    daily_leaves = await conn.fetchval(leaves_query, *leaves_params) or 0
-
-                    joins_points.append(
-                        {'date': current_date, 'count': daily_joins})
-                    leaves_points.append(
-                        {'date': current_date, 'count': daily_leaves})
+                while current_date <= end_date:
+                    joins_points.append({
+                        'date': current_date,
+                        'count': joins_by_day.get(current_date, 0)
+                    })
+                    leaves_points.append({
+                        'date': current_date,
+                        'count': leaves_by_day.get(current_date, 0)
+                    })
+                    current_date += timedelta(days=1)
 
                 total_joins = sum(p['count'] for p in joins_points)
                 total_leaves = sum(p['count'] for p in leaves_points)
@@ -1137,7 +1378,8 @@ class GrowthSystem(commands.Cog):
         except asyncpg.PostgresError as e:
             raise DatabaseQueryError(
                 "Database error in fetch_historical_growth",
-                context={'guild_id': guild_id, 'days': days},
+                context={'guild_id': guild_id,
+                         'start_time': start_time, 'end_time': end_time},
                 original=e
             )
         except Exception as e:
@@ -1147,59 +1389,85 @@ class GrowthSystem(commands.Cog):
                 original=e
             )
 
-    async def fetch_role_historical_growth(self, guild_id: int, role_id: int, days: int = 14) -> Dict:
+    async def fetch_role_historical_growth(self, guild_id: int, role_id: int, start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14) -> Dict:
         """Fetch historical role growth data using role_growth_hourly table."""
-        current_utc = datetime.now(timezone.utc)
-
         try:
             if not self.pool:
                 return self._get_empty_growth_data()
 
-            async with self.pool.acquire() as conn:
-                start_date = current_utc.date() - timedelta(days=days - 1)
+            # If end_time not provided, use current time
+            if end_time is None:
+                end_time = datetime.now(timezone.utc)
 
+            # For All Time (start_time is None), get all available data
+            if start_time is None:
+                start_time = datetime(
+                    2020, 1, 1, tzinfo=timezone.utc)  # Far past
+
+            async with self.pool.acquire() as conn:
+                # Fetch added (joins) to role
+                added_query = """
+                    SELECT hour, COALESCE(SUM(added_count), 0) as count
+                    FROM role_growth_hourly 
+                    WHERE guild_id = $1 
+                    AND role_id = $2
+                    AND hour >= $3
+                    AND hour <= $4
+                    GROUP BY hour
+                    ORDER BY hour
+                """
+                added_params = [guild_id, role_id, start_time, end_time]
+                added_query, added_params = await self._apply_bot_filter(
+                    added_query, added_params, guild_id, 'role_growth_hourly'
+                )
+                added_rows = await conn.fetch(added_query, *added_params)
+
+                # Fetch removed (leaves) from role
+                removed_query = """
+                    SELECT hour, COALESCE(SUM(removed_count), 0) as count
+                    FROM role_growth_hourly 
+                    WHERE guild_id = $1 
+                    AND role_id = $2
+                    AND hour >= $3
+                    AND hour <= $4
+                    GROUP BY hour
+                    ORDER BY hour
+                """
+                removed_params = [guild_id, role_id, start_time, end_time]
+                removed_query, removed_params = await self._apply_bot_filter(
+                    removed_query, removed_params, guild_id, 'role_growth_hourly'
+                )
+                removed_rows = await conn.fetch(removed_query, *removed_params)
+
+                # Aggregate by day
+                added_by_day = {}
+                for row in added_rows:
+                    date_key = row['hour'].date()
+                    added_by_day[date_key] = added_by_day.get(
+                        date_key, 0) + row['count']
+
+                removed_by_day = {}
+                for row in removed_rows:
+                    date_key = row['hour'].date()
+                    removed_by_day[date_key] = removed_by_day.get(
+                        date_key, 0) + row['count']
+
+                # Create list of all dates in range
+                current_date = start_time.date()
+                end_date = end_time.date()
                 added_points = []
                 removed_points = []
 
-                for day_offset in range(days):
-                    current_date = start_date + timedelta(days=day_offset)
-                    day_start = datetime.combine(
-                        current_date, datetime.min.time()).replace(tzinfo=timezone.utc)
-                    day_end = datetime.combine(
-                        current_date, datetime.max.time()).replace(tzinfo=timezone.utc)
-
-                    added_query = """
-                        SELECT COALESCE(SUM(added_count), 0) 
-                        FROM role_growth_hourly 
-                        WHERE guild_id = $1 
-                        AND role_id = $2
-                        AND hour >= $3
-                        AND hour <= $4
-                    """
-                    added_params = [guild_id, role_id, day_start, day_end]
-                    added_query, added_params = await self._apply_bot_filter(
-                        added_query, added_params, guild_id, 'role_growth_hourly'
-                    )
-                    daily_added = await conn.fetchval(added_query, *added_params) or 0
-
-                    removed_query = """
-                        SELECT COALESCE(SUM(removed_count), 0) 
-                        FROM role_growth_hourly 
-                        WHERE guild_id = $1 
-                        AND role_id = $2
-                        AND hour >= $3
-                        AND hour <= $4
-                    """
-                    removed_params = [guild_id, role_id, day_start, day_end]
-                    removed_query, removed_params = await self._apply_bot_filter(
-                        removed_query, removed_params, guild_id, 'role_growth_hourly'
-                    )
-                    daily_removed = await conn.fetchval(removed_query, *removed_params) or 0
-
-                    added_points.append(
-                        {'date': current_date, 'count': daily_added})
-                    removed_points.append(
-                        {'date': current_date, 'count': daily_removed})
+                while current_date <= end_date:
+                    added_points.append({
+                        'date': current_date,
+                        'count': added_by_day.get(current_date, 0)
+                    })
+                    removed_points.append({
+                        'date': current_date,
+                        'count': removed_by_day.get(current_date, 0)
+                    })
+                    current_date += timedelta(days=1)
 
                 total_added = sum(p['count'] for p in added_points)
                 total_removed = sum(p['count'] for p in removed_points)
@@ -1224,7 +1492,7 @@ class GrowthSystem(commands.Cog):
             raise DatabaseQueryError(
                 "Database error in fetch_role_historical_growth",
                 context={'guild_id': guild_id,
-                         'role_id': role_id, 'days': days},
+                         'role_id': role_id, 'start_time': start_time, 'end_time': end_time},
                 original=e
             )
         except Exception as e:
@@ -1494,6 +1762,16 @@ class GrowthSystem(commands.Cog):
             return img, [f"Day {i+1}" for i in range(8)], [(0, "0")]
 
     def format_number(self, num: float) -> str:
+        """
+        Format a number for display:
+        - >= 1000: one decimal place followed by 'k' (e.g. 31512 -> "31.5k")
+        - < 1000: plain integer
+        """
+        try:
+            num = float(num)
+        except (TypeError, ValueError):
+            return str(num)
+
         if num >= 1000:
             return f"{num/1000:.1f}k"
         return str(int(num))
@@ -1856,7 +2134,7 @@ class GrowthSystem(commands.Cog):
             print(f"❌ Error in draw_growth_header: {e}")
             return template
 
-    async def draw_growth_on_template(self, chart_img: Image.Image, label_text: str, days: int,
+    async def draw_growth_on_template(self, chart_img: Image.Image, label_text: str, display_text: str,
                                       timestamps: List[str], y_labels: List[Tuple[float, str]],
                                       growth_type: str, chart_type: str, guild_id: int,
                                       template_type: str = "member", role_id: Optional[int] = None,
@@ -1915,19 +2193,19 @@ class GrowthSystem(commands.Cog):
             # Time period text (moved left 3 units for member count)
             if template_type == "member":
                 if growth_type == "member_count":
-                    time_text = f"Last {days} Days"
+                    time_text = display_text
                     time_x = 95  # moved left from 108
                     current_font = time_font
                 elif growth_type == "joins_leaves":
-                    time_text = f"Last {days} Days"
+                    time_text = display_text
                     time_x = 108
                     current_font = horndon_font
                 else:
-                    time_text = f"Next {days} Days"
+                    time_text = display_text
                     time_x = 108
                     current_font = horndon_font
             else:
-                time_text = f"Last {days} Days"
+                time_text = display_text
                 time_x = 108
                 current_font = horndon_font
 
@@ -2085,18 +2363,23 @@ class GrowthSystem(commands.Cog):
             if is_interaction:
                 await ctx_or_interaction.response.defer()
 
-            view = GrowthView(self, guild.id, days=14,
-                              growth_type="member_count", chart_type="member")
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
+
+            view = GrowthView(self, guild.id, start_time=start_time, end_time=end_time,
+                              days_back_equiv=days_back_equiv, display_text=display_text,
+                              growth_type="member_count", chart_type="member", using_server_default=True)
 
             if view.growth_type == "member_count":
-                data = await view.cog.fetch_member_count_history(guild.id, view.current_days)
+                data = await view.cog.fetch_member_count_history(guild.id, start_time, end_time, days_back_equiv)
                 if not data or not data.get('counts'):
                     await view._safe_edit_response(ctx_or_interaction, content="❌ No member count data available", view=view)
                     return
                 chart_img, timestamps, y_labels = self.generate_member_count_chart(
-                    data, view.current_days)
+                    data, days_back_equiv)
                 counts = data.get('counts', [])
-                current_count = str(counts[-1]['count']) if counts else "0"
+                current_count = self.format_number(
+                    counts[-1]['count']) if counts else "0"
                 label = current_count
             else:
                 data = await view.fetch_member_growth_data()
@@ -2104,20 +2387,27 @@ class GrowthSystem(commands.Cog):
                     await view._safe_edit_response(ctx_or_interaction, content="❌ No growth data available", view=view)
                     return
                 chart_img, timestamps, y_labels = self.generate_growth_chart(
-                    data, view.current_days, view.growth_type, "member")
-                label = view.create_member_label(data, view.current_days)
+                    data, days_back_equiv, view.growth_type, "member")
+                label = view.create_member_label(data)
 
             final_image_bytes = await self.draw_growth_on_template(
-                chart_img, label, view.current_days,
+                chart_img, label, display_text,
                 timestamps, y_labels, view.current_selection, view.growth_type, guild.id, "member"
             )
 
             file = discord.File(final_image_bytes, filename='growth_chart.png')
 
+            db_cog = self.bot.get_cog('DatabaseStats')
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_member_growth']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                msg = await send_method(content=content, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await send_method(content=content, file=file, view=view, delete_after=300)
 
         except Exception as e:
             traceback.print_exc()
@@ -2184,8 +2474,13 @@ class GrowthSystem(commands.Cog):
             if is_interaction:
                 await ctx_or_interaction.response.defer()
 
-            view = GrowthView(self, guild.id, days=14, chart_type="role",
-                              growth_type="role_additions_removals", role_id=role.id)
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild.id)
+
+            view = GrowthView(self, guild.id, start_time=start_time, end_time=end_time,
+                              days_back_equiv=days_back_equiv, display_text=display_text,
+                              chart_type="role", growth_type="role_additions_removals",
+                              role_id=role.id, using_server_default=True)
 
             data = await view.fetch_role_growth_data()
 
@@ -2197,21 +2492,28 @@ class GrowthSystem(commands.Cog):
                 return
 
             chart_img, timestamps, y_labels = self.generate_growth_chart(
-                data, view.current_days, view.growth_type, "role"
+                data, days_back_equiv, view.growth_type, "role"
             )
 
-            label = view.create_role_label(data, view.current_days)
+            label = view.create_role_label(data)
             final_image_bytes = await self.draw_growth_on_template(
-                chart_img, label, view.current_days,
+                chart_img, label, display_text,
                 timestamps, y_labels, view.current_selection, view.growth_type, guild.id, "role", role.id
             )
 
             file = discord.File(final_image_bytes, filename='growth_chart.png')
 
+            db_cog = self.bot.get_cog('DatabaseStats')
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_role_growth']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                msg = await send_method(content=content, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await send_method(content=content, file=file, view=view, delete_after=300)
 
         except Exception as e:
             traceback.print_exc()

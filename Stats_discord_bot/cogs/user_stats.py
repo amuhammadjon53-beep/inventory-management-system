@@ -35,7 +35,6 @@ def ensure_aware(dt):
 # TEXT CENTERING
 
 def draw_text_centered(pilmoji_instance, text, position, font, fill, max_width=None):
-
     draw = pilmoji_instance.draw
     center_x, center_y = position
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -53,11 +52,10 @@ def draw_text_centered(pilmoji_instance, text, position, font, fill, max_width=N
 
     pilmoji_instance.text((x, y), text, fill=fill, font=font)
 
+
 # FORMATTING
 
-
 def format_voice_time(total_seconds):
-
     if total_seconds < 60:
         return f"{int(total_seconds)}s"
     elif total_seconds < 3600:
@@ -75,7 +73,6 @@ def format_voice_time(total_seconds):
 
 
 def format_voice_hours_per_hour(voice_hours_per_hour):
-
     seconds_per_hour = voice_hours_per_hour * 3600
 
     if seconds_per_hour < 60:
@@ -83,6 +80,27 @@ def format_voice_hours_per_hour(voice_hours_per_hour):
     else:
         time_str = format_voice_time(seconds_per_hour)
         return f"{time_str}"
+
+
+def format_message_count(count):
+    """
+    Format message counts. Numbers of 1000 or more are abbreviated with a
+    single decimal place and a "k" suffix (e.g. 31,125 -> "31.1k").
+    Numbers under 1000 are shown as plain integers (no comma separators).
+    """
+    if count is None:
+        count = 0
+
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = 0
+
+    if count >= 1000:
+        value = count / 1000
+        return f"{value:.1f}k"
+
+    return f"{count}"
 
 
 # UNICODE NORMALIZATION
@@ -102,6 +120,7 @@ class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
         self.cog = cog_instance
         self.guild = guild
         self.member = member
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days (1-2000)',
@@ -111,6 +130,7 @@ class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -131,10 +151,16 @@ class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
                 await interaction.followup.send(blacklist_error, ephemeral=True)
                 return
 
-            image_buffer = await self.cog._generate_user_stats_image(self.guild, self.member, days_back=days)
+            # For custom days, we use days_back mode
+            start_time = datetime.utcnow() - timedelta(days=days)
+            end_time = datetime.utcnow()
+            display_text = f"{days} days"
+            days_back_equiv = days
+
+            image_buffer = await self.cog._generate_user_stats_image(self.guild, self.member, start_time=start_time, end_time=end_time, display_text=display_text, days_back_equiv=days_back_equiv)
 
             view = UserStatsView(self.cog, self.guild,
-                                 self.member, days_back=days)
+                                 self.member, start_time=start_time, end_time=end_time, display_text=display_text, days_back_equiv=days_back_equiv)
             file = discord.File(image_buffer, filename="user_stats.png")
 
             await interaction.edit_original_response(attachments=[file], view=view)
@@ -149,13 +175,19 @@ class UserStatsTimeModal(discord.ui.Modal, title='Custom Time Period'):
 # MAIN VIEW
 
 class UserStatsView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, member: discord.Member, days_back: int):
+    def __init__(self, cog_instance, guild: discord.Guild, member: discord.Member, start_time: datetime = None, end_time: datetime = None, display_text: str = None, days_back_equiv: int = None):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
         self.member = member
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_display_text = display_text
+        self.current_days_back_equiv = days_back_equiv
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
+        self.using_server_default = (
+            start_time is None and end_time is None and display_text is None and days_back_equiv is None)
         self._update_buttons()
 
     # BUTTON LOGIC
@@ -165,7 +197,7 @@ class UserStatsView(discord.ui.View):
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="user_stats_refresh",
             row=0
         )
@@ -174,7 +206,7 @@ class UserStatsView(discord.ui.View):
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="user_stats_time_settings",
             row=0
         )
@@ -182,8 +214,17 @@ class UserStatsView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="user_stats_all_time",
+                row=1
+            )
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
+
             days_7_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 7 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 7 else discord.ButtonStyle.secondary,
                 label="7 Days",
                 custom_id="user_stats_days_7",
                 row=1
@@ -192,7 +233,7 @@ class UserStatsView(discord.ui.View):
             self.add_item(days_7_button)
 
             days_14_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 14 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 14 else discord.ButtonStyle.secondary,
                 label="14 Days",
                 custom_id="user_stats_days_14",
                 row=1
@@ -201,7 +242,7 @@ class UserStatsView(discord.ui.View):
             self.add_item(days_14_button)
 
             days_30_button = discord.ui.Button(
-                style=discord.ButtonStyle.primary if self.current_days == 30 else discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 30 else discord.ButtonStyle.secondary,
                 label="30 Days",
                 custom_id="user_stats_days_30",
                 row=1
@@ -211,17 +252,19 @@ class UserStatsView(discord.ui.View):
 
             custom_button = discord.ui.Button(
                 style=discord.ButtonStyle.success,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in [
-                    7, 14, 30] else "Custom",
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in [
+                    7, 14, 30, 999999] else "Custom",
                 custom_id="user_stats_custom_days",
                 row=1
             )
             custom_button.callback = self.custom_days_callback
             self.add_item(custom_button)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_button_click(interaction, refresh=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=5.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         try:
             self.show_time_buttons = not self.show_time_buttons
@@ -231,25 +274,40 @@ class UserStatsView(discord.ui.View):
             logger.error(f"Error handling time settings: {e}")
             await interaction.response.send_message("❌ An error occurred while updating time settings.", ephemeral=True)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
+    async def all_time_callback(self, interaction: discord.Interaction):
+        await self.handle_button_click(interaction, days_back_equiv=999999, start_time=None, end_time=datetime.utcnow(), display_text="All Time")
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def days_7_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=7)
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=7, start_time=now - timedelta(days=7), end_time=now, display_text="7 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def days_14_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=14)
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=14, start_time=now - timedelta(days=14), end_time=now, display_text="14 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=15.0)
     async def days_30_callback(self, interaction: discord.Interaction):
-        await self.handle_button_click(interaction, days=30)
+        now = datetime.utcnow()
+        await self.handle_button_click(interaction, days_back_equiv=30, start_time=now - timedelta(days=30), end_time=now, display_text="30 days")
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=5.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
         modal = UserStatsTimeModal(self.cog, self.guild, self.member)
         await interaction.response.send_modal(modal)
 
-    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, days: int = None):
+    async def handle_button_click(self, interaction: discord.Interaction, refresh: bool = False, start_time: datetime = None, end_time: datetime = None, display_text: str = None, days_back_equiv: int = None):
         try:
             await interaction.response.defer()
 
-            if days:
-                self.current_days = days
+            if start_time is not None:
+                self.current_start_time = start_time
+                self.current_end_time = end_time
+                self.current_display_text = display_text
+                self.current_days_back_equiv = days_back_equiv
+                self.using_server_default = False
                 self.show_time_buttons = False
 
             # Check if user has permission to view this member's stats
@@ -271,7 +329,7 @@ class UserStatsView(discord.ui.View):
                     pass
                 return
 
-            image_buffer = await self.cog._generate_user_stats_image(self.guild, self.member, self.current_days)
+            image_buffer = await self.cog._generate_user_stats_image(self.guild, self.member, self.current_start_time if not self.using_server_default else None, self.current_end_time if not self.using_server_default else None, self.current_display_text if not self.using_server_default else None, self.current_days_back_equiv if not self.using_server_default else None)
 
             self._update_buttons()
             file = discord.File(image_buffer, filename="user_stats.png")
@@ -369,7 +427,6 @@ class UserStats(commands.Cog):
     # ERROR HANDLING
 
     async def check_blacklist_and_get_error(self, guild: discord.Guild, member: discord.Member) -> str:
-
         try:
             db_cog = self.bot.get_cog('DatabaseStats')
             if not db_cog:
@@ -385,10 +442,115 @@ class UserStats(commands.Cog):
             logger.error(f"Error checking blacklist: {e}")
             return "❌ Error checking blacklist status."
 
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                end = datetime.utcnow()
+                start = end - timedelta(days=14)
+                return (start, end, "14 days", 14)
+
+            settings = await settings_cog.get_guild_settings(guild.id)
+            mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.now(timezone.utc)  # ← MAKE THIS AWARE
+
+            if mode == 'all_time':
+                return (None, now, "All Time", 999999)
+
+            elif mode == 'days_back':
+                days = settings.get('default_days_back') or 14
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+
+                # Ensure both are timezone-aware
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    display = f"Custom"
+                    return (start, now, display, days_back)
+
+                # rolling_window configured but type/value missing — fall through to default
+                end = now
+                start = now - timedelta(days=14)
+                return (start, end, "14 days", 14)
+
+            # Unknown mode fallback
+            end = now
+            start = now - timedelta(days=14)
+            return (start, end, "14 days", 14)
+
+        except Exception as e:
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=14)
+            return (start, end, "14 days", 14)
+
     # QUERY FUNCTIONS
 
     async def get_channel_name(self, guild: discord.Guild, channel_id: int) -> str:
-
         try:
             db_cog = self.bot.get_cog('DatabaseStats')
             if not db_cog:
@@ -421,8 +583,7 @@ class UserStats(commands.Cog):
             logger.error(f"Error getting channel name: {e}")
             return f"#{channel_id}"
 
-    async def _get_user_stats_data(self, guild: discord.Guild, member: discord.Member, days_back: int = 14):
-
+    async def _get_user_stats_data(self, guild: discord.Guild, member: discord.Member, start_time: datetime = None, end_time: datetime = None, days_back_equiv: int = 14):
         blacklist_error = await self.check_blacklist_and_get_error(guild, member)
         if blacklist_error:
             return {"error": blacklist_error}
@@ -446,68 +607,117 @@ class UserStats(commands.Cog):
             return {"error": "Database pool not available."}
 
         try:
-            start_time = datetime.utcnow() - timedelta(days=days_back)
-            end_time = datetime.utcnow()
+            # For "All Time" (start_time is None)
+            use_all_time = (start_time is None)
+
+            # If end_time is not provided, use current time
+            if end_time is None:
+                end_time = datetime.utcnow()
 
             # Initialize variables with default values
             message_rank = 0
             voice_rank = 0
             total_message_users = 0
             total_voice_users = 0
+            global_first_seen = None
+            global_last_seen = None
 
             # ===== MESSAGE RANK USING HOURLY AGGREGATED TABLE =====
             try:
                 async with db_cog.pool.acquire() as conn:
-                    query = '''
-                        SELECT user_id, SUM(message_count) as message_count
-                        FROM message_tracking_hourly
-                        WHERE guild_id = $1 
-                        AND is_bot = FALSE
-                        AND hour >= $2
-                        AND hour <= $3
-                        GROUP BY user_id
-                        HAVING SUM(message_count) > 0
-                        ORDER BY message_count DESC
-                    '''
-                    rows = await conn.fetch(query, guild.id, start_time, end_time)
+                    if start_time is None:
+                        query = '''
+                            SELECT user_id, SUM(message_count) as message_count,
+                                   MIN(hour) as first_seen, MAX(hour) as last_seen
+                            FROM message_tracking_hourly
+                            WHERE guild_id = $1 
+                            AND is_bot = FALSE
+                            GROUP BY user_id
+                            HAVING SUM(message_count) > 0
+                            ORDER BY message_count DESC
+                        '''
+                        rows = await conn.fetch(query, guild.id)
+                    else:
+                        query = '''
+                            SELECT user_id, SUM(message_count) as message_count,
+                                   MIN(hour) as first_seen, MAX(hour) as last_seen
+                            FROM message_tracking_hourly
+                            WHERE guild_id = $1 
+                            AND is_bot = FALSE
+                            AND hour >= $2
+                            AND hour <= $3
+                            GROUP BY user_id
+                            HAVING SUM(message_count) > 0
+                            ORDER BY message_count DESC
+                        '''
+                        rows = await conn.fetch(query, guild.id, start_time, end_time)
 
                     total_message_users = len(rows)
                     message_rank = 0
-                    message_counts = {}
+
                     for idx, row in enumerate(rows, 1):
                         user_id = row['user_id']
-                        message_counts[user_id] = row['message_count']
                         if user_id == member.id:
                             message_rank = idx
-                            break
+
+                        # Track global min/max for All Time mode
+                        if use_all_time:
+                            if global_first_seen is None or row['first_seen'] < global_first_seen:
+                                global_first_seen = row['first_seen']
+                            if global_last_seen is None or row['last_seen'] > global_last_seen:
+                                global_last_seen = row['last_seen']
             except Exception as e:
                 logger.error(f"Error getting message rank: {e}")
                 message_rank = 0
                 total_message_users = 0
 
-            # ===== VOICE RANK USING HOURLY AGGREGATED TABLE =====
             # ===== VOICE RANK =====
             try:
                 async with db_cog.pool.acquire() as conn:
-                    query = '''
-                        SELECT 
-                            user_id,
-                            COALESCE(SUM(total_seconds), 0) as total_seconds
-                        FROM voice_session_history_hourly
-                        WHERE guild_id = $1
-                        AND hour >= $2
-                        AND hour <= $3
-                        GROUP BY user_id
-                        HAVING SUM(total_seconds) > 0
-                        ORDER BY total_seconds DESC
-                    '''
-                    start_time_aware = ensure_aware(start_time)
-                    end_time_aware = ensure_aware(end_time)
-
-                    rows = await conn.fetch(query, guild.id, start_time_aware, end_time_aware)
+                    if start_time is None:
+                        query = '''
+                            SELECT 
+                                user_id,
+                                COALESCE(SUM(total_seconds), 0) as total_seconds,
+                                MIN(hour) as first_seen,
+                                MAX(hour) as last_seen
+                            FROM voice_session_history_hourly
+                            WHERE guild_id = $1
+                            GROUP BY user_id
+                            HAVING SUM(total_seconds) > 0
+                            ORDER BY total_seconds DESC
+                        '''
+                        rows = await conn.fetch(query, guild.id)
+                    else:
+                        start_time_aware = ensure_aware(start_time)
+                        end_time_aware = ensure_aware(end_time)
+                        query = '''
+                            SELECT 
+                                user_id,
+                                COALESCE(SUM(total_seconds), 0) as total_seconds,
+                                MIN(hour) as first_seen,
+                                MAX(hour) as last_seen
+                            FROM voice_session_history_hourly
+                            WHERE guild_id = $1
+                            AND hour >= $2
+                            AND hour <= $3
+                            GROUP BY user_id
+                            HAVING SUM(total_seconds) > 0
+                            ORDER BY total_seconds DESC
+                        '''
+                        rows = await conn.fetch(query, guild.id, start_time_aware, end_time_aware)
 
                     total_voice_users = len(rows)
                     voice_rank = 0
+
+                    # Track global min/max for voice in All Time mode
+                    if use_all_time:
+                        for row in rows:
+                            if global_first_seen is None or row['first_seen'] < global_first_seen:
+                                global_first_seen = row['first_seen']
+                            if global_last_seen is None or row['last_seen'] > global_last_seen:
+                                global_last_seen = row['last_seen']
+
                     for idx, row in enumerate(rows, 1):
                         if int(row['user_id']) == int(member.id):
                             voice_rank = idx
@@ -522,19 +732,32 @@ class UserStats(commands.Cog):
             messages_leaderboard_data = []
             try:
                 async with db_cog.pool.acquire() as conn:
-                    query = '''
-                        SELECT user_id, SUM(message_count) as message_count
-                        FROM message_tracking_hourly
-                        WHERE guild_id = $1
-                        AND hour >= $2
-                        AND hour <= $3
-                        AND is_bot = FALSE
-                        GROUP BY user_id
-                        HAVING SUM(message_count) > 0
-                        ORDER BY message_count DESC
-                        LIMIT 3
-                    '''
-                    rows = await conn.fetch(query, guild.id, start_time, end_time)
+                    if start_time is None:
+                        query = '''
+                            SELECT user_id, SUM(message_count) as message_count
+                            FROM message_tracking_hourly
+                            WHERE guild_id = $1
+                            AND is_bot = FALSE
+                            GROUP BY user_id
+                            HAVING SUM(message_count) > 0
+                            ORDER BY message_count DESC
+                            LIMIT 3
+                        '''
+                        rows = await conn.fetch(query, guild.id)
+                    else:
+                        query = '''
+                            SELECT user_id, SUM(message_count) as message_count
+                            FROM message_tracking_hourly
+                            WHERE guild_id = $1
+                            AND hour >= $2
+                            AND hour <= $3
+                            AND is_bot = FALSE
+                            GROUP BY user_id
+                            HAVING SUM(message_count) > 0
+                            ORDER BY message_count DESC
+                            LIMIT 3
+                        '''
+                        rows = await conn.fetch(query, guild.id, start_time, end_time)
                     messages_leaderboard_data = [dict(row) for row in rows]
             except Exception as e:
                 logger.error(f"Error getting messages leaderboard: {e}")
@@ -544,18 +767,30 @@ class UserStats(commands.Cog):
             voice_leaderboard_data = []
             try:
                 async with db_cog.pool.acquire() as conn:
-                    query = '''
-                        SELECT user_id, SUM(total_seconds) as total_seconds
-                        FROM voice_session_history_hourly
-                        WHERE guild_id = $1
-                        AND hour >= $2
-                        AND hour <= $3
-                        GROUP BY user_id
-                        HAVING SUM(total_seconds) > 0
-                        ORDER BY total_seconds DESC
-                        LIMIT 3
-                    '''
-                    rows = await conn.fetch(query, guild.id, start_time, end_time)
+                    if start_time is None:
+                        query = '''
+                            SELECT user_id, SUM(total_seconds) as total_seconds
+                            FROM voice_session_history_hourly
+                            WHERE guild_id = $1
+                            GROUP BY user_id
+                            HAVING SUM(total_seconds) > 0
+                            ORDER BY total_seconds DESC
+                            LIMIT 3
+                        '''
+                        rows = await conn.fetch(query, guild.id)
+                    else:
+                        query = '''
+                            SELECT user_id, SUM(total_seconds) as total_seconds
+                            FROM voice_session_history_hourly
+                            WHERE guild_id = $1
+                            AND hour >= $2
+                            AND hour <= $3
+                            GROUP BY user_id
+                            HAVING SUM(total_seconds) > 0
+                            ORDER BY total_seconds DESC
+                            LIMIT 3
+                        '''
+                        rows = await conn.fetch(query, guild.id, start_time, end_time)
                     voice_leaderboard_data = [dict(row) for row in rows]
             except Exception as e:
                 logger.error(f"Error getting voice leaderboard: {e}")
@@ -630,54 +865,114 @@ class UserStats(commands.Cog):
                     })
 
             # Calculate hourly rates
-            total_hours = days_back * 24
-            messages_per_hour = total_messages / total_hours if total_hours > 0 else 0
-            total_voice_hours = total_voice_seconds / 3600
-            voice_hours_per_hour = total_voice_hours / total_hours if total_hours > 0 else 0
+            if use_all_time and global_first_seen and global_last_seen:
+                # Calculate total hours between first and last seen data
+                total_hours = (global_last_seen -
+                               global_first_seen).total_seconds() / 3600
+                total_hours = max(total_hours, 0.01)  # Avoid division by zero
+                messages_per_hour = total_messages / total_hours if total_hours > 0 else 0
+                total_voice_hours = total_voice_seconds / 3600
+                voice_hours_per_hour = total_voice_hours / total_hours if total_hours > 0 else 0
+            elif not use_all_time and start_time:
+                total_hours = (end_time - start_time).total_seconds() / 3600
+                total_hours = max(total_hours, 0.01)
+                messages_per_hour = total_messages / total_hours if total_hours > 0 else 0
+                total_voice_hours = total_voice_seconds / 3600
+                voice_hours_per_hour = total_voice_hours / total_hours if total_hours > 0 else 0
+            else:
+                messages_per_hour = 0
+                voice_hours_per_hour = 0
 
             # ===== MESSAGE PERIOD DATA =====
             message_periods_data = {}
-            for period_days in [1, 5, 10, 20, 30]:
-                if period_days > days_back:
-                    message_periods_data[f'{period_days}d'] = 0
-                    continue
-                period_end = end_time
-                period_start = end_time - timedelta(days=period_days)
+            if use_all_time and global_last_seen:
+                # For All Time, calculate periods relative to the last seen date
+                for period_days in [1, 5, 10, 20, 30]:
+                    period_end = global_last_seen
+                    period_start = global_last_seen - \
+                        timedelta(days=period_days)
 
-                if period_start < start_time:
-                    period_start = start_time
+                    # Ensure we don't go before the first seen date
+                    if global_first_seen and period_start < global_first_seen:
+                        period_start = global_first_seen
 
-                period_data = await db_cog.q_user_total_messages(
-                    guild_id=guild.id,
-                    user_id=member.id,
-                    role_filter_ids=None,
-                    start_time=period_start,
-                    end_time=period_end
-                )
-                message_periods_data[f'{period_days}d'] = period_data.get(
-                    'total_messages', 0) if period_data else 0
+                    period_data = await db_cog.q_user_total_messages(
+                        guild_id=guild.id,
+                        user_id=member.id,
+                        role_filter_ids=None,
+                        start_time=period_start,
+                        end_time=period_end
+                    )
+                    message_periods_data[f'{period_days}d'] = period_data.get(
+                        'total_messages', 0) if period_data else 0
+            elif not use_all_time and start_time:
+                for period_days in [1, 5, 10, 20, 30]:
+                    # Use days_back_equiv to check if period exceeds the main range
+                    if period_days > days_back_equiv:
+                        message_periods_data[f'{period_days}d'] = 0
+                        continue
+                    period_end = end_time
+                    period_start = end_time - timedelta(days=period_days)
+
+                    if period_start < start_time:
+                        period_start = start_time
+
+                    period_data = await db_cog.q_user_total_messages(
+                        guild_id=guild.id,
+                        user_id=member.id,
+                        role_filter_ids=None,
+                        start_time=period_start,
+                        end_time=period_end
+                    )
+                    message_periods_data[f'{period_days}d'] = period_data.get(
+                        'total_messages', 0) if period_data else 0
+            else:
+                message_periods_data = {f'{d}d': 0 for d in [1, 5, 10, 20, 30]}
 
             # ===== VOICE PERIOD DATA =====
             voice_periods_data = {}
-            for period_days in [1, 5, 10, 20, 30]:
-                if period_days > days_back:
-                    voice_periods_data[f'{period_days}d'] = 0
-                    continue
-                period_end = end_time
-                period_start = end_time - timedelta(days=period_days)
+            if use_all_time and global_last_seen:
+                # For All Time, calculate periods relative to the last seen date
+                for period_days in [1, 5, 10, 20, 30]:
+                    period_end = global_last_seen
+                    period_start = global_last_seen - \
+                        timedelta(days=period_days)
 
-                if period_start < start_time:
-                    period_start = start_time
+                    # Ensure we don't go before the first seen date
+                    if global_first_seen and period_start < global_first_seen:
+                        period_start = global_first_seen
 
-                period_data = await db_cog.q_user_total_voice(
-                    guild_id=guild.id,
-                    user_id=member.id,
-                    role_filter_ids=None,
-                    start_time=period_start,
-                    end_time=period_end
-                )
-                voice_periods_data[f'{period_days}d'] = period_data.get(
-                    'total_seconds', 0) if period_data else 0
+                    period_data = await db_cog.q_user_total_voice(
+                        guild_id=guild.id,
+                        user_id=member.id,
+                        role_filter_ids=None,
+                        start_time=period_start,
+                        end_time=period_end
+                    )
+                    voice_periods_data[f'{period_days}d'] = period_data.get(
+                        'total_seconds', 0) if period_data else 0
+            elif not use_all_time and start_time:
+                for period_days in [1, 5, 10, 20, 30]:
+                    if period_days > days_back_equiv:
+                        voice_periods_data[f'{period_days}d'] = 0
+                        continue
+                    period_end = end_time
+                    period_start = end_time - timedelta(days=period_days)
+
+                    if period_start < start_time:
+                        period_start = start_time
+
+                    period_data = await db_cog.q_user_total_voice(
+                        guild_id=guild.id,
+                        user_id=member.id,
+                        role_filter_ids=None,
+                        start_time=period_start,
+                        end_time=period_end
+                    )
+                    voice_periods_data[f'{period_days}d'] = period_data.get(
+                        'total_seconds', 0) if period_data else 0
+            else:
+                voice_periods_data = {f'{d}d': 0 for d in [1, 5, 10, 20, 30]}
 
             result = {
                 'total_messages': total_messages or 0,
@@ -692,7 +987,8 @@ class UserStats(commands.Cog):
                 'top_voice_channels': top_voice_channels or [],
                 'message_periods': message_periods_data or {},
                 'voice_periods': voice_periods_data or {},
-                'success': True
+                'success': True,
+                'use_all_time': use_all_time
             }
 
             return result
@@ -704,10 +1000,12 @@ class UserStats(commands.Cog):
 
     # IMAGE GENERATION
 
-    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
-    async def _generate_user_stats_image(self, guild: discord.Guild, member: discord.Member, days_back: int = 14):
+    async def _generate_user_stats_image(self, guild: discord.Guild, member: discord.Member, start_time: datetime = None, end_time: datetime = None, display_text: str = None, days_back_equiv: int = None):
+        # If no time parameters provided, use server default
+        if start_time is None and end_time is None and display_text is None and days_back_equiv is None:
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild)
 
-        data = await self._get_user_stats_data(guild, member, days_back)
+        data = await self._get_user_stats_data(guild, member, start_time, end_time, days_back_equiv)
 
         if "error" in data:
             image = Image.new('RGB', (800, 800), color='#2C2F33')
@@ -837,7 +1135,6 @@ class UserStats(commands.Cog):
         # INVISIBLE RECTANGLE FUNCTIONS
 
         def check_text_against_rectangle(text, font, text_x, text_y, rect_center_x, rect_center_y, rect_width, rect_height):
-
             rect_left = rect_center_x - (rect_width // 2)
             rect_right = rect_center_x + (rect_width // 2)
             rect_top = rect_center_y - (rect_height // 2)
@@ -856,7 +1153,6 @@ class UserStats(commands.Cog):
             return exceeds_width or exceeds_height
 
         def fit_text_to_rectangle(text, text_center_x, text_center_y, rect_center_x, rect_center_y, rect_width, rect_height, is_channel=False, is_username=False):
-
             if is_username:
                 font_sizes = [34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14]
             elif is_channel:
@@ -1058,8 +1354,7 @@ class UserStats(commands.Cog):
                            font_horndon_medium, "white", max_width=150)
 
         # TIME PERIOD
-        time_period_text = f"{days_back} days"
-        draw_text_centered(pilmoji, time_period_text, (147, 713),
+        draw_text_centered(pilmoji, display_text, (147, 713),
                            font_horndon_medium, "white", max_width=100)
 
         # RANKS
@@ -1068,14 +1363,12 @@ class UserStats(commands.Cog):
                            font_horndon_xlarge, "white", max_width=150)
 
         # Voice rank
-
         voice_rank_text = f"#{data['voice_rank']}" if data['voice_rank'] > 0 else "-"
         draw_text_centered(pilmoji, voice_rank_text, (190, 215),
                            font_horndon_xlarge, "white", max_width=150)
 
         # TOTALS
-        total_messages_text = str(
-            data['total_messages']) if data['total_messages'] > 0 else "0"
+        total_messages_text = format_message_count(data['total_messages'])
         draw_text_centered(pilmoji, total_messages_text, (450, 155),
                            font_horndon_xlarge, "white", max_width=150)
 
@@ -1089,14 +1382,14 @@ class UserStats(commands.Cog):
 
         # HOURLY RATES
         messages_per_hour_text = f"{data['messages_per_hour']:.2f}" if data['messages_per_hour'] > 0 else "0.00"
-        draw_text_centered(pilmoji, messages_per_hour_text, (130, 340),
-                           font_horndon_huge, "white", max_width=150)
-
         if data['voice_hours_per_hour'] > 0:
             voice_per_hour_text = format_voice_hours_per_hour(
                 data['voice_hours_per_hour'])
         else:
             voice_per_hour_text = "0s"
+
+        draw_text_centered(pilmoji, messages_per_hour_text, (130, 340),
+                           font_horndon_huge, "white", max_width=150)
         draw_text_centered(pilmoji, voice_per_hour_text, (385, 340),
                            font_horndon_huge, "white", max_width=150)
 
@@ -1146,7 +1439,7 @@ class UserStats(commands.Cog):
                     pilmoji.text((placeholder_x, placeholder_y), "-",
                                  fill="white", font=placeholder_font)
 
-                draw_text_centered(pilmoji, str(channel.get('activity_count', 0) or 0),
+                draw_text_centered(pilmoji, format_message_count(channel.get('activity_count', 0)),
                                    text_message_positions[i], font_horndon_xlarge, "white", max_width=80)
             else:
                 placeholder_font = font_horndon_xlarge
@@ -1238,7 +1531,7 @@ class UserStats(commands.Cog):
 
         for period, position in message_time_positions.items():
             count = data['message_periods'].get(period, 0) or 0
-            draw_text_centered(pilmoji, str(count), position,
+            draw_text_centered(pilmoji, format_message_count(count), position,
                                font_horndon_xlarge, "white", max_width=80)
 
         # VOICE TIME OVER TIME
@@ -1369,8 +1662,6 @@ class UserStats(commands.Cog):
             if is_interaction:
                 user = ctx_or_interaction.user
                 guild = ctx_or_interaction.guild
-                send_method = ctx_or_interaction.followup.send
-                original_message = None
             else:
                 user = ctx_or_interaction.author
                 guild = ctx_or_interaction.guild
@@ -1379,8 +1670,6 @@ class UserStats(commands.Cog):
                     await ctx_or_interaction.message.delete()
                 except:
                     pass
-                send_method = ctx_or_interaction.send
-                original_message = await ctx_or_interaction.original_response() if hasattr(ctx_or_interaction, 'original_response') else None
 
             # Handle member parameter
             if member is None:
@@ -1411,39 +1700,93 @@ class UserStats(commands.Cog):
                     await ctx_or_interaction.send(blacklist_error, delete_after=10)
                 return
 
-            # Use default 14 days
-            days = 14
+            # Use None to indicate server default, which will fetch from settings
+            start_time = None
+            end_time = None
+            display_text = None
+            days_back_equiv = None
 
+            # IMPORTANT FIX: Properly defer the interaction
             if is_interaction:
-                await ctx_or_interaction.response.defer()
+                # Check if we can defer the response
+                if not ctx_or_interaction.response.is_done():
+                    await ctx_or_interaction.response.defer(thinking=True)
 
-            # Generate stats image
-            image_buffer = await self._generate_user_stats_image(guild, member, days_back=days)
+            # Generate stats image (will use server default since all params are None)
+            try:
+                image_buffer = await self._generate_user_stats_image(guild, member, start_time=start_time, end_time=end_time, display_text=display_text, days_back_equiv=days_back_equiv)
+            except asyncio.TimeoutError:
+                if is_interaction:
+                    await ctx_or_interaction.followup.send("⚠️ The stats generation is taking longer than expected. Please try again in a moment.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("⚠️ The stats generation is taking longer than expected. Please try again in a moment.", delete_after=10)
+                return
+            except Exception as e:
+                logger.error(f"Error generating image: {e}")
+                if is_interaction:
+                    await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
+                else:
+                    await ctx_or_interaction.send("❌ An error occurred while generating stats image.", delete_after=10)
+                return
+
             file = discord.File(image_buffer, filename="user_stats.png")
 
-            # Create view
-            view = UserStatsView(self, guild, member, days_back=days)
+            # Retention alert: cheap, single-row check; returns None almost always
+            db_cog = self.bot.get_cog('DatabaseStats')
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+
+            # Stat type warning: tells the user if this command's data is incomplete
+            # because a required stat type isn't being tracked
+            stat_type_warning = await db_cog.check_stat_types_enabled(
+                guild.id, ['track_messages', 'track_voice']
+            ) if db_cog else None
+
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
+            # Create view with None params to indicate using server default
+            view = UserStatsView(self, guild, member, start_time=start_time, end_time=end_time,
+                                 display_text=display_text, days_back_equiv=days_back_equiv)
 
             # Send the image
             if is_interaction:
-                msg = await send_method(file=file, view=view)
+                # When we defer with thinking=True, we need to use followup.send
+                # edit_original_response doesn't support file attachments
+                msg = await ctx_or_interaction.followup.send(content=content, file=file, view=view)
             else:
-                msg = await send_method(file=file, view=view, delete_after=300)
+                msg = await ctx_or_interaction.send(content=content, file=file, view=view, delete_after=300)
 
             # Store session
             self.active_user_stats_sessions[msg.id] = {
                 'guild_id': guild.id,
                 'user_id': member.id,
-                'current_days': days,
+                'current_start_time': None,
+                'current_end_time': None,
+                'current_display_text': None,
+                'current_days_back_equiv': None,
                 'view': view,
                 'created_at': time.time()
             }
 
-        except Exception as e:
-            logger.error(f"Error in _handle_user_stats_command: {e}")
+        except discord.errors.NotFound as e:
+            # Interaction timed out - this is expected for long operations
+            logger.warning(f"Interaction not found (likely timed out): {e}")
             if is_interaction:
                 try:
-                    await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
+                    # Try to send a followup message if possible
+                    await ctx_or_interaction.followup.send("⚠️ The command took too long to process. Please try again.", ephemeral=True)
+                except:
+                    pass
+        except Exception as e:
+            logger.error(f"Error in _handle_user_stats_command: {e}")
+            traceback.print_exc()
+            if is_interaction:
+                try:
+                    if not ctx_or_interaction.response.is_done():
+                        await ctx_or_interaction.response.send_message("❌ An error occurred while generating stats image.", ephemeral=True)
+                    else:
+                        await ctx_or_interaction.followup.send("❌ An error occurred while generating stats image.", ephemeral=True)
                 except:
                     pass
             else:
@@ -1480,13 +1823,27 @@ class UserStats(commands.Cog):
     @user_group.command(name="stats", description="Display the stats of a user")
     @app_commands.describe(member="Choose which member's stats to view")
     async def user_stats(self, interaction: discord.Interaction, member: discord.Member = None):
-        await self._handle_user_stats_command(interaction, member, is_interaction=True)
+        """Display user stats via slash command"""
+        try:
+            await self._handle_user_stats_command(interaction, member, is_interaction=True)
+        except discord.errors.NotFound:
+            # Interaction timed out - ignore as the handler already tries to recover
+            logger.warning(
+                f"User stats command interaction timed out for {interaction.user}")
+        except Exception as e:
+            logger.error(f"Unexpected error in user_stats slash command: {e}")
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ An error occurred while processing your request.", ephemeral=True)
+                else:
+                    await interaction.followup.send("❌ An error occurred while processing your request.", ephemeral=True)
+            except:
+                pass
 
     # CLEANUP
 
     @tasks.loop(minutes=5)
     async def cleanup_sessions(self):
-
         current_time = time.time()
 
         keys_to_remove = []
@@ -1498,12 +1855,10 @@ class UserStats(commands.Cog):
             del self.active_user_stats_sessions[key]
 
     async def cog_load(self):
-
         if not self.cleanup_sessions.is_running():
             self.cleanup_sessions.start()
 
     async def cog_unload(self):
-
         self.cleanup_sessions.cancel()
 
 

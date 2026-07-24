@@ -1,5 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 
 const TimezonePieChart = ({ 
   hourlyData = [], 
@@ -9,7 +11,12 @@ const TimezonePieChart = ({
   daysBack = null,
   valueFormatter = (value) => value.toLocaleString()
 }) => {
-  const [hoveredIndex, setHoveredIndex] = React.useState(null);
+  const [hoveredIndex, setHoveredIndex] = useState(null);
+  const [exportingCSV, setExportingCSV] = useState(false);
+  const [exportingPDF, setExportingPDF] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const chartRef = useRef(null);
+  const exportButtonRef = useRef(null);
 
   // Timezone offsets mapping
   const timezoneOffsets = {
@@ -18,6 +25,22 @@ const TimezonePieChart = ({
     "CET": 1, "EET": 2, "IST": 5.5, "JST": 9,
     "AEST": 10, "NZST": 12
   };
+
+  // Handle outside click to close menu
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (exportButtonRef.current && !exportButtonRef.current.contains(event.target)) {
+        setShowExportMenu(false);
+      }
+    };
+
+    if (showExportMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showExportMenu]);
 
   // ACTIVITY COLORS
   const activityColors = {
@@ -103,6 +126,120 @@ const TimezonePieChart = ({
     };
   }, [processedData]);
 
+  // Export functions
+  const exportToCSV = async () => {
+    setExportingCSV(true);
+    try {
+      if (!hourlyData || hourlyData.length === 0) {
+        console.error('No data to export');
+        return;
+      }
+
+      // Prepare CSV headers
+      const headers = ['Hour (24h)', 'Hour (12h)', 'Value', 'Activity Category'];
+      
+      // Create CSV rows
+      const csvRows = [headers];
+      
+      for (let i = 0; i < processedData.length; i++) {
+        const hour24 = i;
+        const hour12 = hour24 === 0 ? 12 : hour24 > 12 ? hour24 - 12 : hour24;
+        const ampm = hour24 >= 12 ? 'PM' : 'AM';
+        const hour12Display = `${hour12}:00 ${ampm}`;
+        
+        const row = [
+          `${hour24.toString().padStart(2, '0')}:00`,
+          hour12Display,
+          processedData[i].value,
+          processedData[i].category
+        ];
+        csvRows.push(row.join(','));
+      }
+      
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      const filename = `${activityType.toLowerCase()}_${timezone.toLowerCase()}_activity_export.csv`;
+      
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error exporting CSV:', error);
+    } finally {
+      setExportingCSV(false);
+    }
+  };
+
+  const exportToPDF = async () => {
+    setExportingPDF(true);
+    const buttons = chartRef.current?.querySelector('.export-buttons-container');
+    try {
+      if (!chartRef.current) {
+        console.error('Chart ref not available');
+        return;
+      }
+
+      // Hide buttons temporarily
+      if (buttons) buttons.style.visibility = 'hidden';
+
+      // Capture with higher scale for retina quality
+      const canvas = await html2canvas(chartRef.current, {
+        scale: 2,
+        backgroundColor: '#0a0a0a',
+        logging: false,
+        useCORS: true
+      });
+
+      // Restore buttons
+      if (buttons) buttons.style.visibility = 'visible';
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        unit: 'px',
+        format: [canvas.width, canvas.height],
+        orientation: canvas.width > canvas.height ? 'landscape' : 'portrait'
+      });
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+      
+      const filename = `${activityType.toLowerCase()}_${timezone.toLowerCase()}_activity_export.pdf`;
+      pdf.save(filename);
+    } catch (error) {
+      // Restore buttons on error
+      if (buttons) buttons.style.visibility = 'visible';
+      console.error('Error exporting PDF:', error);
+    } finally {
+      setExportingPDF(false);
+    }
+  };
+
+  const handleExportOption = async (exportFn) => {
+    setShowExportMenu(false);
+    await exportFn();
+  };
+
+  // Export options array for easy extensibility
+  const EXPORT_OPTIONS = [
+    {
+      label: 'CSV',
+      icon: '↓',
+      onClick: exportToCSV,
+      exporting: exportingCSV
+    },
+    {
+      label: 'PDF',
+      icon: '⎙',
+      onClick: exportToPDF,
+      exporting: exportingPDF
+    }
+  ];
+
   // Custom tooltip - DARK THEME, NO WHITE RECTANGLE
   const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
@@ -138,16 +275,19 @@ const TimezonePieChart = ({
   const timePeriodText = daysBack === null ? 'ALL TIME' : `Last ${daysBack} days`;
 
   return (
-    <div style={{ 
-      background: 'linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%)',
-      borderRadius: '24px', 
-      padding: '20px',
-      color: 'white',
-      minHeight: '500px',
-      width: '100%',
-      boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
-      border: '1px solid rgba(255,255,255,0.05)'
-    }}>
+    <div 
+      ref={chartRef}
+      style={{ 
+        background: 'linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%)',
+        borderRadius: '24px', 
+        padding: '20px',
+        color: 'white',
+        minHeight: '500px',
+        width: '100%',
+        boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
+        border: '1px solid rgba(255,255,255,0.05)'
+      }}
+    >
       {/* TOP BAR */}
       <div style={{ 
         display: 'flex', 
@@ -169,15 +309,119 @@ const TimezonePieChart = ({
         }}>
           {timezone}
         </div>
-        <div style={{ 
-          fontSize: '14px', 
-          color: '#888',
-          background: 'rgba(255,255,255,0.05)',
-          padding: '6px 12px',
-          borderRadius: '30px',
-          border: '1px solid rgba(255,255,255,0.1)'
-        }}>
-          {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+        
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          {/* Export Button with Dropdown Menu */}
+          <div className="export-buttons-container" style={{
+            position: 'relative',
+            display: 'inline-block'
+          }} ref={exportButtonRef}>
+            <button
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                fontSize: '12px',
+                fontWeight: '500',
+                background: 'transparent',
+                color: '#ffffff',
+                border: '1px solid #333333',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                fontFamily: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = '#aa00ff';
+                e.currentTarget.style.color = '#aa00ff';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = '#333333';
+                e.currentTarget.style.color = '#ffffff';
+              }}
+            >
+              
+              <span className="export-label">Export</span>
+              <span>▾</span>
+            </button>
+
+            {/* Dropdown Menu */}
+            {showExportMenu && (
+              <div style={{
+                position: 'absolute',
+                bottom: '100%',
+                right: 0,
+                marginBottom: '4px',
+                backgroundColor: '#1a1a1a',
+                border: '1px solid #333333',
+                borderRadius: '8px',
+                boxShadow: '0 -4px 16px rgba(0,0,0,0.4)',
+                padding: '4px',
+                minWidth: '120px',
+                animation: 'fadeIn 0.15s ease-out',
+                zIndex: 1000
+              }}>
+                {EXPORT_OPTIONS.map((option) => (
+                  <button
+                    key={option.label}
+                    onClick={() => handleExportOption(option.onClick)}
+                    disabled={option.exporting}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      padding: '8px 12px',
+                      backgroundColor: 'transparent',
+                      border: 'none',
+                      borderRadius: '6px',
+                      color: '#ffffff',
+                      fontSize: '12px',
+                      cursor: option.exporting ? 'wait' : 'pointer',
+                      transition: 'all 0.15s ease',
+                      fontFamily: 'inherit',
+                      textAlign: 'left'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!option.exporting) {
+                        e.currentTarget.style.backgroundColor = 'rgba(170, 0, 255, 0.12)';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'transparent';
+                    }}
+                  >
+                    <span style={{ fontSize: '13px' }}>{option.icon}</span>
+                    <span style={{ flex: 1 }}>{option.label}</span>
+                    {option.exporting && (
+                      <span className="export-spinner" style={{
+                        display: 'inline-block',
+                        width: '10px',
+                        height: '10px',
+                        border: `2px solid #aa00ff`,
+                        borderTopColor: 'transparent',
+                        borderRadius: '50%',
+                        animation: 'spin 0.6s linear infinite'
+                      }} />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          
+          <div style={{ 
+            fontSize: '14px', 
+            color: '#888',
+            background: 'rgba(255,255,255,0.05)',
+            padding: '6px 12px',
+            borderRadius: '30px',
+            border: '1px solid rgba(255,255,255,0.1)'
+          }}>
+            {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+          </div>
         </div>
       </div>
 
@@ -333,6 +577,33 @@ const TimezonePieChart = ({
           </div>
         </div>
       </div>
+
+      <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        
+        @keyframes fadeIn {
+          from {
+            opacity: 0;
+            transform: translateY(5px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        
+        @media (max-width: 768px) {
+          .export-label {
+            display: none;
+          }
+          .export-buttons-container button {
+            padding: 6px 8px;
+          }
+        }
+      `}</style>
     </div>
   );
 };

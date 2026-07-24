@@ -4,6 +4,7 @@ import io
 from PIL import Image, ImageDraw, ImageFont
 from typing import Optional, List, Tuple, Dict, Any
 import os
+import re
 import asyncpg
 from datetime import datetime, timedelta, timezone
 from discord import app_commands
@@ -29,6 +30,50 @@ class InviteConfig:
     MAX_CUSTOM_DAYS = 2000
     TEMPLATE_PATH = BASE_DIR / "assets" / "images" / "leaderboards final png.png"
     FONT_PATH = BASE_DIR / "assets" / "fonts" / "HorndonD.ttf"
+
+
+# PAGE JUMP MODAL
+class PageJumpModal(discord.ui.Modal, title='Jump to Page'):
+    def __init__(self, view, total_pages):
+        super().__init__(timeout=60)
+        self.view = view
+        self.total_pages = total_pages
+        self.rate_limiter = get_rate_limiter()
+
+        self.page_number = discord.ui.TextInput(
+            label=f'Enter page number (1-{total_pages})',
+            placeholder=f'1 to {total_pages}',
+            min_length=1,
+            max_length=4,
+            required=True
+        )
+        self.add_item(self.page_number)
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            page = int(self.page_number.value) - 1
+
+            if page < 0 or page >= self.total_pages:
+                embed = discord.Embed(
+                    title="❌ Invalid Page",
+                    description=f"Page {page + 1} does not exist. Please enter a number between 1 and {self.total_pages}.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
+            await interaction.response.defer()
+            self.view.page = page
+            await self.view.update_message(interaction)
+
+        except ValueError:
+            embed = discord.Embed(
+                title="❌ Invalid Input",
+                description="Please enter a valid page number.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # HELPER FUNCTIONS
@@ -256,7 +301,16 @@ def format_datetime_for_display(dt: datetime, guild_id: int = None) -> str:
         return str(dt)
 
 
+def strip_markdown_links(text: str) -> str:
+    """
+    Convert markdown links like [here](https://example.com) into plain
+    text like 'here: https://example.com', since embed footers render
+    as plain text and don't parse markdown.
+    """
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1: \2', text)
+
 # FONTS
+
 
 def get_fonts():
 
@@ -367,7 +421,7 @@ async def generate_invite_leaderboard_image(
     bot,
     guild: discord.Guild,
     leaderboard_data: list,
-    days_back: int,
+    display_text: str,
     role_id: str = None,
     role_name: str = None,
     invite_type_filter: str = "all",
@@ -567,8 +621,9 @@ async def generate_invite_leaderboard_image(
     draw_text_with_stroke(draw, (70, 424), role_text,
                           font_small, "white", "black", 1)
 
+    # Use display_text for time period
     draw_text_with_stroke(
-        draw, (630, 422), f"{days_back} days", font_small, "white", "black", 1)
+        draw, (630, 422), display_text, font_small, "white", "black", 1)
     draw_text_with_stroke(draw, (550, 38), datetime.now().strftime(
         "%B %d, %Y"), font_small, "white", "black", 1)
 
@@ -731,6 +786,7 @@ class InviteLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.current_view = current_view
+        self.rate_limiter = get_rate_limiter()
 
     days = discord.ui.TextInput(
         label='Enter number of days',
@@ -740,6 +796,7 @@ class InviteLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         try:
             days = int(self.days.value)
@@ -749,7 +806,12 @@ class InviteLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
 
             await interaction.response.defer(thinking=True)
 
-            self.current_view.current_days = days
+            now = datetime.utcnow()
+            self.current_view.current_start_time = now - timedelta(days=days)
+            self.current_view.current_end_time = now
+            self.current_view.current_days_back_equiv = days
+            self.current_view.current_display_text = f"{days} days"
+            self.current_view.using_server_default = False
             self.current_view.show_time_buttons = False
             self.current_view.page = 0
             self.current_view._update_buttons()
@@ -773,11 +835,12 @@ class InviteLeaderboardTimeModal(discord.ui.Modal, title='Custom Time Period'):
             await interaction.followup.send("❌ An error occurred while updating the leaderboard.", ephemeral=True)
 
 
-class InviteRoleInputModal(discord.ui.Modal, title='Input Role ID'):
+class InviteRoleInputModal(discord.ui.Modal, title='Filter By Role'):
     def __init__(self, cog_instance, current_view):
         super().__init__(timeout=300)
         self.cog = cog_instance
         self.current_view = current_view
+        self.rate_limiter = get_rate_limiter()
 
     role_id = discord.ui.TextInput(
         label='Enter Role ID',
@@ -787,6 +850,7 @@ class InviteRoleInputModal(discord.ui.Modal, title='Input Role ID'):
         required=True
     )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def on_submit(self, interaction: discord.Interaction):
         role_id_input = self.role_id.value.strip().lower()
 
@@ -825,6 +889,7 @@ class InviteRoleInputModal(discord.ui.Modal, title='Input Role ID'):
 class InviteTypeFilterSelect(discord.ui.Select):
     def __init__(self, current_value: str = "all"):
         self.current_value = current_value
+        self.rate_limiter = get_rate_limiter()
 
         options = [
             discord.SelectOption(
@@ -861,9 +926,10 @@ class InviteTypeFilterSelect(discord.ui.Select):
             placeholder="Filter by invite type...",
             options=options,
             custom_id="invite_type_filter",
-            row=2
+            row=0
         )
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
@@ -880,8 +946,10 @@ class InviteTypeFilterSelect(discord.ui.Select):
 class InvitePrevButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="⬅️", custom_id="invite_prev")
+                         emoji=discord.PartialEmoji(name="arrowleft", id=1521149181207777331), custom_id="invite_prev", row=1)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
 
         if self.disabled:
@@ -900,8 +968,10 @@ class InvitePrevButton(discord.ui.Button):
 class InviteNextButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.secondary,
-                         label="➡️", custom_id="invite_next")
+                         emoji=discord.PartialEmoji(name="arrowright", id=1521149211373076501), custom_id="invite_next", row=1)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
 
         if self.disabled:
@@ -919,14 +989,32 @@ class InviteNextButton(discord.ui.Button):
 class InvitePageIndicator(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.primary, label="Page 1/1",
-                         custom_id="invite_page", disabled=True)
+                         custom_id="invite_page", disabled=False, row=1)
+        self.rate_limiter = get_rate_limiter()
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+
+        # Get total pages
+        leaderboard_data = await view.cog._get_invite_leaderboard_data(
+            view.guild, view.current_start_time, view.current_end_time, view.current_days_back_equiv, view.selected_role_id, view.current_invite_type
+        )
+        total_users = len(leaderboard_data)
+        total_pages = max(
+            1, (total_users + InviteConfig.USERS_PER_PAGE - 1) // InviteConfig.USERS_PER_PAGE)
+
+        modal = PageJumpModal(view, total_pages)
+        await interaction.response.send_modal(modal)
 
 
 class InviteRoleInputButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(style=discord.ButtonStyle.primary, label="Input Role Id",
-                         custom_id="invite_role_input", row=3)
+        super().__init__(style=discord.ButtonStyle.primary, label="Filter By Role",
+                         custom_id="invite_role_input", row=2)
+        self.rate_limiter = get_rate_limiter()
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def callback(self, interaction: discord.Interaction):
         if interaction.response.is_done():
             return
@@ -938,40 +1026,52 @@ class InviteRoleInputButton(discord.ui.Button):
 # INVITE LEADERBOARD VIEW
 
 class InviteLeaderboardView(discord.ui.View):
-    def __init__(self, cog_instance, guild: discord.Guild, days_back: int, page: int = 0, selected_role_id: str = None, invite_type_filter: str = "all"):
+    def __init__(self, cog_instance, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                 days_back_equiv: int = InviteConfig.DEFAULT_DAYS_BACK, display_text: str = f"{InviteConfig.DEFAULT_DAYS_BACK} days",
+                 page: int = 0, selected_role_id: str = None, invite_type_filter: str = "all", using_server_default: bool = True):
         super().__init__(timeout=600)
         self.cog = cog_instance
         self.guild = guild
-        self.current_days = days_back
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
         self.page = page
         self.selected_role_id = selected_role_id
         self.current_invite_type = invite_type_filter
+        self.using_server_default = using_server_default
         self.show_time_buttons = False
+        self.rate_limiter = get_rate_limiter()
         self._update_buttons()
 
     def _update_buttons(self):
 
         self.clear_items()
 
+        # Row 0: dropdown
+        self.add_item(InviteTypeFilterSelect(self.current_invite_type))
+
+        # Row 1: prev / page / next
         self.add_item(InvitePrevButton())
         self.add_item(InvitePageIndicator())
         self.add_item(InviteNextButton())
+
+        # Row 2: remaining buttons
         self.add_item(InviteRoleInputButton())
-        self.add_item(InviteTypeFilterSelect(self.current_invite_type))
 
         refresh_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="🔄 Refresh",
+            emoji=discord.PartialEmoji(name="refresh", id=1518249841505861743),
             custom_id="invite_refresh",
-            row=3
+            row=2
         )
         refresh_button.callback = self.refresh_callback
 
         time_settings_button = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
-            label="⏰ Time Settings",
+            emoji=discord.PartialEmoji(name="clockk", id=1518249803069259867),
             custom_id="invite_time_settings",
-            row=3
+            row=2
         )
         time_settings_button.callback = self.time_settings_callback
 
@@ -979,10 +1079,19 @@ class InviteLeaderboardView(discord.ui.View):
         self.add_item(time_settings_button)
 
         if self.show_time_buttons:
-            row = 4
+            row = 3
+            all_time_button = discord.ui.Button(
+                style=discord.ButtonStyle.primary if self.current_days_back_equiv == 999999 else discord.ButtonStyle.secondary,
+                label="All Time",
+                custom_id="invite_all_time",
+                row=row
+            )
+            all_time_button.callback = self.all_time_callback
+            self.add_item(all_time_button)
+
             for days in InviteConfig.TIME_PERIODS:
                 days_button = discord.ui.Button(
-                    style=discord.ButtonStyle.primary if self.current_days == days else discord.ButtonStyle.secondary,
+                    style=discord.ButtonStyle.primary if self.current_days_back_equiv == days else discord.ButtonStyle.secondary,
                     label=f"{days} Days",
                     custom_id=f"invite_days_{days}",
                     row=row
@@ -991,8 +1100,8 @@ class InviteLeaderboardView(discord.ui.View):
                 self.add_item(days_button)
 
             custom_button = discord.ui.Button(
-                style=discord.ButtonStyle.success,
-                label=f"Custom ({self.current_days}d)" if self.current_days not in InviteConfig.TIME_PERIODS else "Custom",
+                style=discord.ButtonStyle.success if self.current_days_back_equiv not in InviteConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else discord.ButtonStyle.secondary,
+                label=f"Custom ({self.current_days_back_equiv}d)" if self.current_days_back_equiv not in InviteConfig.TIME_PERIODS and self.current_days_back_equiv != 999999 else "Custom",
                 custom_id="invite_custom_days",
                 row=row
             )
@@ -1000,18 +1109,29 @@ class InviteLeaderboardView(discord.ui.View):
             self.add_item(custom_button)
 
     def create_days_callback(self, days: int):
+        @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
         async def callback(interaction: discord.Interaction):
-            await self.handle_time_period_change(interaction, days)
-        return callback
+            now = datetime.utcnow()
+            await self.handle_time_period_change(interaction, days, now - timedelta(days=days), now, f"{days} days")
+        return callback.__get__(self, type(self))
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
+    async def all_time_callback(self, interaction: discord.Interaction):
+        now = datetime.utcnow()
+        await self.handle_time_period_change(interaction, 999999, None, now, "All Time")
+
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def refresh_callback(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def time_settings_callback(self, interaction: discord.Interaction):
         await self.handle_time_settings(interaction)
 
+    @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def custom_days_callback(self, interaction: discord.Interaction):
-        await self.handle_custom_days(interaction)
+        modal = InviteLeaderboardTimeModal(self.cog, self)
+        await interaction.response.send_modal(modal)
 
     async def handle_refresh(self, interaction: discord.Interaction):
 
@@ -1035,7 +1155,7 @@ class InviteLeaderboardView(discord.ui.View):
         self._update_buttons()
         await interaction.edit_original_response(view=self)
 
-    async def handle_time_period_change(self, interaction: discord.Interaction, days: int):
+    async def handle_time_period_change(self, interaction: discord.Interaction, days_back_equiv: int, start_time: datetime, end_time: datetime, display_text: str):
 
         if interaction.response.is_done():
             return
@@ -1043,16 +1163,15 @@ class InviteLeaderboardView(discord.ui.View):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=False, thinking=False)
 
-        self.current_days = days
+        self.current_start_time = start_time
+        self.current_end_time = end_time
+        self.current_days_back_equiv = days_back_equiv
+        self.current_display_text = display_text
+        self.using_server_default = False
         self.show_time_buttons = False
         self.page = 0
 
         await self.update_message(interaction)
-
-    async def handle_custom_days(self, interaction: discord.Interaction):
-
-        modal = InviteLeaderboardTimeModal(self.cog, self)
-        await interaction.response.send_modal(modal)
 
     async def generate_image(self):
         # Get role name from database instead of Discord API
@@ -1074,7 +1193,9 @@ class InviteLeaderboardView(discord.ui.View):
 
         leaderboard_data = await self.cog._get_invite_leaderboard_data(
             self.guild,
-            self.current_days,
+            self.current_start_time,
+            self.current_end_time,
+            self.current_days_back_equiv,
             self.selected_role_id,
             self.current_invite_type
         )
@@ -1083,7 +1204,7 @@ class InviteLeaderboardView(discord.ui.View):
             bot=self.cog.bot,
             guild=self.guild,
             leaderboard_data=leaderboard_data,
-            days_back=self.current_days,
+            display_text=self.current_display_text,
             role_id=self.selected_role_id,
             role_name=role_name,
             invite_type_filter=self.current_invite_type,
@@ -1095,7 +1216,9 @@ class InviteLeaderboardView(discord.ui.View):
         try:
             leaderboard_data = await self.cog._get_invite_leaderboard_data(
                 self.guild,
-                self.current_days,
+                self.current_start_time,
+                self.current_end_time,
+                self.current_days_back_equiv,
                 self.selected_role_id,
                 self.current_invite_type
             )
@@ -1263,7 +1386,115 @@ class Invites(commands.Cog):
         self.db_stats = self.bot.get_cog('DatabaseStats')
         self.initialized = True
 
-    async def _get_invite_leaderboard_data(self, guild: discord.Guild, days_back: int, role_id: str = None, invite_type_filter: str = "all"):
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    # NEW METHOD: GET SERVER DEFAULT TIME RANGE
+    async def get_server_default_time_range(self, guild: discord.Guild) -> tuple:
+        """Get the default time range from server settings. Returns (start_time, end_time, display_text, days_back_equiv)"""
+        try:
+            settings_cog = self.bot.get_cog('Settings')
+            if not settings_cog:
+                end = datetime.now(timezone.utc)
+                start = end - timedelta(days=InviteConfig.DEFAULT_DAYS_BACK)
+                return (start, end, f"{InviteConfig.DEFAULT_DAYS_BACK} days", InviteConfig.DEFAULT_DAYS_BACK)
+
+            settings = await settings_cog.get_guild_settings(guild.id)
+            mode = settings.get('default_time_mode', 'days_back')
+            now = datetime.now(timezone.utc)
+
+            if mode == 'all_time':
+                return (None, now, "All Time", 999999)
+
+            elif mode == 'days_back':
+                days = settings.get(
+                    'default_days_back') or InviteConfig.DEFAULT_DAYS_BACK
+                start = now - timedelta(days=days)
+                return (start, now, f"{days} days", days)
+
+            elif mode == 'date_range':
+                from_date = settings.get('default_from_date')
+                to_date = settings.get('default_to_date')
+
+                # Add timezone awareness guards
+                if from_date is not None and from_date.tzinfo is None:
+                    from_date = from_date.replace(tzinfo=timezone.utc)
+                if to_date is not None and to_date.tzinfo is None:
+                    to_date = to_date.replace(tzinfo=timezone.utc)
+
+                end = to_date if to_date else now
+                start = from_date if from_date else None
+                from_str = from_date.strftime(
+                    '%d-%m-%Y') if from_date else None
+                to_str = to_date.strftime('%d-%m-%Y') if to_date else None
+                if from_str and to_str:
+                    display = f"Custom"
+                elif from_str:
+                    display = f"Custom"
+                elif to_str:
+                    display = f"Custom"
+                else:
+                    display = "Custom"
+                days_back = max(1, (end - start).days) if start else 999999
+                return (start, end, display, days_back)
+
+            elif mode == 'rolling_window':
+                rolling_type = settings.get('default_rolling_type')
+                rolling_value = settings.get('default_rolling_value')
+
+                if rolling_type == 'weekday' and rolling_value is not None:
+                    days_since = (now.weekday() - rolling_value) % 7
+                    if days_since == 0:
+                        days_since = 7
+                    start = (now - timedelta(days=days_since)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                                     'Friday', 'Saturday', 'Sunday']
+                    display = f"Custom"
+                    return (start, now, display, days_since)
+
+                elif rolling_type == 'monthly' and rolling_value is not None:
+                    import calendar
+                    current_day = now.day
+                    if current_day >= rolling_value:
+                        try:
+                            start = now.replace(day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                now.year, now.month)[1]
+                            start = now.replace(day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    else:
+                        prev_month = now.month - 1 if now.month > 1 else 12
+                        prev_year = now.year if now.month > 1 else now.year - 1
+                        try:
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=rolling_value, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                        except ValueError:
+                            last_day = calendar.monthrange(
+                                prev_year, prev_month)[1]
+                            start = now.replace(year=prev_year, month=prev_month,
+                                                day=last_day, hour=0, minute=0,
+                                                second=0, microsecond=0)
+                    days_back = max(1, (now - start).days)
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(
+                        rolling_value % 10 if rolling_value % 100 not in (11, 12, 13) else 0, 'th')
+                    display = f"Custom"
+                    return (start, now, display, days_back)
+
+            end = now - timedelta(days=0)
+            start = now - timedelta(days=InviteConfig.DEFAULT_DAYS_BACK)
+            return (start, end, f"{InviteConfig.DEFAULT_DAYS_BACK} days", InviteConfig.DEFAULT_DAYS_BACK)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=InviteConfig.DEFAULT_DAYS_BACK)
+            return (start, end, f"{InviteConfig.DEFAULT_DAYS_BACK} days", InviteConfig.DEFAULT_DAYS_BACK)
+
+    async def _get_invite_leaderboard_data(self, guild: discord.Guild, start_time: datetime = None, end_time: datetime = None,
+                                           days_back_equiv: int = InviteConfig.DEFAULT_DAYS_BACK, role_id: str = None, invite_type_filter: str = "all"):
 
         if not self.db_stats or not self.db_stats.pool:
             print("⚠️ DatabaseStats not available for invite leaderboard")
@@ -1275,9 +1506,6 @@ class Invites(commands.Cog):
                 role = guild.get_role(int(role_id))
                 if role:
                     role_filter_ids = [role.id]
-
-            end_time = datetime.now(timezone.utc)
-            start_time = end_time - timedelta(days=days_back)
 
             leaderboard_data = await self.db_stats.q_invite_leaderboard(
                 guild_id=guild.id,
@@ -1296,18 +1524,12 @@ class Invites(commands.Cog):
             traceback.print_exc()
             return []
 
-    async def get_user_invite_stats(self, guild_id: int, user_id: int, days_back: int = None):
+    async def get_user_invite_stats(self, guild_id: int, user_id: int, start_time: datetime = None, end_time: datetime = None):
 
         if not self.db_stats:
             return None
 
         try:
-            start_time = None
-            end_time = None
-            if days_back:
-                end_time = datetime.now(timezone.utc)
-                start_time = end_time - timedelta(days=days_back)
-
             return await self.db_stats.q_user_invite_stats(
                 guild_id=guild_id,
                 user_id=user_id,
@@ -1434,7 +1656,8 @@ class Invites(commands.Cog):
                 return
 
             try:
-                stats = await self.get_user_invite_stats(guild.id, user.id)
+                start_time, end_time, _, _ = await self.get_server_default_time_range(guild)
+                stats = await self.get_user_invite_stats(guild.id, user.id, start_time, end_time)
 
                 if not stats:
                     if is_interaction:
@@ -1478,6 +1701,11 @@ class Invites(commands.Cog):
                         value=f"```{stats.get('percentage_valid', 0):.1f}%```",
                         inline=True
                     )
+
+                stat_type_warning = await self.db_stats.check_stat_types_enabled(guild.id, ['track_invites']) if self.db_stats else None
+                if stat_type_warning:
+                    embed.set_footer(
+                        text=strip_markdown_links(stat_type_warning))
 
                 if is_interaction:
                     await send_method(embed=embed)
@@ -1761,23 +1989,32 @@ class Invites(commands.Cog):
                 except:
                     pass
 
-            leaderboard_data = await self._get_invite_leaderboard_data(guild, InviteConfig.DEFAULT_DAYS_BACK)
+            # Get server default time range
+            start_time, end_time, display_text, days_back_equiv = await self.get_server_default_time_range(guild)
+
+            leaderboard_data = await self._get_invite_leaderboard_data(guild, start_time, end_time, days_back_equiv)
 
             img_bytes = await generate_invite_leaderboard_image(
                 bot=self.bot,
                 guild=guild,
                 leaderboard_data=leaderboard_data,
-                days_back=InviteConfig.DEFAULT_DAYS_BACK,
+                display_text=display_text,
                 page=0
             )
 
             file = discord.File(img_bytes, filename="invite_leaderboard.png")
 
             view = InviteLeaderboardView(
-                self, guild, days_back=InviteConfig.DEFAULT_DAYS_BACK
+                self, guild, start_time=start_time, end_time=end_time, days_back_equiv=days_back_equiv, display_text=display_text, using_server_default=True
             )
 
-            msg = await send_method(file=file, view=view)
+            retention_alert_text = await self.db_stats.maybe_get_retention_alert(guild.id) if self.db_stats else None
+            stat_type_warning = await self.db_stats.check_stat_types_enabled(guild.id, ['track_invites']) if self.db_stats else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
+            msg = await send_method(content=content, file=file, view=view)
 
             # Store the view
             self.active_views[msg.id] = view

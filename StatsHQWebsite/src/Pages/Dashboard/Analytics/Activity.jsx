@@ -91,6 +91,14 @@ class ServerDataCache {
   clear() {
     this.cache.clear();
   }
+
+  clearPattern(pattern) {
+    for (const [key, value] of this.cache) {
+      if (key.includes(pattern)) {
+        this.cache.delete(key);
+      }
+    }
+  }
 }
 
 // Initialize caches
@@ -380,12 +388,14 @@ const ActivityDashboard = () => {
   const [currentServer, setCurrentServer] = useState(null);
   const [loadingServers, setLoadingServers] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [hasAccess, setHasAccess] = useState(null);
   const [isPublicMode, setIsPublicMode] = useState(false);
+  const [hasAccess, setHasAccess] = useState(null);
   const [apiError, setApiError] = useState(null);
   const [dashboardAccessLevel, setDashboardAccessLevel] = useState('Member');
   const [currentUserId, setCurrentUserId] = useState(null);
   const [serverTimezone, setServerTimezone] = useState('UTC');
+  const [retentionAlert, setRetentionAlert] = useState(null);
+  const [retentionDismissed, setRetentionDismissed] = useState(false);
   
   const [loadingServerStats, setLoadingServerStats] = useState(true);
   const [loadingUserStats, setLoadingUserStats] = useState(true);
@@ -421,14 +431,27 @@ const ActivityDashboard = () => {
   
   const [rawUserIds, setRawUserIds] = useState([]);
   const [isFetchingUsernames, setIsFetchingUsernames] = useState(false);
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+  const initialDataLoadedRef = useRef(false);
 
   const fetchedRef = useRef(false);
-  const initialDataLoadedRef = useRef(false);
   const prevFiltersRef = useRef(JSON.stringify({
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
     selectedUserId, selectedRoleId,
     serverChartSort, serverLeaderboardSort, userChartSort, userLeaderboardSort
   }));
+
+  // FIX: guards the mount effect against StrictMode's mount -> unmount ->
+  // remount cycle, which would otherwise fire loadInitialData() (and its
+  // full fan-out of auth/servers/settings/stats/leaderboard requests) twice
+  // in quick succession.
+  const didInitRef = useRef(false);
+
+  // FIX: tracks the filter-combination currently being fetched by fetchData,
+  // so an overlapping trigger (fast refresh, double effect fire, rapid
+  // filter changes) reuses/skips rather than firing a parallel duplicate
+  // request burst.
+  const inFlightFetchKeyRef = useRef(null);
 
   const rolesRef = useRef([]);
 
@@ -510,9 +533,138 @@ const ActivityDashboard = () => {
 
   const NAVBAR_HEIGHT = "80px";
 
+  // FIX: StrictMode double-invokes mount effects (mount -> unmount -> remount)
+  // in dev. Without this guard, loadInitialData() — and every request it
+  // fans out into (auth/status, user/servers, settings/get, and then the
+  // full stats/leaderboard/timeseries fetch) — fires twice back-to-back.
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     loadInitialData();
   }, []);
+
+  useEffect(() => {
+    if (!currentServer || isPublicMode || hasAccess === null) { setRetentionAlert(null); return; }
+    let cancelled = false;
+    const fetchRetentionStatus = async () => {
+      try {
+        const r = await fetch(`${API_BASE_URL}/api/retention/status?guild_id=${currentServer.id}`, {
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!cancelled) {
+          setRetentionAlert(d.show_alert ? { message: d.message } : null);
+          setRetentionDismissed(false);
+        }
+      } catch {
+        if (!cancelled) setRetentionAlert(null);
+      }
+    };
+    fetchRetentionStatus();
+    return () => { cancelled = true; };
+  }, [currentServer, isPublicMode, hasAccess]);
+
+  // FIXED: applyServerTimePeriod now returns computed values
+  const applyServerTimePeriod = (settings) => {
+    const mode = settings.default_time_mode || 'days_back';
+    const result = {};
+
+    if (mode === 'all_time') {
+      setTimePeriod('all');
+      result.timePeriod = 'all';
+    } else if (mode === 'days_back') {
+      const days = settings.default_days_back || 14;
+      const presets = ['7', '14', '30', '60', '90'];
+      if (presets.includes(String(days))) {
+        setTimePeriod(String(days));
+        result.timePeriod = String(days);
+      } else {
+        setTimePeriod('custom-lookback');
+        setCustomDaysBack(String(days));
+        result.timePeriod = 'custom-lookback';
+        result.customDaysBack = String(days);
+      }
+    } else if (mode === 'date_range') {
+      setTimePeriod('custom-range');
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      
+      let fromDate = null;
+      let toDate = null;
+      
+      if (settings.default_from_date) {
+        fromDate = settings.default_from_date.split('T')[0];
+        setCustomStartDate(fromDate);
+      }
+      if (settings.default_to_date) {
+        toDate = settings.default_to_date.split('T')[0];
+        setCustomEndDate(toDate);
+      }
+      
+      if (fromDate && !toDate) {
+        toDate = formattedToday;
+        setCustomEndDate(toDate);
+      } else if (!fromDate && toDate) {
+        fromDate = '';
+        setCustomStartDate('');
+      }
+      
+      result.timePeriod = 'custom-range';
+      result.customStartDate = fromDate || '';
+      result.customEndDate = toDate || '';
+    } else if (mode === 'rolling_window') {
+      const today = new Date();
+      const formattedToday = today.toISOString().split('T')[0];
+      let startDate = null;
+      
+      if (settings.default_rolling_type === 'weekday' && settings.default_rolling_value !== null) {
+        const targetWeekday = settings.default_rolling_value;
+        const currentWeekday = today.getDay();
+        const currentWeekdayMonday = currentWeekday === 0 ? 6 : currentWeekday - 1;
+        
+        let daysToSubtract;
+        if (currentWeekdayMonday >= targetWeekday) {
+          daysToSubtract = currentWeekdayMonday - targetWeekday;
+        } else {
+          daysToSubtract = currentWeekdayMonday + 7 - targetWeekday;
+        }
+        
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - daysToSubtract);
+        
+      } else if (settings.default_rolling_type === 'monthly' && settings.default_rolling_value !== null) {
+        const targetDay = settings.default_rolling_value;
+        const currentDate = today.getDate();
+        
+        startDate = new Date(today);
+        
+        if (currentDate >= targetDay) {
+          startDate.setDate(targetDay);
+        } else {
+          startDate.setMonth(today.getMonth() - 1);
+          const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+          startDate.setDate(Math.min(targetDay, lastDayOfMonth));
+        }
+      }
+      
+      if (startDate) {
+        const formattedStartDate = startDate.toISOString().split('T')[0];
+        setTimePeriod('custom-range');
+        setCustomStartDate(formattedStartDate);
+        setCustomEndDate(formattedToday);
+        result.timePeriod = 'custom-range';
+        result.customStartDate = formattedStartDate;
+        result.customEndDate = formattedToday;
+      } else {
+        setTimePeriod('all');
+        result.timePeriod = 'all';
+      }
+    }
+    
+    return result;
+  };
 
   const loadInitialData = async () => {
     setLoadingServers(true);
@@ -642,6 +794,14 @@ const ActivityDashboard = () => {
     setLoading(false);
   };
 
+  // FIX: checkServerAccess now ONLY determines access/permissions. It no
+  // longer calls applyServerTimePeriod() or fetchDataWithParams() itself —
+  // those used to race the "Load all data when server changes" effect and
+  // the (now removed) "fetchAndApplyTimePeriod" effect, causing settings to
+  // be fetched twice and data to be fetched with a stale default time period
+  // before being corrected by a second, duplicate fetch. The unified
+  // [currentServer, hasAccess] effect below is now the single owner of that
+  // whole "server changed" init sequence.
   const checkServerAccess = async (guildId, permissions, hasAdmin, hasManageServer) => {
     try {
       const settingsResponse = await fetch(`${API_BASE_URL}/api/settings/get`, {
@@ -675,16 +835,88 @@ const ActivityDashboard = () => {
         }
         
         setHasAccess(hasAccessFlag);
-        setLoading(false);
+        // NOTE: no applyServerTimePeriod() and no data fetch here anymore —
+        // the unified [currentServer, hasAccess] effect below owns that.
       } else {
         console.error('Failed to get settings for guild:', guildId);
         setHasAccess(false);
-        setLoading(false);
       }
     } catch (error) {
       console.error('Error checking server access:', error);
       setHasAccess(false);
+    } finally {
       setLoading(false);
+    }
+  };
+
+  // fetchDataWithParams - uses overrides instead of state. Only called once,
+  // from the unified init effect below, with the just-resolved time period.
+  const fetchDataWithParams = async (overrides = {}) => {
+    if (!currentServer) return;
+    
+    setLoading(true);
+    setApiError(null);
+    
+    // Use overrides or current state
+    const effectiveTimePeriod = overrides.timePeriod ?? timePeriod;
+    const effectiveCustomDaysBack = overrides.customDaysBack ?? customDaysBack;
+    const effectiveCustomStartDate = overrides.customStartDate ?? customStartDate;
+    const effectiveCustomEndDate = overrides.customEndDate ?? customEndDate;
+    
+    // Compute date range directly
+    let startDate = null;
+    let endDate = null;
+    let days = 30;
+    
+    if (effectiveTimePeriod === "all") {
+      days = 2000;
+    } else if (effectiveTimePeriod === "custom-lookback") {
+      if (effectiveCustomDaysBack && parseInt(effectiveCustomDaysBack) > 0) {
+        days = parseInt(effectiveCustomDaysBack);
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+      }
+    } else if (effectiveTimePeriod === "custom-range") {
+      if (effectiveCustomStartDate && effectiveCustomEndDate) {
+        startDate = new Date(effectiveCustomStartDate);
+        endDate = new Date(effectiveCustomEndDate);
+        days = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+      }
+    } else {
+      days = parseInt(effectiveTimePeriod);
+      endDate = new Date();
+      startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+    }
+    
+    try {
+      const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
+      
+      const requestBody = {
+        guild_id: currentServer.id,
+        role_filter_ids: roleFilterArray,
+        days: days
+      };
+      
+      if (startDate && endDate) {
+        requestBody.start_time = startDate.toISOString();
+        requestBody.end_time = endDate.toISOString();
+      }
+      
+      if (selectedView === 'server') {
+        await fetchServerData(requestBody);
+      } else if (selectedView === 'user' && selectedUserId) {
+        await fetchUserData(requestBody);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setApiError(error.message);
+    } finally {
+      setLoading(false);
+      fetchedRef.current = true;
+      setInitialLoadComplete(true);
     }
   };
 
@@ -717,7 +949,6 @@ const ActivityDashboard = () => {
     }
     
     try {
-      // ✅ FIXED: Build URL directly with query parameter
       const url = isPublic 
         ? `${API_BASE_URL}/api/public/server/real-roles?guild_id=${currentServer.id}`
         : `${API_BASE_URL}/api/server/real-roles?guild_id=${currentServer.id}`;
@@ -780,13 +1011,6 @@ const ActivityDashboard = () => {
     }
   };
 
-  // Fetch roles whenever currentServer changes
-  useEffect(() => {
-    if (currentServer) {
-      fetchAllRoles();
-    }
-  }, [currentServer]);
-
   // ============================================
   // FETCH ALL USERS - FIXED
   // ============================================
@@ -809,7 +1033,6 @@ const ActivityDashboard = () => {
     }
     
     try {
-        // ✅ FIXED: Build URL directly
         let url;
         if (isPublic) {
           url = `${API_BASE_URL}/api/public/guild/activity-users`;
@@ -865,13 +1088,30 @@ const ActivityDashboard = () => {
     }
   };
 
-  // Load all data when server changes
+  // FIX: this ONE effect now owns the entire "server changed" init lifecycle
+  // — resetting state, fetching users/roles in parallel, fetching settings
+  // exactly once, resolving the time period, and firing the first data fetch
+  // with the resolved params directly (not stale React state). It replaces
+  // what used to be THREE independent, competing paths:
+  //   1. a "fetch roles whenever currentServer changes" effect
+  //   2. a "fetchAndApplyTimePeriod" effect that re-fetched settings AND
+  //      re-applied the time period AND called fetchDataWithParams again
+  //   3. this "load all data" effect, which used to call fetchData() reading
+  //      timePeriod from React state before the settings fetch had committed,
+  //      producing a default-period fetch that then got "corrected" by a
+  //      second, duplicate fetch moments later.
+  //
+  // Before finishing, it also syncs prevFiltersRef to the resolved filter
+  // key, so the filter-watcher effect further down (which fires on the same
+  // kind of [timePeriod, ...] change) sees no diff and doesn't refire a
+  // duplicate fetch right after this one completes.
   useEffect(() => {
     if (!currentServer || !hasAccess) return;
     
     if (initialDataLoadedRef.current === currentServer.id) return;
     
     fetchedRef.current = false;
+    setInitialLoadComplete(false);
     
     setLoadingServerStats(true);
     setLoadingUserStats(true);
@@ -914,18 +1154,54 @@ const ActivityDashboard = () => {
     clearRoleFilter();
     
     initialDataLoadedRef.current = currentServer.id;
-    
-    Promise.all([
-      fetchAllUsers(),
-      fetchAllRoles()
-    ]).then(() => {
-      fetchData();
-    });
+
+    const initializeServer = async () => {
+      // users/roles can load in parallel — they don't gate the stats fetch
+      fetchAllUsers();
+      fetchAllRoles();
+
+      // get the server's configured default time period BEFORE any data fetch
+      let timeParams = {};
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/settings/get`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: isPublicMode ? 'omit' : 'include',
+          body: JSON.stringify({ guild_id: currentServer.id })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          timeParams = applyServerTimePeriod(data); // sets state AND returns the values synchronously
+        }
+      } catch (e) {
+        console.error('Error fetching time period settings:', e);
+      }
+
+      // sync the filter-watcher ref to the resolved values BEFORE firing the
+      // fetch, so that effect doesn't see a "changed filter" afterward and
+      // refire a duplicate request
+      const resolvedFilters = {
+        selectedView,
+        timePeriod: timeParams.timePeriod ?? timePeriod,
+        customDaysBack: timeParams.customDaysBack ?? customDaysBack,
+        customStartDate: timeParams.customStartDate ?? customStartDate,
+        customEndDate: timeParams.customEndDate ?? customEndDate,
+        selectedUserId: "",
+        selectedRoleId: "",
+        serverChartSort, serverLeaderboardSort, userChartSort, userLeaderboardSort
+      };
+      prevFiltersRef.current = JSON.stringify(resolvedFilters);
+
+      // fetch data ONCE, using the resolved params directly (not stale state)
+      await fetchDataWithParams(timeParams);
+    };
+
+    initializeServer();
   }, [currentServer, hasAccess]);
 
   // Fetch stats when filters change
   useEffect(() => {
-    if (!currentServer || !hasAccess) return;
+    if (!currentServer || !hasAccess || !initialLoadComplete) return;
     
     const currentFilters = JSON.stringify({
       selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
@@ -940,7 +1216,8 @@ const ActivityDashboard = () => {
   }, [
     selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
     selectedUserId, selectedRoleId,
-    serverChartSort, serverLeaderboardSort, userChartSort, userLeaderboardSort
+    serverChartSort, serverLeaderboardSort, userChartSort, userLeaderboardSort,
+    initialLoadComplete
   ]);
 
   // Filter users when search changes
@@ -1005,8 +1282,22 @@ const ActivityDashboard = () => {
     return { startDate, endDate };
   };
 
+  // FIX: fetchData now guards against overlapping calls for the exact same
+  // filter combination (e.g. a rapid double-trigger from a fast filter
+  // change, or an overlapping effect re-run) by tracking an in-flight key.
+  // This is a defense-in-depth measure on top of the single-init-effect fix
+  // above — it stops a burst of duplicate requests even if something in the
+  // future causes this component to re-render/re-init in quick succession.
   const fetchData = async () => {
     if (!currentServer || !hasAccess) return;
+
+    const requestKey = JSON.stringify({
+      selectedView, timePeriod, customDaysBack, customStartDate, customEndDate,
+      selectedUserId, selectedRoleId,
+      serverChartSort, serverLeaderboardSort, userChartSort, userLeaderboardSort
+    });
+    if (inFlightFetchKeyRef.current === requestKey) return; // already fetching this exact combination
+    inFlightFetchKeyRef.current = requestKey;
     
     setLoading(true);
     setApiError(null);
@@ -1055,11 +1346,49 @@ const ActivityDashboard = () => {
     } finally {
       setLoading(false);
       fetchedRef.current = true;
+      setInitialLoadComplete(true);
+      if (inFlightFetchKeyRef.current === requestKey) {
+        inFlightFetchKeyRef.current = null;
+      }
     }
   };
 
-  // FIXED: fetchServerData
+  // fetchServerData
   const fetchServerData = async (requestBody) => {
+    if (!requestBody) {
+      // Use current state if no requestBody provided
+      const { startDate, endDate } = getDateRange();
+      const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
+      
+      requestBody = {
+        guild_id: currentServer.id,
+        role_filter_ids: roleFilterArray
+      };
+      
+      if (startDate && endDate) {
+        requestBody.start_time = startDate.toISOString();
+        requestBody.end_time = endDate.toISOString();
+        
+        if (timePeriod !== "custom-range") {
+          if (timePeriod === "custom-lookback" && customDaysBack) {
+            requestBody.days = parseInt(customDaysBack);
+          } else if (timePeriod !== "custom-lookback" && timePeriod !== "all") {
+            requestBody.days = parseInt(timePeriod);
+          } else if (timePeriod === "all") {
+            requestBody.days = 2000;
+          }
+        }
+      } else {
+        if (timePeriod === "all") {
+          requestBody.days = 2000;
+        } else if (timePeriod === "custom-lookback" && customDaysBack) {
+          requestBody.days = parseInt(customDaysBack);
+        } else if (timePeriod !== "custom-lookback") {
+          requestBody.days = parseInt(timePeriod);
+        }
+      }
+    }
+    
     const isPublic = isPublicMode;
     
     const cacheKey = getCacheKey('server', currentServer.id, {
@@ -1084,28 +1413,7 @@ const ActivityDashboard = () => {
       return;
     }
     
-    const getDaysValue = () => {
-      if (requestBody.days) return requestBody.days;
-      if (timePeriod === "all") return 2000;
-      if (timePeriod === "custom-lookback" && customDaysBack) return parseInt(customDaysBack);
-      if (timePeriod !== "custom-lookback" && timePeriod !== "custom-range") return parseInt(timePeriod);
-      return 30;
-    };
-    
-    const createCategoryRequestBody = (category) => {
-      return {
-        guild_id: requestBody.guild_id,
-        category: category,
-        days: getDaysValue(),
-        sort_by: serverLeaderboardSort,
-        role_filter_ids: requestBody.role_filter_ids,
-        start_time: requestBody.start_time,
-        end_time: requestBody.end_time
-      };
-    };
-
     try {
-      // ✅ FIXED: Use direct URLs for all endpoints
       const timeSeriesUrl = isPublic 
         ? `${API_BASE_URL}/api/public/activity/server/timeseries`
         : `${API_BASE_URL}/api/activity/server/timeseries`;
@@ -1116,7 +1424,7 @@ const ActivityDashboard = () => {
         credentials: isPublic ? 'omit' : 'include',
         body: JSON.stringify({
           guild_id: requestBody.guild_id,
-          days: getDaysValue(),
+          days: requestBody.days,
           role_filter_ids: requestBody.role_filter_ids,
           start_time: requestBody.start_time,
           end_time: requestBody.end_time,
@@ -1140,7 +1448,7 @@ const ActivityDashboard = () => {
         credentials: isPublic ? 'omit' : 'include',
         body: JSON.stringify({
           guild_id: requestBody.guild_id,
-          days: getDaysValue(),
+          days: requestBody.days,
           sort_by: serverChartSort,
           role_filter_ids: requestBody.role_filter_ids,
           start_time: requestBody.start_time,
@@ -1174,7 +1482,15 @@ const ActivityDashboard = () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: isPublic ? 'omit' : 'include',
-          body: JSON.stringify(createCategoryRequestBody(category))
+          body: JSON.stringify({
+            guild_id: requestBody.guild_id,
+            category: category,
+            days: requestBody.days,
+            sort_by: serverLeaderboardSort,
+            role_filter_ids: requestBody.role_filter_ids,
+            start_time: requestBody.start_time,
+            end_time: requestBody.end_time
+          })
         });
         
         if (response.ok) {
@@ -1202,9 +1518,44 @@ const ActivityDashboard = () => {
     }
   };
 
-  // FIXED: fetchUserData - Gets username using any-table endpoint
+  // fetchUserData
   const fetchUserData = async (requestBody) => {
     if (!selectedUserId) return;
+    
+    if (!requestBody) {
+      // Use current state if no requestBody provided
+      const { startDate, endDate } = getDateRange();
+      const roleFilterArray = selectedRoleId ? [String(selectedRoleId)] : null;
+      
+      requestBody = {
+        guild_id: currentServer.id,
+        role_filter_ids: roleFilterArray
+      };
+      
+      if (startDate && endDate) {
+        requestBody.start_time = startDate.toISOString();
+        requestBody.end_time = endDate.toISOString();
+        
+        if (timePeriod !== "custom-range") {
+          if (timePeriod === "custom-lookback" && customDaysBack) {
+            requestBody.days = parseInt(customDaysBack);
+          } else if (timePeriod !== "custom-lookback" && timePeriod !== "all") {
+            requestBody.days = parseInt(timePeriod);
+          } else if (timePeriod === "all") {
+            requestBody.days = 2000;
+          }
+        }
+      } else {
+        if (timePeriod === "all") {
+          requestBody.days = 2000;
+        } else if (timePeriod === "custom-lookback" && customDaysBack) {
+          requestBody.days = parseInt(customDaysBack);
+        } else if (timePeriod !== "custom-lookback") {
+          requestBody.days = parseInt(timePeriod);
+        }
+      }
+    }
+    
     const isPublic = isPublicMode;
     
     const cacheKey = getCacheKey('user', selectedUserId, {
@@ -1230,30 +1581,8 @@ const ActivityDashboard = () => {
       return;
     }
     
-    // Get basic user info using any-table endpoint
     const userProfile = await fetchUserBasicInfo(selectedUserId, currentServer.id, isPublic);
     
-    const getDaysValue = () => {
-      if (requestBody.days) return requestBody.days;
-      if (timePeriod === "all") return 2000;
-      if (timePeriod === "custom-lookback" && customDaysBack) return parseInt(customDaysBack);
-      if (timePeriod !== "custom-lookback" && timePeriod !== "custom-range") return parseInt(timePeriod);
-      return 30;
-    };
-    
-    const createUserCategoryRequestBody = (category) => {
-      return {
-        guild_id: requestBody.guild_id,
-        user_id: selectedUserId,
-        category: category,
-        days: getDaysValue(),
-        sort_by: userLeaderboardSort,
-        role_filter_ids: requestBody.role_filter_ids,
-        start_time: requestBody.start_time,
-        end_time: requestBody.end_time
-      };
-    };
-
     try {
       const timeSeriesUrl = isPublic 
         ? `${API_BASE_URL}/api/public/activity/user/timeseries`
@@ -1266,7 +1595,7 @@ const ActivityDashboard = () => {
         body: JSON.stringify({
           guild_id: requestBody.guild_id,
           user_id: selectedUserId,
-          days: getDaysValue(),
+          days: requestBody.days,
           role_filter_ids: requestBody.role_filter_ids,
           start_time: requestBody.start_time,
           end_time: requestBody.end_time,
@@ -1291,7 +1620,7 @@ const ActivityDashboard = () => {
         body: JSON.stringify({
           guild_id: requestBody.guild_id,
           user_id: selectedUserId,
-          days: getDaysValue(),
+          days: requestBody.days,
           sort_by: userChartSort,
           role_filter_ids: requestBody.role_filter_ids,
           start_time: requestBody.start_time,
@@ -1325,7 +1654,16 @@ const ActivityDashboard = () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: isPublic ? 'omit' : 'include',
-          body: JSON.stringify(createUserCategoryRequestBody(category))
+          body: JSON.stringify({
+            guild_id: requestBody.guild_id,
+            user_id: selectedUserId,
+            category: category,
+            days: requestBody.days,
+            sort_by: userLeaderboardSort,
+            role_filter_ids: requestBody.role_filter_ids,
+            start_time: requestBody.start_time,
+            end_time: requestBody.end_time
+          })
         });
         
         if (response.ok) {
@@ -1373,6 +1711,7 @@ const ActivityDashboard = () => {
     setRoleSearch(tempRoleSearch);
     setShowApplyButton(false);
     setShowRoleDropdown(false);
+    serverDataCache.clearPattern('server');
   };
 
   const clearRoleFilter = () => {
@@ -1381,12 +1720,14 @@ const ActivityDashboard = () => {
     setTempRoleId("");
     setTempRoleSearch("");
     setShowApplyButton(false);
+    serverDataCache.clearPattern('server');
   };
 
   const handleUserSelect = (user) => {
     setSelectedUserId(user.id);
     setUserSearch(user.global_name || user.username || user.name || `User ${user.id}`);
     setShowUserDropdown(false);
+    serverDataCache.clearPattern('user');
     fetchData();
   };
 
@@ -1568,6 +1909,11 @@ const ActivityDashboard = () => {
       border-color: #aa00ff;
       box-shadow: 0 0 0 3px rgba(170, 0, 255, 0.15);
     }
+
+    .retention-banner { width:100%; box-sizing:border-box; background:linear-gradient(135deg,#3a2f00 0%,#4a3a00 100%); border-bottom:1px solid #ffcc00; padding:12px 24px; display:flex; align-items:center; justify-content:center; gap:16px; position:relative; }
+    .retention-banner-text { color:#ffe066; font-size:14px; font-weight:500; text-align:center; max-width:900px; }
+    .retention-banner-close { background:none; border:none; color:#ffe066; font-size:14px; cursor:pointer; padding:4px 8px; border-radius:6px; line-height:1; flex-shrink:0; transition:background-color 0.15s,color 0.15s; }
+    .retention-banner-close:hover { background-color:rgba(255,224,102,0.15); color:#fff; }
 
     .custom-date-range, .custom-lookback {
       display: flex;
@@ -2498,7 +2844,7 @@ const ActivityDashboard = () => {
                 )}
               </div>
               
-              {/* Server View - Includes ALL activity leaderboards */}
+              {/* Server View - Includes ALL activity leaderboards (no pie charts) */}
               {selectedView === 'server' && (
                 <>
                   <div className="charts-section">
@@ -2830,7 +3176,7 @@ const ActivityDashboard = () => {
                 </>
               )}
               
-              {/* User View - Includes ALL user activity leaderboards */}
+              {/* User View - Includes ALL user activity leaderboards (no pie charts) */}
               {selectedView === 'user' && (
                 <>
                   {!selectedUserId ? (
@@ -3242,10 +3588,22 @@ const ActivityDashboard = () => {
     );
   }
 
-  // Authenticated user with access - full dashboard with ALL leaderboards
+  // Authenticated user with access - full dashboard with ALL leaderboards (no pie charts)
   return (
     <>
       <NavBar />
+      {retentionAlert && !retentionDismissed && (
+        <div className="retention-banner">
+          <span className="retention-banner-text">⚠️ {retentionAlert.message}</span>
+          <button
+            className="retention-banner-close"
+            onClick={() => setRetentionDismissed(true)}
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div className="dashboard-page">
         <DashboardSidebar 
           currentServerId={currentServer?.id} 
@@ -3430,7 +3788,7 @@ const ActivityDashboard = () => {
               )}
             </div>
             
-            {/* Server View - Includes ALL activity leaderboards */}
+            {/* Server View - Includes ALL activity leaderboards (no pie charts) */}
             {selectedView === 'server' && (
               <>
                 <div className="charts-section">
@@ -3583,7 +3941,7 @@ const ActivityDashboard = () => {
               </>
             )}
             
-            {/* User View - Includes ALL user activity leaderboards */}
+            {/* User View - Includes ALL user activity leaderboards (no pie charts) */}
             {selectedView === 'user' && (
               <>
                 {!selectedUserId ? (

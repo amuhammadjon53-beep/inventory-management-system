@@ -55,9 +55,11 @@ const CommandsPage = () => {
     "Charts",
     "Emoji Statistics",
     "Status Activity Tracking",
+    "Mentions Tracking",
     "Invite Tracking",
     "Fun Statistics",
-    "Performance Tracking",
+    "Averages",
+    "Distribution",
     "Growth Monitoring",
     "Optimization"
   ];
@@ -67,6 +69,8 @@ const CommandsPage = () => {
     { name: "help", prefixShortcut: "", description: "Display the help menu", category: "Starter" },
     { name: "links", prefixShortcut: "bot invite, support", description: "Get the most important links regarding the bot.", category: "Starter" },
     { name: "get id", prefixShortcut: "", description: "Get the id of your account, server, channel, category, or role", category: "Starter" },
+    { name: "vote", prefixShortcut: "voting, topgg", description: "Get the link to vote for the bot on top.gg", category: "Starter" },
+    { name: "feedback", prefixShortcut: "fb, suggest, bugreport", description: "Submit a suggestion or a bug report directly to the developers", category: "Starter" },
 
     // Basic Stats
     { name: "user stats", prefixShortcut: "u", description: "Get a user's message and voice activity stats", category: "Basic Stats" },
@@ -78,7 +82,6 @@ const CommandsPage = () => {
     { name: "leaderboard server", prefixShortcut: "ls", description: "Display a leaderboard showcasing the top users, channels and categories based on either message or voice activity stats", category: "Leaderboards" },
     { name: "leaderboard channel", prefixShortcut: "lch", description: "Display a leaderboard showcasing the top users in a specific channel based on either message or voice activity stats", category: "Leaderboards" },
     { name: "leaderboard category", prefixShortcut: "lca", description: "Display a leaderboard showcasing the top users and top channels in a specific category based on either message or voice activity stats", category: "Leaderboards" },
-    { name: "leaderboard mentions", prefixShortcut: "lm", description: "Display a leaderboard showcasing the top users that mentioned a specific user", category: "Leaderboards" },
     { name: "leaderboard role", prefixShortcut: "lr", description: "Display the top roles in the server, channel or category based on messages, voice activity or invites", category: "Leaderboards" },
 
     // Charts
@@ -98,7 +101,13 @@ const CommandsPage = () => {
     { name: "status activity user", prefixShortcut: "au", description: "Display a user's top activities based on time spent and sessions", category: "Status Activity Tracking" },
     { name: "status activity server", prefixShortcut: "as", description: "Display a server's top activities based on time spent, sessions or users", category: "Status Activity Tracking" },
     { name: "status activity whos", prefixShortcut: "aw", description: "Find the top users that are currently doing a specific activity", category: "Status Activity Tracking" },
-    { name: "status activity leaderboard", prefixShortcut: "al", description: "Display a leaderboard showcasing the top activities in a server based on time spent, sessions or users", category: "Status Activity Tracking" },
+    { name: "status activity leaderboard", prefixShortcut: "al", description: "Display a leaderboard showcasing the top activities in a server based on time spent, sessions or users, or view a specific user's top activities", category: "Status Activity Tracking" },
+    { name: "status activity streak", prefixShortcut: "sas", description: "Display the top activity streaks per category for the server, or view a specific user's activity streaks", category: "Status Activity Tracking" },
+
+    // Mentions Tracking
+    { name: "mentions leaderboard", prefixShortcut: "ml", description: "Display a leaderboard showcasing the top users based on mentions sent or received, in the server, a channel, a category, or of a specific user", category: "Mentions Tracking" },
+    { name: "mentions ratios leaderboard", prefixShortcut: "mrl", description: "Display a leaderboard showcasing the top users by mentions ratio (received vs sent), optionally filtered by channel or category", category: "Mentions Tracking" },
+    { name: "mentions ratio", prefixShortcut: "mr", description: "Display a user's mentions ratio, comparing mentions received to mentions sent", category: "Mentions Tracking" },
 
     // Invite Tracking
     { name: "invite stats", prefixShortcut: "is", description: "Display a user's invite stats", category: "Invite Tracking" },
@@ -109,10 +118,15 @@ const CommandsPage = () => {
     { name: "ship compatability", prefixShortcut: "sh", description: "Get a compatability score based on the mentions, activity overlap, shared channels, vc time spent, and the recent activity between two users", category: "Fun Statistics" },
     { name: "ship leaderboard", prefixShortcut: "sl", description: "Display a leaderboard showcasing the top ship scores in a server", category: "Fun Statistics" },
 
-    // Performance Tracking
-    { name: "average server", prefixShortcut: "avs", description: "Displays averages for statistics in a server", category: "Performance Tracking" },
-    { name: "average user", prefixShortcut: "avu", description: "Displays averages for a user's statistics", category: "Performance Tracking" },
-    { name: "distribution", prefixShortcut: "d", description: "Displays per hour distribution in a server for messages, voice activity or invites", category: "Performance Tracking" },
+    // Averages
+    { name: "average server", prefixShortcut: "avs", description: "Displays averages for statistics in a server", category: "Averages" },
+    { name: "average user", prefixShortcut: "avu", description: "Displays averages for a user's statistics", category: "Averages" },
+
+    // Distribution
+    { name: "distribution server", prefixShortcut: "ds", description: "Displays a server-wide hourly activity distribution clock chart for messages, voice activity, activities, emoji usage, mentions, invites, joins or leaves", category: "Distribution" },
+    { name: "distribution channel", prefixShortcut: "dc", description: "Displays an hourly activity distribution clock chart for a specific channel, defaults to the current channel", category: "Distribution" },
+    { name: "distribution category", prefixShortcut: "dca", description: "Displays an hourly activity distribution clock chart for a specific category", category: "Distribution" },
+    { name: "distribution user", prefixShortcut: "du", description: "Displays an hourly activity distribution clock chart for a specific user, defaults to yourself", category: "Distribution" },
 
     // Growth Monitoring
     { name: "growth role", prefixShortcut: "gr", description: "Displays a chart representing the growth of a role based on additions or removals", category: "Growth Monitoring" },
@@ -121,6 +135,7 @@ const CommandsPage = () => {
     // Optimization
     { name: "reset server", prefixShortcut: "rs", description: "Reset statistics in a server", category: "Optimization" },
     { name: "reset user", prefixShortcut: "ru", description: "Reset a user's statistics in a server", category: "Optimization" },
+    { name: "reset schedules", prefixShortcut: "", description: "View and delete scheduled resets for the server (Admin only)", category: "Optimization" }, // NEW COMMAND
     { name: "settings server", prefixShortcut: "set", description: "Displays the server settings menu", category: "Optimization" }, // RENAMED
     { name: "settings user", prefixShortcut: "setu", description: "Displays the user settings menu for personal preferences and configurations", category: "Optimization" }, // NEW COMMAND
     { name: "blacklist menu", prefixShortcut: "bm", description: "Displays the blacklist menu for excluding users, channels, categories and roles from statistics", category: "Optimization" },

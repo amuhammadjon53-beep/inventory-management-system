@@ -21,6 +21,7 @@ class RateLimitType(Enum):
 
     # Soft-capped types (can borrow unused quota from hard-capped types,
     # but still must respect global 50 req/s ceiling)
+    HISTORYSYNC = "historysync"          # Target: 1 req/s
     MESSAGE = "message"                  # Target: 10 req/s
     MESSAGE_WITH_HASH = "message_with_hash"  # Target: 10 req/s
 
@@ -49,6 +50,9 @@ RATE_LIMIT_CONFIGS: Dict[RateLimitType, RateLimitConfig] = {
     ),
     RateLimitType.API: RateLimitConfig(
         name="api", max_rate=5.0, is_hard_cap=True, priority=0, burst_multiplier=1.0
+    ),
+    RateLimitType.HISTORYSYNC: RateLimitConfig(
+        name="historysync", max_rate=1.0, is_hard_cap=False, priority=1, burst_multiplier=1.0
     ),
     RateLimitType.MESSAGE: RateLimitConfig(
         name="message", max_rate=10.0, is_hard_cap=False, priority=2, burst_multiplier=1.5
@@ -131,7 +135,7 @@ class RateLimiter:
 
     All traffic respects the global 50 req/s ceiling.
     Hard-capped types (autoroles, counters, syncing, api) never exceed their individual limits.
-    Soft-capped types (message, message_with_hash) can borrow unused quota from hard-capped types,
+    Soft-capped types (historysync, message, message_with_hash) can borrow unused quota from hard-capped types,
     but still cannot exceed the global 50 req/s ceiling.
     """
 
@@ -183,7 +187,7 @@ class RateLimiter:
         Calculate how much of the global quota is available for soft-capped types.
 
         Soft-capped types can use:
-        - Unused quota from hard-capped types (their reserved 24 req/s that isn't being used)
+        - Unused quota from hard-capped types (their reserved capacity that isn't being used)
         - But cannot exceed the global ceiling of 50 req/s total across all traffic
 
         Returns: Available requests per second for soft-capped types
@@ -203,7 +207,7 @@ class RateLimiter:
         # What percentage of hard-cap capacity is currently being used?
         hard_utilisation = hard_cap_tokens_used / hard_cap_total_capacity
 
-        # How many req/s of the reserved 24 are actually being used?
+        # How many req/s of the reserved total are actually being used?
         hard_in_use_rate = hard_utilisation * _HARD_CAP_TOTAL
 
         # Unused hard-cap quota = reserved total - what's actually in use

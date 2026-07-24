@@ -1,11 +1,105 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Settings } from 'lucide-react';
+import { Settings, Check, ShoppingCart } from 'lucide-react';
 import NavBar from '../Components/NavBar.jsx';
 import Footer from '../Components/Footer.jsx';
 
+const API_URL = window.location.origin;
+
 const PremiumPage = () => {
+  const [cartState, setCartState] = useState({});
+  const [animatedButton, setAnimatedButton] = useState(null);
   const [billingCycle, setBillingCycle] = useState('monthly');
+  const [loadingButton, setLoadingButton] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [user, setUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // Check auth status on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const response = await fetch(`${API_URL}/api/auth/status`, {
+          credentials: 'include',
+          headers: { 'Cache-Control': 'no-cache' }
+        });
+        if (!response.ok) throw new Error('Auth check failed');
+        const data = await response.json();
+        if (data.authenticated) {
+          setUser(data.user);
+        } else {
+          setUser(null);
+        }
+      } catch {
+        setUser(null);
+      } finally {
+        setAuthChecked(true);
+      }
+    };
+    checkAuth();
+  }, []);
+
+  const redirectToDiscordLogin = () => {
+    const clientId = import.meta.env.VITE_CLIENT_ID || '1481328229909270568';
+    const redirectUri = encodeURIComponent(
+      import.meta.env.VITE_DISCORD_REDIRECT_URI || 'https://statshq.xyz/api/auth/discord/callback'
+    );
+    const currentOrigin = encodeURIComponent(window.location.origin);
+    window.location.href = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=identify%20guilds%20guilds.members.read&state=${currentOrigin}`;
+  };
+
+  const handleAddToCart = async (mod) => {
+    // If not logged in, redirect to Discord auth
+    if (!user) {
+      redirectToDiscordLogin();
+      return;
+    }
+
+    // Already in cart — do nothing
+    if (cartState[mod.id]) return;
+
+    setLoadingButton(mod.id);
+    setErrorMessage(null);
+
+    const monthly = mod.monthlyPrice;
+    // Yearly = 2 months free: pay for 10 months, covered for 12.
+    const yearlyEffectiveMonthly = (monthly * 10) / 12;
+    const price = billingCycle === 'monthly' ? monthly : yearlyEffectiveMonthly;
+
+    try {
+      const response = await fetch(`${API_URL}/api/cart/add`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_type: 'module',
+          item_id: mod.id,
+          billing_cycle: billingCycle,
+          price_usd: parseFloat(price.toFixed(2))
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || data.detail || 'Failed to add to cart');
+      }
+
+      // Success — trigger animation then mark as added
+      setAnimatedButton(mod.id);
+      setTimeout(() => {
+        setCartState(prev => ({ ...prev, [mod.id]: true }));
+        setLoadingButton(null);
+      }, 150);
+      setTimeout(() => setAnimatedButton(null), 1000);
+
+    } catch (err) {
+      setLoadingButton(null);
+      setErrorMessage({ id: mod.id, text: err.message });
+      // Clear error after 4 seconds
+      setTimeout(() => setErrorMessage(null), 4000);
+    }
+  };
 
   const modules = [
     {
@@ -15,26 +109,47 @@ const PremiumPage = () => {
       icon: <Settings size={28} color="#aa00ff" />,
       features: [
         {
-          group: 'Storage',
+          group: 'Tracking & Reset Automation',
           items: [
-            'Upgraded time limit on data storage: From 6 months to indefinite storing',
-            'Can enable simultaneous tracking for more than 4 stat types',
+            {
+              title: 'Expanded Stat Type Tracking',
+              desc: 'Track more than 4 stat types simultaneously',
+            },
+            {
+              title: 'Scheduled Stat Resets',
+              desc: 'Set custom, automated schedules to reset server statistics',
+            },
+            {
+              title: 'Custom Default Time Periods',
+              desc: 'Filter and analyze your stats across a custom defualt time period',
+            },
           ],
         },
         {
-          group: 'Reset & Sync',
+          group: 'Historical Data Syncing',
           items: [
-            'Access to scheduled resetting of stats',
-            'Can set a custom default time period',
-            'Can sync multiple stat types simultaneously in the history data sync',
-            'Can use the history data sync multiple times on the same server',
+            {
+              title: 'Multi-Stat History Sync',
+              desc: 'Sync historical data across multiple stat types concurrently',
+            },
+            {
+              title: 'Unlimited History Backfills',
+              desc: 'Run the historical data sync feature multiple times per server',
+            },
+          ],
+        },
+        {
+          group: 'Retention & Storage',
+          items: [
+            {
+              title: 'Indefinite Data Retention',
+              desc: 'Retain and access historical server data forever (upgraded from 6 months)',
+            },
           ],
         },
       ],
     },
   ];
-
-  const YEARLY_DISCOUNT = 0.17;
 
   return (
     <>
@@ -66,25 +181,32 @@ const PremiumPage = () => {
               Monthly
             </button>
             <button
-              className={`toggle-btn ${billingCycle === 'yearly' ? 'active' : ''}`}
+              className={`toggle-btn yearly-btn ${billingCycle === 'yearly' ? 'active' : ''}`}
               onClick={() => setBillingCycle('yearly')}
             >
               Yearly
-              <span className="discount-badge">-17%</span>
+              <span className="discount-badge">2 months free</span>
             </button>
           </div>
 
           {/* Module cards */}
           <div className="modules-grid">
             {modules.map((mod) => {
+              const added = cartState[mod.id];
+              const isAnimating = animatedButton === mod.id;
+              const isLoading = loadingButton === mod.id;
+              const hasError = errorMessage?.id === mod.id;
+
               const monthly = mod.monthlyPrice;
-              const yearlyEffectiveMonthly = monthly * (1 - YEARLY_DISCOUNT);
-              const yearlyTotal = yearlyEffectiveMonthly * 10;
+              // Yearly = 2 months free: total billed is monthly * 10,
+              // and the displayed "per month" rate is that total spread over 12 months.
+              const yearlyTotal = monthly * 10;
+              const yearlyEffectiveMonthly = yearlyTotal / 12;
 
               const displayPrice = billingCycle === 'monthly' ? monthly : yearlyEffectiveMonthly;
               const footnote = billingCycle === 'monthly'
-                ? `Billed $${monthly.toFixed(2)} monthly, excluding VAT`
-                : `Billed $${yearlyTotal.toFixed(2)} yearly, excluding VAT`;
+                ? `Billed $${monthly.toFixed(2)} monthly, including VAT`
+                : `Billed $${yearlyTotal.toFixed(2)} yearly, including VAT`;
 
               return (
                 <div key={mod.id} className="module-card">
@@ -110,7 +232,10 @@ const PremiumPage = () => {
                           {group.items.map((item, i) => (
                             <li key={i} className="feature-item">
                               <span className="feature-bullet">✦</span>
-                              <span>{item}</span>
+                              <span>
+                                <strong className="feature-title">{item.title}:</strong>{' '}
+                                {item.desc}
+                              </span>
                             </li>
                           ))}
                         </ul>
@@ -121,12 +246,60 @@ const PremiumPage = () => {
                   <div className="module-divider" />
 
                   <div className="module-footer">
-                    <button className="coming-soon-btn" disabled>
-                      <span className="coming-soon-dots">
-                        <span /><span /><span />
-                      </span>
-                      Coming Soon
-                    </button>
+                    <div className={`cart-action ${added ? 'is-added' : ''} ${isAnimating ? 'is-animating' : ''}`}>
+                      <button
+                        className={`add-to-cart-btn ${isLoading ? 'is-loading' : ''}`}
+                        onClick={() => handleAddToCart(mod)}
+                        disabled={added || isLoading}
+                      >
+                        {isLoading ? (
+                          <>
+                            <span className="btn-text">Adding...</span>
+                            <span className="btn-spinner" />
+                          </>
+                        ) : !user && authChecked ? (
+                          <>
+                            <span className="btn-text">Log in to Purchase</span>
+                            <ShoppingCart size={18} className="btn-icon" />
+                          </>
+                        ) : (
+                          <>
+                            <span className="btn-text">Add to Cart</span>
+                            <ShoppingCart size={18} className="btn-icon" />
+                          </>
+                        )}
+                      </button>
+
+                      <div className="added-message-wrapper">
+                        <div className="added-message-icon">
+                          <Check size={16} strokeWidth={3} />
+                        </div>
+                        <p className="added-message">
+                          Added to{' '}
+                          <a href="/My Cart/index.html" className="cart-link">
+                            My Cart
+                          </a>
+                        </p>
+                      </div>
+
+                      {/* Flying particles burst */}
+                      {isAnimating && (
+                        <div className="burst">
+                          {Array.from({ length: 8 }).map((_, i) => (
+                            <span
+                              key={i}
+                              className="burst-particle"
+                              style={{ '--angle': `${i * 45}deg` }}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Error message below button */}
+                    {hasError && (
+                      <p className="cart-error">{errorMessage.text}</p>
+                    )}
                   </div>
 
                   <p className="module-footnote">{footnote}</p>
@@ -139,6 +312,12 @@ const PremiumPage = () => {
           <p className="page-footnote">
             All prices are in USD. Multi-server discounts are available for users
             planning to purchase a module for multiple servers.
+          </p>
+
+          {/* Learn more side note */}
+          <p className="learn-more-note">
+            Curious on how the billing system, modules and discounts work? Learn more {' '}
+            <a href="/docs/?page=modules" className="learn-more-link">here</a>.
           </p>
 
         </div>
@@ -307,10 +486,15 @@ const PremiumPage = () => {
           gap: 8px;
           min-width: 110px;
           justify-content: center;
+          white-space: nowrap;
         }
 
         .toggle-btn.active {
           color: #ffffff;
+        }
+
+        .toggle-btn.yearly-btn {
+          padding-left: 72px;
         }
 
         .discount-badge {
@@ -321,6 +505,7 @@ const PremiumPage = () => {
           border-radius: 6px;
           color: #ffffff;
           transition: background 0.25s ease, color 0.25s ease;
+          white-space: nowrap;
         }
 
         .toggle-btn:not(.active) .discount-badge {
@@ -483,6 +668,11 @@ const PremiumPage = () => {
           transform: translateX(2px);
         }
 
+        .feature-title {
+          color: #e6e6e6;
+          font-weight: 600;
+        }
+
         .feature-bullet {
           color: #aa00ff;
           font-size: 11px;
@@ -500,45 +690,205 @@ const PremiumPage = () => {
           z-index: 1;
         }
 
-        /* ── Coming Soon button ── */
-        .coming-soon-btn {
+        .cart-action {
+          position: relative;
           width: 100%;
-          padding: 12px 28px;
-          background: #1a1a24;
-          border: 1px solid #2c2f3a;
-          border-radius: 8px;
-          color: #555870;
-          font-size: 15px;
-          font-weight: 600;
-          letter-spacing: 0.3px;
-          cursor: not-allowed;
+          min-height: 48px;
           display: flex;
           align-items: center;
           justify-content: center;
-          gap: 10px;
         }
 
-        .coming-soon-dots {
+        .add-to-cart-btn {
+          position: relative;
+          padding: 12px 28px;
+          background: linear-gradient(135deg, #aa00ff 0%, #7700cc 100%);
+          color: #ffffff;
+          font-size: 15px;
+          font-weight: 600;
+          border: none;
+          border-radius: 8px;
+          cursor: pointer;
+          overflow: hidden;
+          letter-spacing: 0.3px;
           display: flex;
           align-items: center;
-          gap: 4px;
+          gap: 8px;
+          width: 100%;
+          justify-content: center;
+          transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+                      box-shadow 0.25s ease,
+                      background 0.25s ease,
+                      opacity 0.25s ease;
         }
 
-        .coming-soon-dots span {
-          width: 5px;
-          height: 5px;
+        .add-to-cart-btn:hover:not(:disabled) {
+          transform: translateY(-2px) scale(1.01);
+          box-shadow: 0 6px 24px rgba(170, 0, 255, 0.45);
+          background: linear-gradient(135deg, #bb33ff 0%, #9900ee 100%);
+        }
+
+        .add-to-cart-btn:active:not(:disabled) {
+          transform: translateY(0) scale(0.98);
+        }
+
+        .add-to-cart-btn:disabled:not(.is-loading) {
+          cursor: not-allowed;
+          opacity: 0.7;
+        }
+
+        .add-to-cart-btn.is-loading {
+          cursor: wait;
+          opacity: 0.85;
+        }
+
+        .btn-icon {
+          transition: transform 0.3s ease;
+        }
+
+        .add-to-cart-btn:hover .btn-icon {
+          transform: translateX(3px) rotate(-8deg);
+        }
+
+        /* Spinner for loading state */
+        .btn-spinner {
+          width: 16px;
+          height: 16px;
+          border: 2px solid rgba(255, 255, 255, 0.3);
+          border-top-color: #ffffff;
           border-radius: 50%;
-          background: #3a3d50;
-          animation: dotPulse 1.4s ease-in-out infinite;
+          animation: spin 0.7s linear infinite;
+          flex-shrink: 0;
         }
 
-        .coming-soon-dots span:nth-child(1) { animation-delay: 0s; }
-        .coming-soon-dots span:nth-child(2) { animation-delay: 0.2s; }
-        .coming-soon-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
 
-        @keyframes dotPulse {
-          0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
-          40% { opacity: 1; transform: scale(1.15); background: #aa00ff; }
+        /* When clicked: punch + fly out */
+        .cart-action.is-animating .add-to-cart-btn {
+          animation: btnLaunch 0.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
+
+        @keyframes btnLaunch {
+          0% { transform: scale(1) translateY(0); opacity: 1; }
+          30% { transform: scale(1.06) translateY(0); opacity: 1; }
+          60% { transform: scale(0.85) translateY(-14px); opacity: 0.4; }
+          100% { transform: scale(0.7) translateY(-22px); opacity: 0; }
+        }
+
+        .added-message-wrapper {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+          opacity: 0;
+          transform: scale(0.85) translateY(10px);
+          pointer-events: none;
+          transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+
+        .cart-action.is-added .added-message-wrapper {
+          opacity: 1;
+          transform: scale(1) translateY(0);
+          transition: opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+                      transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .cart-action.is-added .add-to-cart-btn {
+          display: none;
+        }
+
+        .added-message-icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 32px;
+          height: 32px;
+          background: linear-gradient(135deg, #aa00ff, #7700cc);
+          border-radius: 50%;
+          color: white;
+          flex-shrink: 0;
+          box-shadow: 0 0 0 0 rgba(170, 0, 255, 0.5);
+        }
+
+        .cart-action.is-added .added-message-icon {
+          animation: checkPulse 0.6s ease-out 0.3s;
+        }
+
+        @keyframes checkPulse {
+          0% { transform: scale(0.4); box-shadow: 0 0 0 0 rgba(170, 0, 255, 0.6); }
+          50% { transform: scale(1.15); box-shadow: 0 0 0 10px rgba(170, 0, 255, 0); }
+          100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(170, 0, 255, 0); }
+        }
+
+        .added-message {
+          font-size: 15px;
+          font-weight: 500;
+          color: #b0b0b0;
+          margin: 0;
+        }
+
+        .cart-link {
+          color: #aa00ff;
+          text-decoration: none;
+          font-weight: 600;
+          transition: text-shadow 0.2s ease, color 0.2s ease;
+        }
+
+        .cart-link:hover {
+          color: #bb33ff;
+          text-shadow: 0 0 10px rgba(170, 0, 255, 0.5);
+          text-decoration: underline;
+        }
+
+        /* Error message */
+        .cart-error {
+          font-size: 12px;
+          color: #ff6b6b;
+          text-align: center;
+          margin: 0;
+          animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(-4px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Particle burst on click */
+        .burst {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .burst-particle {
+          position: absolute;
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #aa00ff;
+          box-shadow: 0 0 8px rgba(170, 0, 255, 0.8);
+          opacity: 0;
+          animation: particleFly 0.7s ease-out forwards;
+          transform: rotate(var(--angle));
+        }
+
+        @keyframes particleFly {
+          0% {
+            opacity: 1;
+            transform: rotate(var(--angle)) translateX(0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: rotate(var(--angle)) translateX(60px) scale(0.3);
+          }
         }
 
         .module-footnote {
@@ -560,6 +910,27 @@ const PremiumPage = () => {
           max-width: 480px;
           margin-left: auto;
           margin-right: auto;
+        }
+
+        .learn-more-note {
+          margin-top: 20px;
+          font-size: 13px;
+          color: #6e7180;
+          text-align: center;
+          line-height: 1.6;
+        }
+
+        .learn-more-link {
+          color: #aa00ff;
+          text-decoration: none;
+          font-weight: 600;
+          transition: text-shadow 0.2s ease, color 0.2s ease;
+        }
+
+        .learn-more-link:hover {
+          color: #bb33ff;
+          text-shadow: 0 0 10px rgba(170, 0, 255, 0.5);
+          text-decoration: underline;
         }
 
         /* ── Responsive ── */

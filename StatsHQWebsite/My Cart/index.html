@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cart | StatsHQ</title>
+  <link rel="icon" type="image/png" href="/Stats%20logo.png">
+
+  <!-- Tailwind CSS -->
+  <link rel="stylesheet" href="/src/index.css" />
+
+  <!-- Paddle.js — must load before cart.jsx runs its useEffect -->
+  <script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+  <!-- React root -->
+  <div id="app"></div>
+
+  <!-- Page-specific JSX entry -->
+  <script type="module" src="/src/Pages/cart.jsx"></script>
+
+</body>
+</html>
