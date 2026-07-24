@@ -32,8 +32,14 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+CHART_STAT_TOGGLE_MAP = {
+    "messages": "track_messages",
+    "voice_activity": "track_voice",
+    "invites": "track_invites",
+}
 
 # DRAWING FUNCTIONS
+
 
 def draw_text_with_stroke(draw, position, text, font, text_color, stroke_color, stroke_width):
 
@@ -540,14 +546,23 @@ class ChartView(discord.ui.View):
             file = discord.File(final_image_bytes, filename='chart.png')
             self._update_buttons()
 
-            # Fetch retention alert
+            # Fetch retention alert + stat type warning
             _db_stats = self.cog.bot.get_cog('DatabaseStats')
             retention_alert = await _db_stats.maybe_get_retention_alert(self.guild_id) if _db_stats else None
 
+            required_stat = CHART_STAT_TOGGLE_MAP.get(self.current_selection)
+            stat_type_warning = await _db_stats.check_stat_types_enabled(
+                self.guild_id, [required_stat]
+            ) if (_db_stats and required_stat) else None
+
+            content_parts = [p for p in (
+                retention_alert, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
             if interaction:
-                await self._safe_edit_response(interaction, content=retention_alert, attachments=[file], view=self)
+                await self._safe_edit_response(interaction, content=content, attachments=[file], view=self)
             else:
-                await self._safe_send_or_edit(content=retention_alert, file=file, view=self)
+                await self._safe_send_or_edit(content=content, file=file, view=self)
 
         except Exception as e:
             print(f"\n❌❌❌ ERROR IN UPDATE_CHART: {e}")

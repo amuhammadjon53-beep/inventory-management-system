@@ -908,11 +908,20 @@ class AverageStats(commands.Cog):
                     self, start_time, end_time, days_back_equiv, display_text, user.id, period, using_server_default=True)
 
                 # Send the image
+                # Send the image
                 retention_alert_text = await self.db_cog.maybe_get_retention_alert(guild.id) if self.db_cog else None
+                stat_type_warning = await self.db_cog.check_stat_types_enabled(
+                    guild.id, ['track_messages', 'track_voice',
+                               'track_emojis', 'track_invites', 'track_status_activity']
+                ) if self.db_cog else None
+                content_parts = [p for p in (
+                    retention_alert_text, stat_type_warning) if p]
+                content = "\n".join(content_parts) if content_parts else None
+
                 if is_interaction:
-                    msg = await send_method(content=retention_alert_text, file=image_file, view=view)
+                    msg = await send_method(content=content, file=image_file, view=view)
                 else:
-                    msg = await send_method(content=retention_alert_text, file=image_file, view=view, delete_after=300)
+                    msg = await send_method(content=content, file=image_file, view=view, delete_after=300)
 
             except Exception as e:
                 print(f"Error generating user stats image: {e}")
@@ -1026,11 +1035,20 @@ class AverageStats(commands.Cog):
                     self, start_time, end_time, days_back_equiv, display_text, role_id, period, using_server_default=True)
 
                 # Send the image
+                # Send the image
                 retention_alert_text = await self.db_cog.maybe_get_retention_alert(guild.id) if self.db_cog else None
+                stat_type_warning = await self.db_cog.check_stat_types_enabled(
+                    guild.id, ['track_messages', 'track_voice',
+                               'track_emojis', 'track_invites', 'track_status_activity']
+                ) if self.db_cog else None
+                content_parts = [p for p in (
+                    retention_alert_text, stat_type_warning) if p]
+                content = "\n".join(content_parts) if content_parts else None
+
                 if is_interaction:
-                    msg = await send_method(content=retention_alert_text, file=image_file, view=view)
+                    msg = await send_method(content=content, file=image_file, view=view)
                 else:
-                    msg = await send_method(content=retention_alert_text, file=image_file, view=view, delete_after=300)
+                    msg = await send_method(content=content, file=image_file, view=view, delete_after=300)
 
             except Exception as e:
                 print(f"Error generating server stats image: {e}")
@@ -1834,7 +1852,14 @@ class AverageStats(commands.Cog):
             view = AverageServerStatsView(
                 self, start_time, end_time, days_back_equiv, display_text, None, "day", using_server_default=True)
             retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
-            await interaction.followup.send(content=retention_alert_text, file=image_file, view=view)
+            stat_type_warning = await self.db_cog.check_stat_types_enabled(
+                interaction.guild.id, ['track_messages', 'track_voice',
+                                       'track_emojis', 'track_invites', 'track_status_activity']
+            ) if self.db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+            await interaction.followup.send(content=content, file=image_file, view=view)
         except Exception as e:
             print(f"Error in average server command: {e}")
             await interaction.followup.send(
@@ -1869,7 +1894,14 @@ class AverageStats(commands.Cog):
             view = AverageUserStatsView(
                 self, start_time, end_time, days_back_equiv, display_text, user.id, "day", using_server_default=True)
             retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
-            await interaction.followup.send(content=retention_alert_text, file=image_file, view=view)
+            stat_type_warning = await self.db_cog.check_stat_types_enabled(
+                interaction.guild.id, ['track_messages', 'track_voice',
+                                       'track_emojis', 'track_invites', 'track_status_activity']
+            ) if self.db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+            await interaction.followup.send(content=content, file=image_file, view=view)
         except Exception as e:
             print(f"Error in average user command: {e}")
             await interaction.followup.send(

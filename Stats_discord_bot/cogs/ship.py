@@ -2221,8 +2221,15 @@ class ShipCog(commands.Cog):
 
                 db_cog = self.bot.get_cog('DatabaseStats')
                 retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+                stat_type_warning = await db_cog.check_stat_types_enabled(
+                    guild.id, ['track_messages',
+                               'track_mentions', 'track_voice']
+                ) if db_cog else None
+                content_parts = [p for p in (
+                    retention_alert_text, stat_type_warning) if p]
+                content = "\n".join(content_parts) if content_parts else None
 
-                await send_method(content=retention_alert_text, file=file)
+                await send_method(content=content, file=file)
 
             except Exception as e:
                 print(f"❌ Error in ship command: {e}")

@@ -45439,6 +45439,137 @@ async def debug_bot_role_hierarchy(
             "error": str(e)
         }
         
+        
+@app.get("/api/debug/user-settings/{guild_id}/{user_id}")
+@fastapi_rate_limited(RateLimitType.API, timeout=30.0)
+async def debug_user_settings(
+    guild_id: str,
+    user_id: str,
+    user: Optional[Dict] = Depends(get_current_user)
+):
+    """
+    Debug endpoint to look up a specific user's settings (privacy mode, etc.)
+    within a specific guild. Queries the database directly.
+    Only accessible to privileged users.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    PRIVILEGED_USERS = ['1428927519515611141', '591655972414685229']
+    if user['discord_id'] not in PRIVILEGED_USERS:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        try:
+            guild_id_int = int(guild_id)
+            user_id_int = int(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid guild_id or user_id format")
+
+        # Fetch Discord user info (for display: username, avatar, nickname)
+        discord_user_info = None
+        async with aiohttp.ClientSession() as session:
+            headers = {'Authorization': f'Bot {DISCORD_TOKEN}'}
+
+            member_url = f"{DISCORD_API_BASE}/guilds/{guild_id}/members/{user_id}"
+            async with session.get(member_url, headers=headers) as member_resp:
+                if member_resp.status == 200:
+                    member_data = await member_resp.json()
+                    discord_user_info = {
+                        "id": user_id,
+                        "username": member_data.get('user', {}).get('username'),
+                        "global_name": member_data.get('user', {}).get('global_name'),
+                        "nickname": member_data.get('nick'),
+                        "avatar": member_data.get('user', {}).get('avatar'),
+                        "joined_at": member_data.get('joined_at'),
+                        "in_guild": True
+                    }
+                elif member_resp.status == 404:
+                    user_url = f"{DISCORD_API_BASE}/users/{user_id}"
+                    async with session.get(user_url, headers=headers) as user_resp:
+                        if user_resp.status == 200:
+                            user_data = await user_resp.json()
+                            discord_user_info = {
+                                "id": user_id,
+                                "username": user_data.get('username'),
+                                "global_name": user_data.get('global_name'),
+                                "nickname": None,
+                                "avatar": user_data.get('avatar'),
+                                "joined_at": None,
+                                "in_guild": False
+                            }
+                        elif user_resp.status == 404:
+                            return {
+                                "success": True,
+                                "user_found": False,
+                                "message": f"No Discord user found with ID {user_id}"
+                            }
+                        else:
+                            return {
+                                "success": False,
+                                "error": f"Failed to fetch user: HTTP {user_resp.status}",
+                                "user_found": False
+                            }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Failed to fetch member: HTTP {member_resp.status}",
+                        "user_found": False
+                    }
+
+        # Query the database directly for user settings + pending deletion status
+        user_settings = {
+            "privacy_enabled": False,
+            "privacy_pending_delete": False,
+            "created_at": None,
+            "updated_at": None,
+        }
+        pending_deletion = None
+
+        async with db_stats.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM user_settings WHERE user_id = $1 AND guild_id = $2",
+                user_id_int, guild_id_int
+            )
+            if row:
+                row_dict = dict(row)
+                user_settings = {
+                    "privacy_enabled": row_dict.get('privacy_enabled', False),
+                    "privacy_pending_delete": row_dict.get('privacy_pending_delete', False),
+                    "created_at": str(row_dict.get('created_at')) if row_dict.get('created_at') else None,
+                    "updated_at": str(row_dict.get('updated_at')) if row_dict.get('updated_at') else None,
+                }
+
+            deletion_row = await conn.fetchrow("""
+                SELECT requested_at, processed, processed_at
+                FROM privacy_pending_deletions
+                WHERE user_id = $1 AND guild_id = $2
+                ORDER BY requested_at DESC LIMIT 1
+            """, user_id_int, guild_id_int)
+            if deletion_row:
+                pending_deletion = {
+                    "requested_at": str(deletion_row['requested_at']),
+                    "processed": deletion_row['processed'],
+                    "processed_at": str(deletion_row['processed_at']) if deletion_row['processed_at'] else None
+                }
+
+        return {
+            "success": True,
+            "user_found": True,
+            "discord_user": discord_user_info,
+            "user_settings": user_settings,
+            "pending_deletion": pending_deletion
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in debug_user_settings: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "user_found": False
+        }
 
 @app.get("/api/admin/diagnostics/db-size")
 async def admin_db_size(user: Dict = Depends(require_admin)):

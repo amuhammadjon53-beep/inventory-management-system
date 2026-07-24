@@ -1429,7 +1429,7 @@ async def _guild_has_optimization(bot, guild_id: int) -> bool:
     db_cog = bot.get_cog('DatabaseStats')
     if db_cog is None:
         return False
-    return await db_cog.guild_has_module_access(guild_id, 'optimization')
+    return await db_cog.guild_has_module_access(guild_id, 'optimization-plus')
 
 
 # =========================================================

@@ -1076,8 +1076,12 @@ class TimezoneDistribution(commands.Cog):
 
             db_cog = self.get_db_cog()
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_messages']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
-            await send(content=retention_alert_text, file=file, view=view)
+            await send(content=content, file=file, view=view)
 
         except Exception as e:
             print(f"❌ Error in _send_distribution ({scope}): {e}")

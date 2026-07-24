@@ -364,21 +364,110 @@ const styles = `
     font-size: 13px;
   }
 
-  .channel-info, .category-info {
+  .channel-info, .category-info, .user-settings-info {
     font-size: 13px;
     line-height: 1.6;
   }
 
-  .channel-info p, .category-info p {
+  .channel-info p, .category-info p, .user-settings-info p {
     margin: 6px 0;
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+    align-items: center;
   }
 
-  .channel-info strong, .category-info strong {
+  .channel-info strong, .category-info strong, .user-settings-info strong {
     color: #aa00ff;
     min-width: 120px;
+  }
+
+  /* User Settings Lookup */
+  .user-profile-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  .user-avatar {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    object-fit: cover;
+  }
+
+  .user-avatar-fallback {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #aa00ff, #8800cc);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+    color: white;
+    flex-shrink: 0;
+  }
+
+  .user-profile-names {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .user-display-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: #ffffff;
+  }
+
+  .user-username {
+    font-size: 12px;
+    color: #888;
+    font-family: monospace;
+  }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .status-pill.on {
+    background-color: rgba(255, 68, 68, 0.15);
+    color: #ff6b6b;
+  }
+
+  .status-pill.off {
+    background-color: rgba(0, 200, 81, 0.15);
+    color: #00c851;
+  }
+
+  .status-pill.pending {
+    background-color: rgba(255, 170, 0, 0.15);
+    color: #ffaa00;
+  }
+
+  .not-in-guild-badge {
+    background-color: rgba(255, 170, 0, 0.15);
+    color: #ffaa00;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 8px;
   }
 
   .channels-list {
@@ -589,22 +678,27 @@ const DebugDashboard = () => {
   const [categoryResult, setCategoryResult] = useState(null);
   const [loadingCategory, setLoadingCategory] = useState(false);
   const [categoryError, setCategoryError] = useState(null);
+
+  // User Settings Lookup
+  const [userLookupId, setUserLookupId] = useState("");
+  const [userLookupResult, setUserLookupResult] = useState(null);
+  const [loadingUserLookup, setLoadingUserLookup] = useState(false);
+  const [userLookupError, setUserLookupError] = useState(null);
   
   const [roles, setRoles] = useState(null);
   const [loadingRoles, setLoadingRoles] = useState(true);
 
   // Critical permissions checklist
   const criticalPermissions = [
-    { name: "VIEW_CHANNEL", display: "View Channels", description: "Required to see channels", required: true },
     { name: "SEND_MESSAGES", display: "Send Messages", description: "Send messages in channels", required: true },
     { name: "EMBED_LINKS", display: "Embed Links", description: "Post embedded links", required: true },
     { name: "ATTACH_FILES", display: "Attach Files", description: "Upload files", required: true },
     { name: "READ_MESSAGE_HISTORY", display: "Read Message History", description: "View message history", required: true },
+    { name: "VIEW_CHANNEL", display: "View Channels", description: "Required to see channels", required: true },
     { name: "USE_APPLICATION_COMMANDS", display: "Use Application Commands", description: "Use slash commands", required: true },
-    { name: "MANAGE_GUILD", display: "Manage Server", description: "Manage server settings", required: false },
-    { name: "MANAGE_ROLES", display: "Manage Roles", description: "Create/edit roles", required: false },
-    { name: "MANAGE_CHANNELS", display: "Manage Channels", description: "Create/edit channels", required: false },
-    { name: "CONNECT", display: "Connect", description: "Join voice channels", required: false }
+    { name: "MANAGE_GUILD", display: "Manage Server", description: "Manage server settings", required: true },
+    { name: "MANAGE_ROLES", display: "Manage Roles", description: "Create/edit roles", required: true },
+    { name: "MANAGE_CHANNELS", display: "Manage Channels", description: "Create/edit channels", required: true }
   ];
 
   // Grouped message permissions (Send Messages, Embed Links, Attach Files, Read Message History)
@@ -795,6 +889,66 @@ const DebugDashboard = () => {
       setCategoryError("Failed to lookup category. Please check your connection.");
     } finally {
       setLoadingCategory(false);
+    }
+  };
+
+  const handleUserLookup = async () => {
+    if (!userLookupId.trim() || !currentServer) {
+      setUserLookupError("Please enter a user ID");
+      return;
+    }
+
+    if (!/^\d+$/.test(userLookupId.trim())) {
+      setUserLookupError("❌ Invalid ID format. User IDs should contain only numbers.");
+      return;
+    }
+
+    setLoadingUserLookup(true);
+    setUserLookupError(null);
+    setUserLookupResult(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/debug/user-settings/${currentServer.id}/${userLookupId.trim()}`, {
+        credentials: 'include'
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        if (data.user_found) {
+          setUserLookupResult(data);
+        } else {
+          setUserLookupError(`❌ No Discord user found with ID ${userLookupId.trim()}.`);
+        }
+      } else if (response.status === 403 || data.error?.includes("403")) {
+        setUserLookupError(`🔒 Access denied looking up user ID ${userLookupId.trim()}.`);
+      } else {
+        setUserLookupError(data.error || "Failed to lookup user settings");
+      }
+    } catch (error) {
+      console.error('Error looking up user settings:', error);
+      setUserLookupError("Failed to lookup user settings. Please check your connection.");
+    } finally {
+      setLoadingUserLookup(false);
+    }
+  };
+
+  const getUserAvatarUrl = (discordUser) => {
+    if (!discordUser?.avatar) return null;
+    return `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=64`;
+  };
+
+  const getUserInitial = (discordUser) => {
+    const name = discordUser?.global_name || discordUser?.username || "?";
+    return name.charAt(0).toUpperCase();
+  };
+
+  const formatTimestamp = (ts) => {
+    if (!ts) return null;
+    try {
+      return new Date(ts).toLocaleString();
+    } catch {
+      return ts;
     }
   };
 
@@ -1149,6 +1303,107 @@ const DebugDashboard = () => {
                                 <span className="channel-type">{ch.type}</span>
                               </div>
                             ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="lookup-box">
+                  <h3>👤 User Settings Lookup</h3>
+                  <div className="lookup-input-group">
+                    <input
+                      type="text"
+                      className="lookup-input"
+                      placeholder="Enter User ID"
+                      value={userLookupId}
+                      onChange={(e) => setUserLookupId(e.target.value)}
+                    />
+                    <button
+                      className="lookup-button"
+                      onClick={handleUserLookup}
+                      disabled={loadingUserLookup || !userLookupId.trim()}
+                    >
+                      {loadingUserLookup ? 'Searching...' : 'Lookup'}
+                    </button>
+                  </div>
+
+                  {userLookupError && (
+                    <div className="lookup-error">{userLookupError}</div>
+                  )}
+
+                  {userLookupResult?.user_found && (
+                    <div className="lookup-result">
+                      <h4>✅ User Found</h4>
+                      <div className="user-settings-info">
+                        <div className="user-profile-header">
+                          {getUserAvatarUrl(userLookupResult.discord_user) ? (
+                            <img
+                              className="user-avatar"
+                              src={getUserAvatarUrl(userLookupResult.discord_user)}
+                              alt=""
+                            />
+                          ) : (
+                            <div className="user-avatar-fallback">
+                              {getUserInitial(userLookupResult.discord_user)}
+                            </div>
+                          )}
+                          <div className="user-profile-names">
+                            <span className="user-display-name">
+                              {userLookupResult.discord_user?.nickname
+                                || userLookupResult.discord_user?.global_name
+                                || userLookupResult.discord_user?.username}
+                              {!userLookupResult.discord_user?.in_guild && (
+                                <span className="not-in-guild-badge">NOT IN SERVER</span>
+                              )}
+                            </span>
+                            <span className="user-username">
+                              @{userLookupResult.discord_user?.username} · {userLookupResult.discord_user?.id}
+                            </span>
+                          </div>
+                        </div>
+
+                        <p>
+                          <strong>Privacy Mode:</strong>
+                          <span className={`status-pill ${userLookupResult.user_settings?.privacy_enabled ? 'on' : 'off'}`}>
+                            {userLookupResult.user_settings?.privacy_enabled ? 'Enabled' : 'Disabled'}
+                          </span>
+                        </p>
+
+                        {userLookupResult.user_settings?.privacy_pending_delete && (
+                          <p>
+                            <strong>Deletion:</strong>
+                            <span className="status-pill pending">Pending</span>
+                          </p>
+                        )}
+
+                        {userLookupResult.discord_user?.joined_at && (
+                          <p><strong>Joined Server:</strong> {formatTimestamp(userLookupResult.discord_user.joined_at)}</p>
+                        )}
+
+                        {userLookupResult.user_settings?.created_at && (
+                          <p><strong>Settings Created:</strong> {formatTimestamp(userLookupResult.user_settings.created_at)}</p>
+                        )}
+
+                        {userLookupResult.user_settings?.updated_at && (
+                          <p><strong>Settings Updated:</strong> {formatTimestamp(userLookupResult.user_settings.updated_at)}</p>
+                        )}
+
+                        {userLookupResult.pending_deletion && (
+                          <div style={{ marginTop: '12px', padding: '12px', backgroundColor: '#0a0a0a', borderRadius: '8px' }}>
+                            <strong style={{ color: '#ffaa00' }}>Pending Deletion Record:</strong>
+                            <p style={{ marginTop: '6px' }}>
+                              <strong>Requested:</strong> {formatTimestamp(userLookupResult.pending_deletion.requested_at)}
+                            </p>
+                            <p>
+                              <strong>Processed:</strong> {userLookupResult.pending_deletion.processed ? 'Yes' : 'No'}
+                            </p>
+                            {userLookupResult.pending_deletion.processed_at && (
+                              <p>
+                                <strong>Processed At:</strong> {formatTimestamp(userLookupResult.pending_deletion.processed_at)}
+                              </p>
+                            )}
                           </div>
                         )}
                       </div>

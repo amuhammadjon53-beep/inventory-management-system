@@ -3902,12 +3902,19 @@ class Leaderboards(commands.Cog):
                     await ctx_or_interaction.send("❌ Invalid command type.", delete_after=10)
                 return
 
+            required_stat = ['track_voice'] if (command_type == "channel" and isinstance(
+                channel, discord.VoiceChannel)) else ['track_messages']
+
             retention_alert_text = await self.db_cog.maybe_get_retention_alert(guild.id) if self.db_cog else None
+            stat_type_warning = await self.db_cog.check_stat_types_enabled(guild.id, required_stat) if self.db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
             if is_interaction:
-                msg = await send_method(content=retention_alert_text, file=file, view=view)
+                msg = await send_method(content=content, file=file, view=view)
             else:
-                msg = await send_method(content=retention_alert_text, file=file, view=view, delete_after=300)
+                msg = await send_method(content=content, file=file, view=view, delete_after=300)
 
             self.active_views[msg.id] = view
 

@@ -1532,11 +1532,17 @@ class ChannelCommands(commands.Cog):
             file = discord.File(img_bytes, filename=filename)
 
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id)
+            required_stat = ['track_messages'] if stats_type == "messages" else [
+                'track_voice']
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, required_stat)
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
             if is_interaction:
-                msg = await send_method(content=retention_alert_text, file=file, view=view)
+                msg = await send_method(content=content, file=file, view=view)
             else:
-                msg = await send_method(content=retention_alert_text, file=file, view=view, delete_after=300)
+                msg = await send_method(content=content, file=file, view=view, delete_after=300)
 
             self.active_sessions[msg.id] = {
                 'guild_id': guild.id, 'user_id': user.id, 'channel_id': channel.id,

@@ -109,19 +109,42 @@ const PremiumPage = () => {
       icon: <Settings size={28} color="#aa00ff" />,
       features: [
         {
-          group: 'Storage',
+          group: 'Tracking & Reset Automation',
           items: [
-            'Upgraded time limit on data storage: From 6 months to indefinite storing',
-            'Can enable simultaneous tracking for more than 4 stat types',
+            {
+              title: 'Expanded Stat Type Tracking',
+              desc: 'Track more than 4 stat types simultaneously',
+            },
+            {
+              title: 'Scheduled Stat Resets',
+              desc: 'Set custom, automated schedules to reset server statistics',
+            },
+            {
+              title: 'Custom Default Time Periods',
+              desc: 'Filter and analyze your stats across a custom defualt time period',
+            },
           ],
         },
         {
-          group: 'Reset & Sync',
+          group: 'Historical Data Syncing',
           items: [
-            'Access to scheduled resetting of stats',
-            'Can set a custom default time period',
-            'Can sync multiple stat types simultaneously in the history data sync',
-            'Can use the history data sync multiple times on the same server',
+            {
+              title: 'Multi-Stat History Sync',
+              desc: 'Sync historical data across multiple stat types concurrently',
+            },
+            {
+              title: 'Unlimited History Backfills',
+              desc: 'Run the historical data sync feature multiple times per server',
+            },
+          ],
+        },
+        {
+          group: 'Retention & Storage',
+          items: [
+            {
+              title: 'Indefinite Data Retention',
+              desc: 'Retain and access historical server data forever (upgraded from 6 months)',
+            },
           ],
         },
       ],
@@ -209,7 +232,10 @@ const PremiumPage = () => {
                           {group.items.map((item, i) => (
                             <li key={i} className="feature-item">
                               <span className="feature-bullet">✦</span>
-                              <span>{item}</span>
+                              <span>
+                                <strong className="feature-title">{item.title}:</strong>{' '}
+                                {item.desc}
+                              </span>
                             </li>
                           ))}
                         </ul>
@@ -640,6 +666,11 @@ const PremiumPage = () => {
         .feature-item:hover {
           color: #e0e0e0;
           transform: translateX(2px);
+        }
+
+        .feature-title {
+          color: #e6e6e6;
+          font-weight: 600;
         }
 
         .feature-bullet {

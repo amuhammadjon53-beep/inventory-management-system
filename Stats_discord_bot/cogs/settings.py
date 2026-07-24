@@ -86,7 +86,7 @@ STAT_TOGGLE_META = {
         True,
     ),
     'track_voice': (
-        'Voice',
+        'Voice Activity',
         'Track time users spend in voice channels, including session counts and state flags (mute, deafen, stream, video).',
         True,
     ),
@@ -1178,7 +1178,7 @@ class MainSettingsView(discord.ui.View):
         db_cog = self.cog.bot.get_cog('DatabaseStats')
         has_premium = (
             db_cog is not None
-            and await db_cog.guild_has_module_access(self.guild_id, 'optimization')
+            and await db_cog.guild_has_module_access(self.guild_id, 'optimization-plus')
         )
         view = StatTogglesView(self.cog, self.guild_id, settings)
         await interaction.edit_original_response(
@@ -2385,7 +2385,7 @@ class StatTogglesView(discord.ui.View):
         db_cog = self.cog.bot.get_cog('DatabaseStats')
         if db_cog is None:
             return False
-        return await db_cog.guild_has_module_access(self.guild_id, 'optimization')
+        return await db_cog.guild_has_module_access(self.guild_id, 'optimization-plus')
 
     def _rebuild(self):
         self.clear_items()
@@ -2671,7 +2671,7 @@ class TimePeriodView(discord.ui.View):
         db_cog = self.cog.bot.get_cog('DatabaseStats')
         if db_cog is None:
             return False
-        return await db_cog.guild_has_module_access(self.guild_id, 'optimization')
+        return await db_cog.guild_has_module_access(self.guild_id, 'optimization-plus')
 
     def build_selection_embed(self) -> discord.Embed:
         current = format_time_period_display(self.settings)

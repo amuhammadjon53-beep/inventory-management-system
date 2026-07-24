@@ -425,7 +425,7 @@ class DatabaseStats(commands.Cog):
         try:
             async with self.pool.acquire() as conn:
                 opt_module_id = await conn.fetchval(
-                    "SELECT id FROM modules WHERE module_key = 'optimization'"
+                    "SELECT id FROM modules WHERE module_key = 'optimization-plus'"
                 )
                 if not opt_module_id:
                     print("⚠️ No 'optimization' module found - skipping sweep")
@@ -456,7 +456,7 @@ class DatabaseStats(commands.Cog):
         for guild_id in guild_ids:
             checked += 1
             try:
-                has_access = await self.guild_has_module_access(guild_id, 'optimization')
+                has_access = await self.guild_has_module_access(guild_id, 'optimization-plus')
                 if has_access:
                     skipped_active += 1
                     continue
@@ -691,7 +691,7 @@ class DatabaseStats(commands.Cog):
         for guild_id in guild_ids:
             checked += 1
             try:
-                has_optimization = await self.guild_has_module_access(guild_id, 'optimization')
+                has_optimization = await self.guild_has_module_access(guild_id, 'optimization-plus')
                 if has_optimization:
                     skipped_subscribed += 1
                     continue
@@ -749,7 +749,7 @@ class DatabaseStats(commands.Cog):
                     if row and row['lifetime_alerts_exhausted']:
                         continue
 
-                    has_optimization = await self.guild_has_module_access(guild_id, 'optimization')
+                    has_optimization = await self.guild_has_module_access(guild_id, 'optimization-plus')
 
                     if has_optimization:
                         if row and row['in_alert_window']:
@@ -862,6 +862,61 @@ class DatabaseStats(commands.Cog):
             print(
                 f"⚠️ Error checking retention alert for guild {guild_id}: {e}")
             return None
+        
+    # Human-readable names, reused for warning messages elsewhere too
+    STAT_TYPE_DISPLAY_NAMES = {
+    'track_messages': 'Messages',
+    'track_voice': 'Voice Activity',
+    'track_invites': 'Invites',
+    'track_emojis': 'Emojis',
+    'track_status_activity': 'Status Activity',
+    'track_mentions': 'Mentions',
+    'track_member_growth': 'Member Growth',
+    'track_role_growth': 'Role Growth',
+    }
+
+    STAT_TYPE_DISABLED_MESSAGE_TEMPLATE = (
+        "⚠️ This command uses the {stat_names} Stat Type, which isn't currently being tracked. "
+        "Learn how to turn it on [here](https://statshq.xyz/docs/?page=bot-setup&section=advanced-tracking)."
+    )
+
+
+    def _join_stat_names(self, names: List[str]) -> str:
+        """Join display names naturally: 'A', 'A and B', or 'A, B, and C'."""
+        if len(names) == 1:
+            return f"**{names[0]}**"
+        if len(names) == 2:
+            return f"**{names[0]}** and **{names[1]}**"
+        return ", ".join(f"**{n}**" for n in names[:-1]) + f", and **{names[-1]}**"
+
+
+    async def check_stat_types_enabled(self, guild_id: int, required_stats: List[str]) -> Optional[str]:
+        """
+        Check whether ALL of the given stat toggle keys are currently enabled
+        for a guild (e.g. ['track_messages', 'track_voice'] for /user stats).
+
+        Returns a warning message naming the specific missing stat type(s) if
+        ANY required stat type is disabled, or None if everything the command
+        needs is tracked.
+
+        Usage from another cog, right before sending the command's response:
+            db_cog = self.bot.get_cog('DatabaseStats')
+            warning = await db_cog.check_stat_types_enabled(
+                guild.id, ['track_messages', 'track_voice']
+            ) if db_cog else None
+        """
+        if not required_stats:
+            return None
+
+        toggles = await self._get_stat_toggles(guild_id)
+        missing = [s for s in required_stats if not toggles.get(s, False)]
+
+        if missing:
+            missing_names = [self.STAT_TYPE_DISPLAY_NAMES.get(s, s) for s in missing]
+            return self.STAT_TYPE_DISABLED_MESSAGE_TEMPLATE.format(
+                stat_names=self._join_stat_names(missing_names)
+            )
+        return None
 
     def _should_fire_retention_alert(self, row) -> bool:
         remaining_target = row['week_effective_target'] - \
@@ -5449,7 +5504,7 @@ class DatabaseStats(commands.Cog):
 
         Usage from another cog:
             db_cog = self.bot.get_cog('DatabaseStats')
-            if db_cog and await db_cog.guild_has_module_access(guild_id, 'optimization'):
+            if db_cog and await db_cog.guild_has_module_access(guild_id, 'optimization-plus'):
                 ...allow the feature...
         """
         access = await self.get_guild_module_access(guild_id)

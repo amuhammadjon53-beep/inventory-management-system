@@ -2492,8 +2492,12 @@ class EmojiLeaderboard(commands.Cog):
 
             db_cog = await self.get_database_cog()
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
-            msg = await ctx.send(content=retention_alert_text, file=file, view=view)
+            msg = await ctx.send(content=content, file=file, view=view)
             view.message = msg
 
             # Update buttons
@@ -2683,8 +2687,12 @@ class EmojiLeaderboard(commands.Cog):
 
             db_cog = await self.get_database_cog()
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
-            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2738,8 +2746,12 @@ class EmojiLeaderboard(commands.Cog):
 
             db_cog = await self.get_database_cog()
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
-            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2781,8 +2793,12 @@ class EmojiLeaderboard(commands.Cog):
 
             db_cog = await self.get_database_cog()
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
-            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2824,8 +2840,12 @@ class EmojiLeaderboard(commands.Cog):
 
             db_cog = await self.get_database_cog()
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
-            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message
@@ -2880,8 +2900,12 @@ class EmojiLeaderboard(commands.Cog):
 
             db_cog = await self.get_database_cog()
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_emojis']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
-            await interaction.followup.send(content=retention_alert_text, file=file, view=view)
+            await interaction.followup.send(content=content, file=file, view=view)
 
             message = await interaction.original_response()
             view.message = message

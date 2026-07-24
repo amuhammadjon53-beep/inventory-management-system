@@ -1735,6 +1735,16 @@ class UserStats(commands.Cog):
             db_cog = self.bot.get_cog('DatabaseStats')
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
 
+            # Stat type warning: tells the user if this command's data is incomplete
+            # because a required stat type isn't being tracked
+            stat_type_warning = await db_cog.check_stat_types_enabled(
+                guild.id, ['track_messages', 'track_voice']
+            ) if db_cog else None
+
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
             # Create view with None params to indicate using server default
             view = UserStatsView(self, guild, member, start_time=start_time, end_time=end_time,
                                  display_text=display_text, days_back_equiv=days_back_equiv)
@@ -1743,9 +1753,9 @@ class UserStats(commands.Cog):
             if is_interaction:
                 # When we defer with thinking=True, we need to use followup.send
                 # edit_original_response doesn't support file attachments
-                msg = await ctx_or_interaction.followup.send(content=retention_alert_text, file=file, view=view)
+                msg = await ctx_or_interaction.followup.send(content=content, file=file, view=view)
             else:
-                msg = await ctx_or_interaction.send(content=retention_alert_text, file=file, view=view, delete_after=300)
+                msg = await ctx_or_interaction.send(content=content, file=file, view=view, delete_after=300)
 
             # Store session
             self.active_user_stats_sessions[msg.id] = {

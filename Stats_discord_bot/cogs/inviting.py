@@ -4,6 +4,7 @@ import io
 from PIL import Image, ImageDraw, ImageFont
 from typing import Optional, List, Tuple, Dict, Any
 import os
+import re
 import asyncpg
 from datetime import datetime, timedelta, timezone
 from discord import app_commands
@@ -300,7 +301,16 @@ def format_datetime_for_display(dt: datetime, guild_id: int = None) -> str:
         return str(dt)
 
 
+def strip_markdown_links(text: str) -> str:
+    """
+    Convert markdown links like [here](https://example.com) into plain
+    text like 'here: https://example.com', since embed footers render
+    as plain text and don't parse markdown.
+    """
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1: \2', text)
+
 # FONTS
+
 
 def get_fonts():
 
@@ -1692,6 +1702,11 @@ class Invites(commands.Cog):
                         inline=True
                     )
 
+                stat_type_warning = await self.db_stats.check_stat_types_enabled(guild.id, ['track_invites']) if self.db_stats else None
+                if stat_type_warning:
+                    embed.set_footer(
+                        text=strip_markdown_links(stat_type_warning))
+
                 if is_interaction:
                     await send_method(embed=embed)
                 else:
@@ -1994,8 +2009,12 @@ class Invites(commands.Cog):
             )
 
             retention_alert_text = await self.db_stats.maybe_get_retention_alert(guild.id) if self.db_stats else None
+            stat_type_warning = await self.db_stats.check_stat_types_enabled(guild.id, ['track_invites']) if self.db_stats else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
-            msg = await send_method(content=retention_alert_text, file=file, view=view)
+            msg = await send_method(content=content, file=file, view=view)
 
             # Store the view
             self.active_views[msg.id] = view

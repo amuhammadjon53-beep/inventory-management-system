@@ -2334,7 +2334,16 @@ class ServerStatsView(discord.ui.View):
             img_bytes.seek(0)
 
             file = discord.File(img_bytes, filename="server_stats.png")
-            await interaction.edit_original_response(attachments=[file], view=self)
+
+            # Re-check stat type warning based on whichever stat type is now selected
+            db_cog = self.cog._get_db_cog()
+            required_stat = [
+                'track_messages'] if self.current_stat_type == "message" else ['track_voice']
+            stat_type_warning = await db_cog.check_stat_types_enabled(
+                self.guild.id, required_stat
+            ) if db_cog else None
+
+            await interaction.edit_original_response(attachments=[file], view=self, content=stat_type_warning)
 
         except Exception as e:
             print(f"Error handling button click: {e}")
@@ -2943,11 +2952,20 @@ class ServerStats(commands.Cog):
             db_cog = self.bot.get_cog('DatabaseStats')
             retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
 
+            # Stat type warning: initial load is always "message" stats
+            stat_type_warning = await db_cog.check_stat_types_enabled(
+                guild.id, ['track_messages']
+            ) if db_cog else None
+
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
+
             # Send the image
             if is_interaction:
-                msg = await send_method(content=retention_alert_text, file=file, view=view)
+                msg = await send_method(content=content, file=file, view=view)
             else:
-                msg = await send_method(content=retention_alert_text, file=file, view=view, delete_after=300)
+                msg = await send_method(content=content, file=file, view=view, delete_after=300)
 
             # Store session
             self.active_sessions[msg.id] = {

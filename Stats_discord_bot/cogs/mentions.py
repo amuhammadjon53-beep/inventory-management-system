@@ -1832,8 +1832,12 @@ class Mentions(commands.Cog):
         file = discord.File(img_bytes, filename="mentions_leaderboard.png")
 
         retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
+        stat_type_warning = await self.db_cog.check_stat_types_enabled(interaction.guild.id, ['track_mentions']) if self.db_cog else None
+        content_parts = [p for p in (
+            retention_alert_text, stat_type_warning) if p]
+        content = "\n".join(content_parts) if content_parts else None
 
-        msg = await interaction.followup.send(content=retention_alert_text, file=file, view=view)
+        msg = await interaction.followup.send(content=content, file=file, view=view)
         self.active_views[msg.id] = view
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
@@ -1888,8 +1892,12 @@ class Mentions(commands.Cog):
             self, interaction.guild, start_time, end_time, days_back_equiv, display_text, target_user)
 
         retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
+        stat_type_warning = await self.db_cog.check_stat_types_enabled(interaction.guild.id, ['track_mentions']) if self.db_cog else None
+        content_parts = [p for p in (
+            retention_alert_text, stat_type_warning) if p]
+        content = "\n".join(content_parts) if content_parts else None
 
-        await interaction.followup.send(content=retention_alert_text, embed=embed, view=view)
+        await interaction.followup.send(content=content, embed=embed, view=view)
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_slash_ratios_leaderboard(
@@ -1937,8 +1945,12 @@ class Mentions(commands.Cog):
             img_bytes, filename="mentions_ratios_leaderboard.png")
 
         retention_alert_text = await self.db_cog.maybe_get_retention_alert(interaction.guild.id) if self.db_cog else None
+        stat_type_warning = await self.db_cog.check_stat_types_enabled(interaction.guild.id, ['track_mentions']) if self.db_cog else None
+        content_parts = [p for p in (
+            retention_alert_text, stat_type_warning) if p]
+        content = "\n".join(content_parts) if content_parts else None
 
-        msg = await interaction.followup.send(content=retention_alert_text, file=file, view=view)
+        msg = await interaction.followup.send(content=content, file=file, view=view)
         self.active_views[msg.id] = view
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
@@ -1995,8 +2007,12 @@ class Mentions(commands.Cog):
         file = discord.File(img_bytes, filename="mentions_leaderboard.png")
 
         retention_alert_text = await self.db_cog.maybe_get_retention_alert(ctx.guild.id) if self.db_cog else None
+        stat_type_warning = await self.db_cog.check_stat_types_enabled(ctx.guild.id, ['track_mentions']) if self.db_cog else None
+        content_parts = [p for p in (
+            retention_alert_text, stat_type_warning) if p]
+        content = "\n".join(content_parts) if content_parts else None
 
-        msg = await ctx.send(content=retention_alert_text, file=file, view=view)
+        msg = await ctx.send(content=content, file=file, view=view)
         self.active_views[msg.id] = view
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
@@ -2056,8 +2072,12 @@ class Mentions(commands.Cog):
             self, ctx.guild, start_time, end_time, days_back_equiv, display_text, target_user)
 
         retention_alert_text = await self.db_cog.maybe_get_retention_alert(ctx.guild.id) if self.db_cog else None
+        stat_type_warning = await self.db_cog.check_stat_types_enabled(ctx.guild.id, ['track_mentions']) if self.db_cog else None
+        content_parts = [p for p in (
+            retention_alert_text, stat_type_warning) if p]
+        content = "\n".join(content_parts) if content_parts else None
 
-        await ctx.send(content=retention_alert_text, embed=embed, view=view)
+        await ctx.send(content=content, embed=embed, view=view)
 
     @rate_limited(RateLimitType.MESSAGE_WITH_HASH, timeout=30.0)
     async def _handle_prefix_ratios_leaderboard(
@@ -2110,8 +2130,12 @@ class Mentions(commands.Cog):
             img_bytes, filename="mentions_ratios_leaderboard.png")
 
         retention_alert_text = await self.db_cog.maybe_get_retention_alert(ctx.guild.id) if self.db_cog else None
+        stat_type_warning = await self.db_cog.check_stat_types_enabled(ctx.guild.id, ['track_mentions']) if self.db_cog else None
+        content_parts = [p for p in (
+            retention_alert_text, stat_type_warning) if p]
+        content = "\n".join(content_parts) if content_parts else None
 
-        msg = await ctx.send(content=retention_alert_text, file=file, view=view)
+        msg = await ctx.send(content=content, file=file, view=view)
         self.active_views[msg.id] = view
 
 

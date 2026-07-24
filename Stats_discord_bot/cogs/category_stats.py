@@ -1780,12 +1780,16 @@ class CategoryStats(commands.Cog):
 
             file = discord.File(img_bytes, filename="category_stats.png")
 
-            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id)
+            retention_alert_text = await db_cog.maybe_get_retention_alert(guild.id) if db_cog else None
+            stat_type_warning = await db_cog.check_stat_types_enabled(guild.id, ['track_messages']) if db_cog else None
+            content_parts = [p for p in (
+                retention_alert_text, stat_type_warning) if p]
+            content = "\n".join(content_parts) if content_parts else None
 
             if is_interaction:
-                msg = await send_method(content=retention_alert_text, file=file, view=view)
+                msg = await send_method(content=content, file=file, view=view)
             else:
-                msg = await send_method(content=retention_alert_text, file=file, view=view, delete_after=300)
+                msg = await send_method(content=content, file=file, view=view, delete_after=300)
 
             self.active_category_sessions[stats_type][msg.id] = {
                 'guild_id': guild.id,
