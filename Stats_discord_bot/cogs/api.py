@@ -149,7 +149,7 @@ STATSHQ_MEMBER_COUNT = 0  # Approximate member count
 
 FREE_MAX_ACTIVE_STATS = 4
 FREE_MAX_HISTORY_SYNC_DAYS = 180
-OPTIMIZATION_MODULE_KEY = "optimization"
+OPTIMIZATION_MODULE_KEY = "optimization-plus"
 # ============================================
 # DATABASE MODELS FOR AUTH
 # ============================================
@@ -21676,7 +21676,7 @@ class DatabaseStatsAPI:
         for guild_id in guild_ids:
             checked += 1
             try:
-                has_optimization = await self.guild_has_module_access(guild_id, 'optimization')
+                has_optimization = await self.guild_has_module_access(guild_id, 'optimization-plus')
                 if has_optimization:
                     skipped_subscribed += 1
                     continue
@@ -21734,7 +21734,7 @@ class DatabaseStatsAPI:
                     if row and row['lifetime_alerts_exhausted']:
                         continue
 
-                    has_optimization = await self.guild_has_module_access(guild_id, 'optimization')
+                    has_optimization = await self.guild_has_module_access(guild_id, 'optimization-plus')
 
                     if has_optimization:
                         if row and row['in_alert_window']:
@@ -46578,7 +46578,7 @@ async def get_module_by_key(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/guild/module-access")
-async def get_guild_module_access_endpoint(guild_id: str, module: str = "optimization"):
+async def get_guild_module_access_endpoint(guild_id: str, module: str = "optimization-plus"):
     try:
         guild_id_int = int(guild_id)
     except ValueError:
@@ -48340,7 +48340,7 @@ async def get_retention_status(
         raise HTTPException(status_code=503, detail="Database connection failed")
 
     try:
-        has_optimization = await db_stats.guild_has_module_access(guild_id_int, 'optimization')
+        has_optimization = await db_stats.guild_has_module_access(guild_id_int, 'optimization-plus')
         if has_optimization:
             return {
                 'guild_id': guild_id,
