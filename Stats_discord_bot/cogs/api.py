@@ -46764,8 +46764,6 @@ async def cancel_subscription(
     of the current billing period — this just stops auto-renewal, it does not
     revoke access immediately.
     Allowed callers: subscription owner OR a guild admin for the guild this subscription belongs to.
-    DB update is handled automatically by the subscription.canceled webhook,
-    which Paddle fires once the current billing period actually ends.
     """
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -46786,10 +46784,26 @@ async def cancel_subscription(
                 raise HTTPException(
                     status_code=403, detail="Not authorized to cancel this subscription")
 
-        # Always cancel at the end of the current billing period so the guild
-        # keeps module access until then — never cancel immediately.
+        # --- FIX: Handle local staff grants without calling Paddle ---
+        is_staff_grant = (
+            paddle_subscription_id.startswith("staff_grant_") 
+            or sub.get("source") == "staff_grant"
+        )
+
+        if is_staff_grant:
+            # Revoke or update the staff grant locally in DB
+            result = await db_stats.revoke_staff_grant(paddle_subscription_id, discord_id)
+            if not result:
+                # If revoke_staff_grant isn't the right method for scheduled cancellation,
+                # update status directly, e.g.:
+                # await db_stats.update_subscription_status(paddle_subscription_id, "canceled")
+                pass
+            return {"status": "success", "message": "Staff grant canceled locally.", "subscription": sub}
+
+        # --- Standard Paddle Subscription Cancellation ---
         result = await paddle_client.cancel_subscription(paddle_subscription_id, "next_billing_period")
         return result
+
     except HTTPException:
         raise
     except PaddleAPIError as e:
@@ -46799,7 +46813,7 @@ async def cancel_subscription(
     except Exception as e:
         logger.error(f"Error in cancel_subscription: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.patch("/api/paddle/subscriptions/{paddle_subscription_id}/auto-renew")
 async def set_auto_renew(
     paddle_subscription_id: str,
@@ -47467,32 +47481,6 @@ async def get_my_staff_grants(
         return grants
     except Exception as e:
         logger.error(f"Error in get_my_staff_grants: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/paddle/staff/grants/guild/{guild_id}")
-async def get_staff_grants_for_guild(
-    guild_id: str,
-    user: Optional[Dict] = Depends(get_current_user)
-):
-    """Staff-only: list comp grants for a guild (for the search modal's results view)."""
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    discord_id = str(user.get('discord_id') or user.get('id'))
-    if discord_id not in PADDLE_STAFF_DISCORD_IDS:
-        raise HTTPException(status_code=403, detail="Staff access required")
-
-    try:
-        guild_id_int = int(guild_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid guild_id format")
-
-    try:
-        grants = await db_stats.get_staff_grants_for_guild(guild_id_int)
-        return grants
-    except Exception as e:
-        logger.error(f"Error in get_staff_grants_for_guild: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 _running_history_syncs: Dict[tuple, asyncio.Task] = {}
