@@ -91,6 +91,7 @@ class Constants:
 
     # Voice tracking
     VOICE_TRACKER_INTERVAL = 60
+    VOICE_RECONCILE_INTERVAL = 600  # 10 minutes, in seconds
 
     # INFINITE RECONNECTION
     RECONNECT_BASE_DELAY = 1.0
@@ -301,6 +302,8 @@ class DatabaseStats(commands.Cog):
             'chunk_count': 0,
             'redis_batch_sizes': self.batch_sizes.copy()
         }
+        
+        self.pending_voice_saves: list[dict] = []
 
         # Start tasks
         self.init_pools.start()
@@ -339,9 +342,14 @@ class DatabaseStats(commands.Cog):
             func=self.reconcile_expired_subscriptions, tz=ZoneInfo('UTC'))
         self.downgrade_expired_premium_cron = aiocron.crontab(
             '0 16 * * *', func=self.downgrade_expired_premium_guilds, tz=ZoneInfo('UTC'))
+        self.autorole_execution_cron = aiocron.crontab(
+            '* * * * *', func=self.check_and_execute_autoroles, tz=ZoneInfo('UTC'))
+        self.autorole_notification_cron = aiocron.crontab(
+            '* * * * *', func=self.check_and_send_scheduled_autorole_notifications, tz=ZoneInfo('UTC'))
         print("⏱️ CRON JOBS")
         print("✅ Scheduled tasks: Channel sync at 09:00, Guild scan at 03:00, Permission scan at 06:00/14:00/22:00 UTC, Role filter sync at 18:00 UTC, Activity streak update at 00:00 UTC, 6 month retention check every friday at 12:00 UTC, reconcile expired subs every friday at 20:00 UTC, downgrade expired premium guilds daily at 16:00 UTC.")
         print("✅ Periodic tasks: Reset Scheduler every 30 minutes, Server count message every 3 hours.")
+        print("✅ Scheduled task: Autorole execution check every minute.")
 
     @track_sync_job("Scheduled Reset Check")
     async def check_and_execute_scheduled_resets(self):
@@ -366,6 +374,928 @@ class DatabaseStats(commands.Cog):
             print(f"❌ Error in scheduled reset check: {e}")
             import traceback
             traceback.print_exc()
+
+    AUTOROLE_MAX_CONCURRENT_WORKERS = 20
+
+    @track_sync_job("Autorole Dispatcher")
+    async def check_and_execute_autoroles(self):
+        """
+        Lightweight dispatcher, runs every minute. Does NOT wait for role
+        assignment loops to finish — it atomically claims due autoroles
+        (last_status = 'processing') so a slow-running autorole can't be
+        picked up twice by the next tick, then spawns each as an independent
+        background task bounded by a semaphore so no more than
+        AUTOROLE_MAX_CONCURRENT_WORKERS run at once across all guilds.
+        """
+        if not self.pool or not self.db_connected:
+            return
+
+        if not hasattr(self, '_autorole_semaphore'):
+            self._autorole_semaphore = asyncio.Semaphore(
+                self.AUTOROLE_MAX_CONCURRENT_WORKERS)
+
+        from .ratelimiter import get_autorole_rate_limiter
+        guild_limiter = get_autorole_rate_limiter()
+
+        try:
+            async with self.pool.acquire() as conn:
+                # ---- Step 1: sync new/edited autoroles into execution_state ----
+                unsynced = await conn.fetch('''
+                    SELECT a.id, a.guild_id, a.update_frequency_type,
+                           a.update_frequency_minutes, a.update_schedule_weekdays,
+                           a.update_schedule_days_of_month, a.update_schedule_times,
+                           a.update_schedule_interval_days, a.updated_at
+                    FROM autoroles a
+                    LEFT JOIN autorole_execution_state es ON es.autorole_id = a.id
+                    WHERE a.is_active = TRUE
+                    AND (es.autorole_id IS NULL OR es.last_synced_config_at < a.updated_at)
+                ''')
+
+                for row in unsynced:
+                    next_run = self._compute_autorole_next_run(row)
+                    await conn.execute('''
+                        INSERT INTO autorole_execution_state
+                            (autorole_id, guild_id, next_run_at, last_synced_config_at, updated_at)
+                        VALUES ($1, $2, $3, NOW(), NOW())
+                        ON CONFLICT (autorole_id) DO UPDATE SET
+                            next_run_at = $3,
+                            last_synced_config_at = NOW(),
+                            updated_at = NOW()
+                    ''', row['id'], row['guild_id'], next_run)
+
+                # ---- Step 2: atomically claim due autoroles ----
+                # UPDATE ... FROM ... RETURNING claims rows in one round trip so
+                # concurrent dispatcher ticks (shouldn't happen since this cron
+                # is single-instance, but also protects against a slow-finishing
+                # previous tick) can't double-claim the same autorole. Rows
+                # already 'processing' are excluded by the WHERE clause.
+                claimed = await conn.fetch('''
+                    UPDATE autorole_execution_state es
+                    SET last_status = 'processing', updated_at = NOW()
+                    FROM autoroles a
+                    WHERE es.autorole_id = a.id
+                    AND a.is_active = TRUE
+                    AND es.next_run_at IS NOT NULL
+                    AND es.next_run_at <= NOW()
+                    AND (es.last_status IS DISTINCT FROM 'processing')
+                    RETURNING a.*, es.next_run_at
+                ''')
+
+        except Exception as e:
+            print(f"❌ Error during autorole sync/claim: {e}")
+            return
+
+        if not claimed:
+            return
+
+        print(
+            f"🎭 Dispatching {len(claimed)} autorole(s) for background execution")
+
+        for autorole_row in claimed:
+            asyncio.create_task(
+                self._run_autorole_worker(dict(autorole_row), guild_limiter))
+
+    async def _run_autorole_worker(self, autorole_row: Dict, guild_limiter):
+        """
+        Background worker for a single autorole. Bounded by the shared
+        semaphore so at most AUTOROLE_MAX_CONCURRENT_WORKERS run at once
+        regardless of how many autoroles were claimed this tick.
+        """
+        async with self._autorole_semaphore:
+            autorole_id = autorole_row['id']
+            guild_id = autorole_row['guild_id']
+
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                print(
+                    f"  ⚠️ Guild {guild_id} not found in bot cache, skipping autorole {autorole_id}")
+                async with self.pool.acquire() as conn:
+                    await conn.execute('''
+                        UPDATE autorole_execution_state
+                        SET last_status = 'error', last_error = 'Guild not in bot cache',
+                            updated_at = NOW()
+                        WHERE autorole_id = $1
+                    ''', autorole_id)
+                return
+
+            try:
+                assigned_count, removed_count, error = await self._process_single_due_autorole(
+                    guild, autorole_row, guild_limiter)
+
+                next_run = self._compute_autorole_next_run(autorole_row)
+                async with self.pool.acquire() as conn:
+                    await conn.execute('''
+                        UPDATE autorole_execution_state
+                        SET last_run_at = NOW(),
+                            next_run_at = $2,
+                            last_status = $3,
+                            last_error = $4,
+                            last_run_assigned_count = $5,
+                            last_run_removed_count = $6,
+                            updated_at = NOW()
+                        WHERE autorole_id = $1
+                    ''', autorole_id, next_run,
+                                       'error' if error else 'success', error,
+                                       assigned_count, removed_count)
+
+            except Exception as e:
+                print(f"  ❌ Error executing autorole {autorole_id}: {e}")
+                try:
+                    async with self.pool.acquire() as conn:
+                        await conn.execute('''
+                            UPDATE autorole_execution_state
+                            SET last_run_at = NOW(), last_status = 'error',
+                                last_error = $2, updated_at = NOW()
+                            WHERE autorole_id = $1
+                        ''', autorole_id, str(e)[:500])
+                except Exception as inner_e:
+                    print(
+                        f"  ❌ Also failed to record error state for autorole {autorole_id}: {inner_e}")
+
+    @track_sync_job("Autorole Scheduled Notifications")
+    async def check_and_send_scheduled_autorole_notifications(self):
+        """
+        Runs every minute. Handles notify_enabled autoroles that are NOT using
+        notify_on_assignment (i.e. periodic/scheduled notification timing
+        instead of batch-per-assignment). Reuses the exact same
+        _send_autorole_notification path — same RateLimitType.MESSAGE_WITH_HASH
+        limit, same batching, same {users} template — just triggered on
+        notify_next_run_at instead of on each assignment burst.
+        """
+        if not self.pool or not self.db_connected:
+            return
+
+        try:
+            async with self.pool.acquire() as conn:
+                due = await conn.fetch('''
+                    SELECT a.id, a.guild_id, a.notify_channel_id, a.notify_message,
+                           a.notify_mention_roles, a.notify_frequency_minutes,
+                           a.notify_schedule_weekdays, a.notify_schedule_times,
+                           es.pending_notify_user_ids
+                    FROM autoroles a
+                    JOIN autorole_execution_state es ON es.autorole_id = a.id
+                    WHERE a.is_active = TRUE
+                    AND a.notify_enabled = TRUE
+                    AND a.notify_on_assignment = FALSE
+                    AND (es.notify_next_run_at IS NULL OR es.notify_next_run_at <= NOW())
+                ''')
+
+                for row in due:
+                    pending = list(row['pending_notify_user_ids'] or [])
+
+                    next_notify_run = self._compute_notification_next_run(row)
+                    await conn.execute('''
+                        UPDATE autorole_execution_state
+                        SET notify_next_run_at = $2, notify_last_run_at = NOW(),
+                            pending_notify_user_ids = '{}', updated_at = NOW()
+                        WHERE autorole_id = $1
+                    ''', row['id'], next_notify_run)
+
+                    if pending:
+                        asyncio.create_task(self._send_autorole_notification(
+                            row['id'], row['guild_id'], pending,
+                            row['notify_channel_id'], row['notify_message'],
+                            row['notify_mention_roles']))
+                    # If nobody was assigned since the last flush, pending is
+                    # empty and NO message is sent, per your "if no one was
+                    # assigned then no message gets sent" requirement.
+
+        except Exception as e:
+            print(f"❌ Error in scheduled autorole notification check: {e}")
+
+    def _compute_notification_next_run(self, row) -> datetime:
+        now = datetime.now(timezone.utc)
+        if row.get('notify_frequency_minutes'):
+            return now + timedelta(minutes=row['notify_frequency_minutes'])
+        if row.get('notify_schedule_weekdays') or row.get('notify_schedule_times'):
+            return self._calculate_next_recurrence(
+                pattern='weekly' if row.get(
+                    'notify_schedule_weekdays') else 'daily',
+                weekdays=row.get('notify_schedule_weekdays'),
+                times=[t.strftime('%H:%M')
+                       for t in row['notify_schedule_times']]
+                if row.get('notify_schedule_times') else None
+            )
+        return now + timedelta(minutes=60)
+
+    # --------------------------------------------------------------------------
+    # HELPER WORKER: Extracted directly from your original for-loop
+    # --------------------------------------------------------------------------
+    async def _process_single_due_autorole(self, guild: discord.Guild, autorole_row: Dict,
+                                           guild_limiter) -> Tuple[int, int, Optional[str]]:
+        """
+        Evaluate one autorole's full template chain and assign/remove the
+        target role accordingly. Acquires exactly ONE database connection
+        for the entire pass (templates, exclusions, filters, blacklist/
+        whitelist, current holders) and passes it down to every helper,
+        instead of re-acquiring per sub-query.
+
+        DISCORD API CALLS IN THIS FUNCTION:
+          - guild.get_member(user_id) — in-memory gateway cache, no HTTP call.
+          - guild.fetch_member(user_id) — FALLBACK HTTP call, only used when
+            get_member returns None (uncached member, e.g. >250 member guild
+            or post-restart cache gap).
+          - member.add_roles(...) / member.remove_roles(...) — real Discord
+            HTTP calls, gated behind guild_limiter.acquire(guild.id).
+        """
+        autorole_id = autorole_row['id']
+        target_role_id = autorole_row['target_role_id']
+        role_behavior = autorole_row['role_behavior']
+
+        if not target_role_id:
+            return 0, 0, "No target_role_id configured"
+
+        role = guild.get_role(target_role_id)
+        if not role:
+            async with self.pool.acquire() as conn:
+                await conn.execute('''
+                    UPDATE autoroles SET is_active = FALSE, updated_at = NOW()
+                    WHERE id = $1
+                ''', autorole_id)
+            error_msg = f"Target role {target_role_id} not found in guild — autorole deactivated"
+            print(f"  ⚠️ {error_msg} (autorole {autorole_id})")
+            return 0, 0, error_msg
+
+        async with self.pool.acquire() as conn:
+            templates = await conn.fetch('''
+                SELECT * FROM autorole_templates
+                WHERE autorole_id = $1
+                ORDER BY position ASC
+            ''', autorole_id)
+
+            if not templates:
+                return 0, 0, "No templates configured"
+
+            template_results: List[set] = []
+            operators: List[str] = []
+            guild_member_ids_cache: Optional[List[int]] = None
+
+            for template in templates:
+                template = dict(template)
+                stat_type = template['stat_type']
+                req_type = template['requirement_type']
+
+                try:
+                    if stat_type == 'message':
+                        fn = {'amount': self.autorole_message_amount,
+                              'top_percent': self.autorole_message_top_percent,
+                              'streak': self.autorole_message_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'voice':
+                        fn = {'amount': self.autorole_voice_amount,
+                              'top_percent': self.autorole_voice_top_percent,
+                              'streak': self.autorole_voice_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'emoji':
+                        fn = {'amount': self.autorole_emoji_amount,
+                              'top_percent': self.autorole_emoji_top_percent,
+                              'specific': self.autorole_emoji_specific,
+                              'streak': self.autorole_emoji_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'invites':
+                        fn = {'amount': self.autorole_invites_amount,
+                              'top_percent': self.autorole_invites_top_percent,
+                              'streak': self.autorole_invites_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'mentions':
+                        fn = {'amount': self.autorole_mentions_amount,
+                              'top_percent': self.autorole_mentions_top_percent,
+                              'streak': self.autorole_mentions_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'activity':
+                        fn = {'sessions': self.autorole_activity_sessions,
+                              'total_time': self.autorole_activity_total_time,
+                              'specific': self.autorole_activity_specific,
+                              'streak': self.autorole_activity_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'joined_age':
+                        result = set(await self.autorole_joined_age(guild.id, template, conn=conn))
+
+                    elif stat_type == 'account_age':
+                        if guild_member_ids_cache is None:
+                            guild_member_ids_cache = await self._get_guild_member_ids(guild.id, conn=conn)
+                        result = set(await self.autorole_account_age(
+                            guild.id, template, guild_member_ids_cache))
+
+                    else:
+                        result = set()
+
+                except Exception as e:
+                    print(
+                        f"  ⚠️ Error evaluating template {template['id']} ({stat_type}/{req_type}): {e}")
+                    result = set()
+
+                template_results.append(result)
+                operators.append(template.get('operator_to_next'))
+
+            combined = template_results[0]
+            for i in range(1, len(template_results)):
+                op = operators[i - 1]
+                if op == 'OR':
+                    combined = combined | template_results[i]
+                else:
+                    combined = combined & template_results[i]
+
+            exclusions = await conn.fetch('''
+                SELECT role_id, condition FROM autorole_role_exclusions
+                WHERE autorole_id = $1
+            ''', autorole_id)
+
+            if exclusions:
+                filtered = set()
+                for user_id in combined:
+                    member = guild.get_member(user_id)
+                    member_role_ids = {
+                        r.id for r in member.roles} if member else set()
+                    ok = True
+                    for exc in exclusions:
+                        if exc['condition'] == 'present' and exc['role_id'] not in member_role_ids:
+                            ok = False
+                            break
+                        if exc['condition'] == 'absent' and exc['role_id'] in member_role_ids:
+                            ok = False
+                            break
+                    if ok:
+                        filtered.add(user_id)
+                combined = filtered
+
+            eligible_ids = await self._get_autorole_eligible_user_ids(
+                autorole_id, guild.id, list(combined), conn=conn)
+            eligible_set = set(eligible_ids)
+
+            filters_row = await conn.fetchrow('''
+                SELECT allow_bots, allow_users FROM autorole_filters
+                WHERE autorole_id = $1
+            ''', autorole_id)
+
+            allow_bots = filters_row['allow_bots'] if filters_row else False
+            allow_users = filters_row['allow_users'] if filters_row else True
+
+            current_holders = await self._get_current_target_role_holders(
+                guild.id, target_role_id, conn=conn)
+
+        # ---- Assign / remove (outside the `async with conn` block — these are
+        # Discord HTTP calls, not DB calls, so the connection is released first) ----
+        assigned_count = 0
+        removed_count = 0
+        newly_assigned_user_ids: List[int] = []
+
+        to_assign = eligible_set - current_holders
+        to_remove = (current_holders -
+                     eligible_set) if role_behavior == 'dynamic' else set()
+
+        for user_id in to_assign:
+            member = guild.get_member(user_id)
+            if not member:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.NotFound:
+                    continue
+                except discord.HTTPException as e:
+                    print(
+                        f"  ⚠️ fetch_member HTTP error for {user_id} in guild {guild.id}: {e.status}")
+                    continue
+
+            if member.bot and not allow_bots:
+                continue
+            if not member.bot and not allow_users:
+                continue
+
+            if not await guild_limiter.acquire(guild.id, timeout=30.0):
+                print(
+                    f"  ⚠️ Rate limit timeout assigning role in guild {guild.id}")
+                continue
+
+            try:
+                await member.add_roles(role, reason=f"Autorole #{autorole_id}")
+                assigned_count += 1
+                newly_assigned_user_ids.append(user_id)
+            except discord.Forbidden:
+                print(
+                    f"  ❌ Missing permissions to assign role in guild {guild.id}")
+            except discord.HTTPException as e:
+                print(f"  ❌ Discord API error assigning role: {e.status}")
+
+        for user_id in to_remove:
+            member = guild.get_member(user_id)
+            if not member:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.NotFound:
+                    continue
+                except discord.HTTPException as e:
+                    print(
+                        f"  ⚠️ fetch_member HTTP error for {user_id} in guild {guild.id}: {e.status}")
+                    continue
+
+            if not await guild_limiter.acquire(guild.id, timeout=30.0):
+                print(
+                    f"  ⚠️ Rate limit timeout removing role in guild {guild.id}")
+                continue
+
+            try:
+                await member.remove_roles(role, reason=f"Autorole #{autorole_id} - no longer qualifies")
+                removed_count += 1
+            except discord.Forbidden:
+                print(
+                    f"  ❌ Missing permissions to remove role in guild {guild.id}")
+            except discord.HTTPException as e:
+                print(f"  ❌ Discord API error removing role: {e.status}")
+
+        if newly_assigned_user_ids:
+            await self._queue_autorole_assignment_notification(
+                autorole_id, guild.id, newly_assigned_user_ids)
+
+        return assigned_count, removed_count, None
+
+    def _compute_autorole_next_run(self, autorole_row) -> datetime:
+        """Compute the next execution time based on update_frequency_type."""
+        now = datetime.now(timezone.utc)
+        freq_type = autorole_row['update_frequency_type']
+
+        if freq_type == 'periodic':
+            minutes = autorole_row.get('update_frequency_minutes') or 60
+            return now + timedelta(minutes=minutes)
+
+        elif freq_type == 'schedule':
+            # Reuses the same recurrence calculation pattern as reset_schedules
+            return self._calculate_next_recurrence(
+                pattern='weekly' if autorole_row.get('update_schedule_weekdays') else
+                        ('monthly' if autorole_row.get(
+                            'update_schedule_days_of_month') else 'custom_days'),
+                weekdays=autorole_row.get('update_schedule_weekdays'),
+                days_of_month=autorole_row.get(
+                    'update_schedule_days_of_month'),
+                times=[t.strftime('%H:%M')
+                       for t in autorole_row['update_schedule_times']]
+                if autorole_row.get('update_schedule_times') else None,
+                interval_days=autorole_row.get('update_schedule_interval_days')
+            )
+
+        return now + timedelta(minutes=60)
+
+    async def _process_single_due_autorole(self, guild: discord.Guild, autorole_row: Dict,
+                                           guild_limiter) -> Tuple[int, int, Optional[str]]:
+        """
+        Evaluate one autorole's full template chain and assign/remove the
+        target role accordingly. Acquires exactly ONE database connection
+        for the entire pass (templates, exclusions, filters, blacklist/
+        whitelist, current holders) and passes it down to every helper,
+        instead of re-acquiring per sub-query.
+
+        DISCORD API CALLS IN THIS FUNCTION:
+          - guild.get_member(user_id) — in-memory gateway cache, no HTTP call.
+          - guild.fetch_member(user_id) — FALLBACK HTTP call, only used when
+            get_member returns None (uncached member, e.g. >250 member guild
+            or post-restart cache gap).
+          - member.add_roles(...) / member.remove_roles(...) — real Discord
+            HTTP calls, gated behind guild_limiter.acquire(guild.id).
+        """
+        autorole_id = autorole_row['id']
+        target_role_id = autorole_row['target_role_id']
+        role_behavior = autorole_row['role_behavior']
+
+        if not target_role_id:
+            return 0, 0, "No target_role_id configured"
+
+        role = guild.get_role(target_role_id)
+        if not role:
+            # Fix 6: deactivate immediately rather than failing forever
+            async with self.pool.acquire() as conn:
+                await conn.execute('''
+                    UPDATE autoroles SET is_active = FALSE, updated_at = NOW()
+                    WHERE id = $1
+                ''', autorole_id)
+            error_msg = f"Target role {target_role_id} not found in guild — autorole deactivated"
+            print(f"  ⚠️ {error_msg} (autorole {autorole_id})")
+            return 0, 0, error_msg
+
+        async with self.pool.acquire() as conn:
+            templates = await conn.fetch('''
+                SELECT * FROM autorole_templates
+                WHERE autorole_id = $1
+                ORDER BY position ASC
+            ''', autorole_id)
+
+            if not templates:
+                return 0, 0, "No templates configured"
+
+            template_results: List[set] = []
+            operators: List[str] = []
+            guild_member_ids_cache: Optional[List[int]] = None
+
+            for template in templates:
+                template = dict(template)
+                stat_type = template['stat_type']
+                req_type = template['requirement_type']
+
+                try:
+                    if stat_type == 'message':
+                        fn = {'amount': self.autorole_message_amount,
+                              'top_percent': self.autorole_message_top_percent,
+                              'streak': self.autorole_message_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'voice':
+                        fn = {'amount': self.autorole_voice_amount,
+                              'top_percent': self.autorole_voice_top_percent,
+                              'streak': self.autorole_voice_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'emoji':
+                        fn = {'amount': self.autorole_emoji_amount,
+                              'top_percent': self.autorole_emoji_top_percent,
+                              'specific': self.autorole_emoji_specific,
+                              'streak': self.autorole_emoji_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'invites':
+                        fn = {'amount': self.autorole_invites_amount,
+                              'top_percent': self.autorole_invites_top_percent,
+                              'streak': self.autorole_invites_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'mentions':
+                        fn = {'amount': self.autorole_mentions_amount,
+                              'top_percent': self.autorole_mentions_top_percent,
+                              'streak': self.autorole_mentions_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'activity':
+                        fn = {'sessions': self.autorole_activity_sessions,
+                              'total_time': self.autorole_activity_total_time,
+                              'specific': self.autorole_activity_specific,
+                              'streak': self.autorole_activity_streak}[req_type]
+                        result = set(await fn(guild.id, template, conn=conn))
+
+                    elif stat_type == 'joined_age':
+                        result = set(await self.autorole_joined_age(guild.id, template, conn=conn))
+
+                    elif stat_type == 'account_age':
+                        if guild_member_ids_cache is None:
+                            guild_member_ids_cache = await self._get_guild_member_ids(guild.id, conn=conn)
+                        result = set(await self.autorole_account_age(
+                            guild.id, template, guild_member_ids_cache))
+
+                    elif stat_type == 'event':
+                        # DISCORD API: reads guild.members (cached, no HTTP call)
+                        result = set()
+                        for member in guild.members:
+                            if member.bot:
+                                continue
+                            try:
+                                has_tag = (
+                                    getattr(member, 'primary_guild',
+                                            None) is not None
+                                    and getattr(member.primary_guild, 'identity_enabled', False)
+                                    and getattr(member.primary_guild, 'identity_guild_id', None) == guild.id
+                                )
+                            except Exception:
+                                has_tag = False
+                            if has_tag:
+                                result.add(member.id)
+
+                    else:
+                        result = set()
+
+                except Exception as e:
+                    print(
+                        f"  ⚠️ Error evaluating template {template['id']} ({stat_type}/{req_type}): {e}")
+                    result = set()
+
+                template_results.append(result)
+                operators.append(template.get('operator_to_next'))
+
+            combined = template_results[0]
+            for i in range(1, len(template_results)):
+                op = operators[i - 1]
+                if op == 'OR':
+                    combined = combined | template_results[i]
+                else:
+                    combined = combined & template_results[i]
+
+            exclusions = await conn.fetch('''
+                SELECT role_id, condition FROM autorole_role_exclusions
+                WHERE autorole_id = $1
+            ''', autorole_id)
+
+            if exclusions:
+                filtered = set()
+                for user_id in combined:
+                    member = guild.get_member(user_id)
+                    member_role_ids = {
+                        r.id for r in member.roles} if member else set()
+                    ok = True
+                    for exc in exclusions:
+                        if exc['condition'] == 'present' and exc['role_id'] not in member_role_ids:
+                            ok = False
+                            break
+                        if exc['condition'] == 'absent' and exc['role_id'] in member_role_ids:
+                            ok = False
+                            break
+                    if ok:
+                        filtered.add(user_id)
+                combined = filtered
+
+            eligible_ids = await self._get_autorole_eligible_user_ids(
+                autorole_id, guild.id, list(combined), conn=conn)
+            eligible_set = set(eligible_ids)
+
+            filters_row = await conn.fetchrow('''
+                SELECT allow_bots, allow_users FROM autorole_filters
+                WHERE autorole_id = $1
+            ''', autorole_id)
+
+            allow_bots = filters_row['allow_bots'] if filters_row else False
+            allow_users = filters_row['allow_users'] if filters_row else True
+
+            current_holders = await self._get_current_target_role_holders(
+                guild.id, target_role_id, conn=conn)
+
+        # ---- Assign / remove (outside the `async with conn` block — these are
+        # Discord HTTP calls, not DB calls, so the connection is released first) ----
+        assigned_count = 0
+        removed_count = 0
+        newly_assigned_user_ids: List[int] = []
+
+        to_assign = eligible_set - current_holders
+        to_remove = (current_holders -
+                     eligible_set) if role_behavior == 'dynamic' else set()
+
+        for user_id in to_assign:
+            member = guild.get_member(user_id)
+            if not member:
+                # Fix 5: fallback to an API fetch for uncached members
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.NotFound:
+                    continue
+                except discord.HTTPException as e:
+                    print(
+                        f"  ⚠️ fetch_member HTTP error for {user_id} in guild {guild.id}: {e.status}")
+                    continue
+
+            if member.bot and not allow_bots:
+                continue
+            if not member.bot and not allow_users:
+                continue
+
+            if not await guild_limiter.acquire(guild.id, timeout=30.0):
+                print(
+                    f"  ⚠️ Rate limit timeout assigning role in guild {guild.id}")
+                continue
+
+            try:
+                await member.add_roles(role, reason=f"Autorole #{autorole_id}")
+                assigned_count += 1
+                newly_assigned_user_ids.append(user_id)
+            except discord.Forbidden:
+                print(
+                    f"  ❌ Missing permissions to assign role in guild {guild.id}")
+            except discord.HTTPException as e:
+                print(f"  ❌ Discord API error assigning role: {e.status}")
+
+        for user_id in to_remove:
+            member = guild.get_member(user_id)
+            if not member:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.NotFound:
+                    continue
+                except discord.HTTPException as e:
+                    print(
+                        f"  ⚠️ fetch_member HTTP error for {user_id} in guild {guild.id}: {e.status}")
+                    continue
+
+            if not await guild_limiter.acquire(guild.id, timeout=30.0):
+                print(
+                    f"  ⚠️ Rate limit timeout removing role in guild {guild.id}")
+                continue
+
+            try:
+                await member.remove_roles(role, reason=f"Autorole #{autorole_id} - no longer qualifies")
+                removed_count += 1
+            except discord.Forbidden:
+                print(
+                    f"  ❌ Missing permissions to remove role in guild {guild.id}")
+            except discord.HTTPException as e:
+                print(f"  ❌ Discord API error removing role: {e.status}")
+
+        # ---- Notification hook (see notification section below) ----
+        if newly_assigned_user_ids:
+            await self._queue_autorole_assignment_notification(
+                autorole_id, guild.id, newly_assigned_user_ids)
+
+        return assigned_count, removed_count, None
+
+    async def _get_current_target_role_holders(self, guild_id: int, role_id: int,
+                                               conn=None) -> set:
+        """Read current holders of a role from current_role_members (no API call).
+        Accepts an optional existing connection to avoid a fresh pool acquire."""
+        if not self.pool:
+            return set()
+
+        async def _run(c):
+            rows = await c.fetch('''
+                SELECT user_id FROM current_role_members
+                WHERE guild_id = $1 AND role_id = $2
+            ''', guild_id, role_id)
+            return {row['user_id'] for row in rows}
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def _get_guild_member_ids(self, guild_id: int, conn=None) -> List[int]:
+        """Helper: get all known non-bot user_ids for a guild from current_role_members.
+        Accepts an optional existing connection."""
+        if not self.pool:
+            return []
+
+        async def _run(c):
+            rows = await c.fetch('''
+                SELECT DISTINCT user_id FROM current_role_members
+                WHERE guild_id = $1 AND is_bot = FALSE
+            ''', guild_id)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    AUTOROLE_NOTIFY_MESSAGE_RATE_LIMIT_TIMEOUT = 15.0
+
+    async def _queue_autorole_assignment_notification(self, autorole_id: int, guild_id: int,
+                                                      newly_assigned_user_ids: List[int]):
+        if not newly_assigned_user_ids or not self.pool:
+            return
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow('''
+                SELECT a.notify_enabled, a.notify_on_assignment, a.notify_channel_id,
+                       a.notify_message, a.notify_mention_roles,
+                       a.notify_batch_cooldown_seconds,
+                       es.notify_last_run_at, es.pending_notify_user_ids
+                FROM autoroles a
+                JOIN autorole_execution_state es ON es.autorole_id = a.id
+                WHERE a.id = $1
+            ''', autorole_id)
+
+            if not row or not row['notify_enabled']:
+                return
+
+            existing_pending = list(row['pending_notify_user_ids'] or [])
+            merged_pending = list(set(existing_pending) |
+                                  set(newly_assigned_user_ids))
+
+            if not row['notify_on_assignment']:
+                # Scheduled/periodic mode: just accumulate, the dedicated
+                # cron (check_and_send_scheduled_autorole_notifications)
+                # will flush this on its own next_run_at.
+                await conn.execute('''
+                    UPDATE autorole_execution_state
+                    SET pending_notify_user_ids = $2, updated_at = NOW()
+                    WHERE autorole_id = $1
+                ''', autorole_id, merged_pending)
+                return
+
+            # notify_on_assignment mode: cooldown-based batching, as before
+            cooldown = row['notify_batch_cooldown_seconds'] or 10
+            last_notify = row['notify_last_run_at']
+            now = datetime.now(timezone.utc)
+
+            should_flush = (
+                last_notify is None or
+                (now - ensure_aware(last_notify)).total_seconds() >= cooldown
+            )
+
+            if not should_flush:
+                await conn.execute('''
+                    UPDATE autorole_execution_state
+                    SET pending_notify_user_ids = $2, updated_at = NOW()
+                    WHERE autorole_id = $1
+                ''', autorole_id, merged_pending)
+                remaining = cooldown - \
+                    (now - ensure_aware(last_notify)
+                     ).total_seconds() if last_notify else cooldown
+                asyncio.create_task(self._delayed_notification_flush(
+                    autorole_id, max(remaining, 0.5)))
+                return
+
+            await conn.execute('''
+                UPDATE autorole_execution_state
+                SET pending_notify_user_ids = $2, notify_last_run_at = NOW(), updated_at = NOW()
+                WHERE autorole_id = $1
+            ''', autorole_id, [])
+
+        await self._send_autorole_notification(
+            autorole_id, guild_id, merged_pending,
+            row['notify_channel_id'], row['notify_message'], row['notify_mention_roles'])
+
+    async def _delayed_notification_flush(self, autorole_id: int, delay_seconds: float):
+        """Waits out the remaining cooldown, then flushes whatever's pending
+        for this autorole even if no new assignment happened to trigger it."""
+        await asyncio.sleep(delay_seconds)
+
+        if not self.pool:
+            return
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow('''
+                SELECT a.guild_id, a.notify_channel_id, a.notify_message, a.notify_mention_roles,
+                       es.pending_notify_user_ids
+                FROM autoroles a
+                JOIN autorole_execution_state es ON es.autorole_id = a.id
+                WHERE a.id = $1
+            ''', autorole_id)
+
+            if not row or not row['pending_notify_user_ids']:
+                return
+
+            pending = list(row['pending_notify_user_ids'])
+
+            await conn.execute('''
+                UPDATE autorole_execution_state
+                SET pending_notify_user_ids = $2, notify_last_run_at = NOW(), updated_at = NOW()
+                WHERE autorole_id = $1
+            ''', autorole_id, [])
+
+        await self._send_autorole_notification(
+            autorole_id, row['guild_id'], pending,
+            row['notify_channel_id'], row['notify_message'], row['notify_mention_roles'])
+
+    async def _send_autorole_notification(self, autorole_id: int, guild_id: int,
+                                          user_ids: List[int], channel_id: Optional[int],
+                                          message_template: Optional[str], mention_roles: bool):
+        """
+        Sends the actual batched notification. Shared by on-assignment,
+        periodic, and scheduled notification paths — all three funnel
+        through here so all of them share the SAME
+        RateLimitType.MESSAGE_WITH_HASH rate limit, per your instruction
+        that the message rate limit type applies to every notification kind.
+
+        Custom message templates support a {users} placeholder that gets
+        replaced with the mention/username list, e.g.:
+          "7 users got assigned an autorole! here are the users: {users}"
+
+        DISCORD API CALL: channel.send(...) — a single message per flush,
+        NOT one message per user (per your batching requirement).
+        """
+        if not user_ids or not channel_id:
+            return
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            return
+
+        display_parts = []
+        for user_id in user_ids:
+            member = guild.get_member(user_id)
+            if member:
+                display_parts.append(
+                    member.mention if mention_roles else member.name)
+            else:
+                # Fall back to encrypted_username stored in the tracking tables,
+                # per your note that we can pull names directly without an API call
+                db_stats = self.bot.get_cog('DatabaseStats')
+                username = None
+                if db_stats:
+                    username = await db_stats.get_decrypted_username_any_table(guild_id, user_id)
+                display_parts.append(username or f"User {user_id}")
+
+        users_str = ", ".join(display_parts)
+
+        if message_template:
+            content = message_template.replace("{users}", users_str)
+        else:
+            count = len(user_ids)
+            plural = "user" if count == 1 else "users"
+            content = f"Autorole assigned to {count} {plural}: {users_str}"
+
+        if not await self.rate_limiter.acquire(RateLimitType.MESSAGE, timeout=self.AUTOROLE_NOTIFY_MESSAGE_RATE_LIMIT_TIMEOUT):
+            print(
+                f"  ⚠️ Rate limit timeout sending autorole notification for autorole {autorole_id}")
+            return
+
+        try:
+            await channel.send(content)
+        except discord.Forbidden:
+            print(
+                f"  ❌ Missing permissions to send notification in guild {guild_id}")
+        except discord.HTTPException as e:
+            print(f"  ❌ Discord API error sending notification: {e.status}")
 
     @track_sync_job("Subscription Reconciliation")
     async def reconcile_expired_subscriptions(self):
@@ -634,6 +1564,7 @@ class DatabaseStats(commands.Cog):
     # ======================================================================
     # OLDEST-WEEK ROLLING PURGE (non-Optimization+ guilds only)
     # ======================================================================
+
     @track_sync_job("6 Month Retention Purge")
     async def purge_oldest_week_for_free_guilds(self):
         """
@@ -862,24 +1793,23 @@ class DatabaseStats(commands.Cog):
             print(
                 f"⚠️ Error checking retention alert for guild {guild_id}: {e}")
             return None
-        
+
     # Human-readable names, reused for warning messages elsewhere too
     STAT_TYPE_DISPLAY_NAMES = {
-    'track_messages': 'Messages',
-    'track_voice': 'Voice Activity',
-    'track_invites': 'Invites',
-    'track_emojis': 'Emojis',
-    'track_status_activity': 'Status Activity',
-    'track_mentions': 'Mentions',
-    'track_member_growth': 'Member Growth',
-    'track_role_growth': 'Role Growth',
+        'track_messages': 'Messages',
+        'track_voice': 'Voice Activity',
+        'track_invites': 'Invites',
+        'track_emojis': 'Emojis',
+        'track_status_activity': 'Status Activity',
+        'track_mentions': 'Mentions',
+        'track_member_growth': 'Member Growth',
+        'track_role_growth': 'Role Growth',
     }
 
     STAT_TYPE_DISABLED_MESSAGE_TEMPLATE = (
         "⚠️ This command uses the {stat_names} Stat Type, which isn't currently being tracked. "
         "Learn how to turn it on [here](https://statshq.xyz/docs/?page=bot-setup&section=advanced-tracking)."
     )
-
 
     def _join_stat_names(self, names: List[str]) -> str:
         """Join display names naturally: 'A', 'A and B', or 'A, B, and C'."""
@@ -888,7 +1818,6 @@ class DatabaseStats(commands.Cog):
         if len(names) == 2:
             return f"**{names[0]}** and **{names[1]}**"
         return ", ".join(f"**{n}**" for n in names[:-1]) + f", and **{names[-1]}**"
-
 
     async def check_stat_types_enabled(self, guild_id: int, required_stats: List[str]) -> Optional[str]:
         """
@@ -912,7 +1841,8 @@ class DatabaseStats(commands.Cog):
         missing = [s for s in required_stats if not toggles.get(s, False)]
 
         if missing:
-            missing_names = [self.STAT_TYPE_DISPLAY_NAMES.get(s, s) for s in missing]
+            missing_names = [
+                self.STAT_TYPE_DISPLAY_NAMES.get(s, s) for s in missing]
             return self.STAT_TYPE_DISABLED_MESSAGE_TEMPLATE.format(
                 stat_names=self._join_stat_names(missing_names)
             )
@@ -4037,33 +4967,87 @@ class DatabaseStats(commands.Cog):
                         print(f"  ⚠️ Could not create index: {e}")
                 print("  ✅ Paddle indexes checked/created")
 
-                # ----- seed: modules -----
-                # Pricing rule: yearly = monthly x 10 (2 months free, ~16.7% off)
-                optimization_monthly = 2.49
-                optimization_yearly = round(
-                    optimization_monthly * 10, 2)  # 24.90
+                # ----- seed: modules (idempotent — safe to run on every restart) -----
+                # This whole block is wrapped in its own try/except so that if it
+                # ever hits an unexpected DB error, that error can NEVER abort the
+                # rest of initialize_database (e.g. the autorole tables further
+                # down). It only ever seeds/corrects; it never deletes anything.
+                try:
+                    # Pricing rule: yearly = monthly x 10 (2 months free, ~16.7% off)
+                    optimization_monthly = 2.49
+                    optimization_yearly = round(
+                        optimization_monthly * 10, 2)  # 24.90
 
-                await conn.execute('''
-                    INSERT INTO modules (
-                        module_key, display_name, description, module_number,
-                        monthly_price_usd, yearly_price_usd,
-                        paddle_product_id, paddle_monthly_price_id, paddle_yearly_price_id
-                    ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9
-                    ) ON CONFLICT (module_key) DO NOTHING
-                ''',
-                                   'optimization',
-                                   'Optimization+',
-                                   'Unlock scheduled resets, custom time periods, unlimited history syncs and indefinite data storage.',
-                                   '1.1',
-                                   optimization_monthly,
-                                   optimization_yearly,
-                                   'pro_01kv2cxndcxkfgrzzd8ay3tb11',
-                                   'pri_01kv2czhp9jn6kd489rmtqgqg9',
-                                   'pri_01kv2cyny93van4n4gjz58gayv'
-                                   )
-                print(
-                    f"  ✅ Seeded module: optimization (monthly=${optimization_monthly}, yearly=${optimization_yearly})")
+                    FINAL_MODULE_KEY = 'optimization-plus'
+                    FINAL_PRODUCT_ID = 'pro_01kv0mpav7ahkxmvr777er76ve'
+                    FINAL_MONTHLY_PRICE_ID = 'pri_01kv0msyg5np26qbzq894qezap'
+                    FINAL_YEARLY_PRICE_ID = 'pri_01kv0mx1mjrsnxxjp578dv62st'
+
+                    # Step 1: if a legacy row still exists under the old key
+                    # 'optimization', rename it to the final key — but only if
+                    # nothing already owns the final key. This can never create
+                    # a duplicate, and is a no-op once already renamed.
+                    await conn.execute('''
+                        UPDATE modules
+                        SET module_key = $1
+                        WHERE module_key = 'optimization'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM modules m2 WHERE m2.module_key = $1
+                          )
+                    ''', FINAL_MODULE_KEY)
+
+                    # Step 2: seed the row under the FINAL key if it doesn't exist
+                    # yet. After Step 1 there is at most one row that could collide
+                    # on module_key, so ON CONFLICT (module_key) DO NOTHING is safe.
+                    await conn.execute('''
+                        INSERT INTO modules (
+                            module_key, display_name, description, module_number,
+                            monthly_price_usd, yearly_price_usd,
+                            paddle_product_id, paddle_monthly_price_id, paddle_yearly_price_id
+                        ) VALUES (
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9
+                        )
+                        ON CONFLICT (module_key) DO NOTHING
+                    ''',
+                                       FINAL_MODULE_KEY,
+                                       'Optimization+',
+                                       'Unlock scheduled resets, custom time periods, unlimited history syncs and indefinite data storage.',
+                                       '1.1',
+                                       optimization_monthly,
+                                       optimization_yearly,
+                                       FINAL_PRODUCT_ID,
+                                       FINAL_MONTHLY_PRICE_ID,
+                                       FINAL_YEARLY_PRICE_ID
+                                       )
+
+                    # Step 3: correct the Paddle IDs on the final row, but ONLY if
+                    # they're actually wrong AND none of the target IDs are already
+                    # claimed by a different row. This is the statement that used
+                    # to crash with "duplicate key value violates unique constraint
+                    # modules_paddle_product_id_key" — guarding it turns that into
+                    # a harmless no-op instead of an exception.
+                    await conn.execute('''
+                        UPDATE modules
+                        SET paddle_product_id = $2,
+                            paddle_monthly_price_id = $3,
+                            paddle_yearly_price_id = $4
+                        WHERE module_key = $1
+                          AND paddle_product_id IS DISTINCT FROM $2
+                          AND NOT EXISTS (
+                              SELECT 1 FROM modules m2
+                              WHERE m2.module_key <> $1
+                                AND (m2.paddle_product_id = $2
+                                     OR m2.paddle_monthly_price_id = $3
+                                     OR m2.paddle_yearly_price_id = $4)
+                          )
+                    ''', FINAL_MODULE_KEY, FINAL_PRODUCT_ID, FINAL_MONTHLY_PRICE_ID, FINAL_YEARLY_PRICE_ID)
+
+                    print(f"  ✅ Seeded/verified module: {FINAL_MODULE_KEY} "
+                          f"(monthly=${optimization_monthly}, yearly=${optimization_yearly})")
+
+                except asyncpg.exceptions.PostgresError as e:
+                    print(
+                        f"  ⚠️ Module seeding step skipped due to error (non-fatal, execution continues): {e}")
 
                 # ----- fix: discount IDs were seeded with stale/incorrect Paddle discount IDs -----
                 # Correcting to match the live .env values (verified against Paddle directly)
@@ -4079,38 +5063,18 @@ class DatabaseStats(commands.Cog):
                     (10, 'dsc_01kv2bszdmjyv4j65wt9j45gc6'),   # TEN_SERVERS
                     (11, 'dsc_01kv2bthk1stbryqq8xxw7cb0v'),   # ELEVEN_SERVERS
                 ]
-                for server_count, correct_discount_id in discount_id_corrections:
-                    await conn.execute('''
-                        UPDATE server_count_discounts
-                        SET paddle_discount_id = $2
-                        WHERE server_count = $1
-                    ''', server_count, correct_discount_id)
-                print(
-                    "  ✅ Corrected server_count_discounts paddle_discount_id values to match live .env")
-
-                # ----- fix: optimization module's Paddle IDs were seeded incorrectly -----
-                await conn.execute('''
-                    UPDATE modules
-                    SET paddle_product_id = $1,
-                        paddle_monthly_price_id = $2,
-                        paddle_yearly_price_id = $3
-                    WHERE module_key = $4
-                ''',
-                                   'pro_01kv0mpav7ahkxmvr777er76ve',   # OPTIMIZATION
-                                   'pri_01kv0msyg5np26qbzq894qezap',   # MONTHLY_OPTIMIZATION
-                                   'pri_01kv0mx1mjrsnxxjp578dv62st',   # YEARLY_OPTIMIZATION
-                                   'optimization'
-                                   )
-                print(
-                    "  ✅ Corrected modules.paddle_product_id / price IDs to match live .env")
-
-                await conn.execute('''
-                    UPDATE modules
-                    SET module_key = 'optimization-plus'
-                    WHERE module_key = 'optimization'
-                ''')
-                print(
-                    "  ✅ Corrected modules.module_key 'optimization' -> 'optimization-plus' to match frontend")
+                try:
+                    for server_count, correct_discount_id in discount_id_corrections:
+                        await conn.execute('''
+                            UPDATE server_count_discounts
+                            SET paddle_discount_id = $2
+                            WHERE server_count = $1
+                        ''', server_count, correct_discount_id)
+                    print(
+                        "  ✅ Corrected server_count_discounts paddle_discount_id values to match live .env")
+                except asyncpg.exceptions.PostgresError as e:
+                    print(
+                        f"  ⚠️ Discount ID correction skipped due to error (non-fatal): {e}")
 
                 # ----- subscription_guild_switches (audit log for server-switching) -----
                 await conn.execute('''
@@ -4152,6 +5116,265 @@ class DatabaseStats(commands.Cog):
                     CREATE INDEX IF NOT EXISTS idx_subscriptions_source ON subscriptions(source)
                 ''')
                 print("  ✅ Created/verified index: idx_subscriptions_source")
+
+                # ===================================================================
+                # ===== AUTOROLE SYSTEM TABLES =====
+                # ===================================================================
+                print("\n" + "="*60)
+                print("🎭 CREATING AUTOROLE SYSTEM TABLES")
+                print("="*60)
+
+                # ----- autoroles: parent config table, one row per autorole -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS autoroles (
+                        id BIGSERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        created_by_id BIGINT NOT NULL,
+                        name TEXT NOT NULL,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+
+                        -- Page 1: scope basis (does this autorole apply server-wide,
+                        -- to a specific channel, or a specific category by default)
+                        base_scope_type TEXT NOT NULL DEFAULT 'server'
+                            CHECK (base_scope_type IN ('server', 'channel', 'category')),
+                        base_channel_id BIGINT,
+                        base_category_id BIGINT,
+
+                        -- Page 4: role behavior
+                        role_behavior TEXT NOT NULL DEFAULT 'dynamic'
+                            CHECK (role_behavior IN ('dynamic', 'permanent')),
+                        target_role_id BIGINT,
+
+                        -- Page 4: update frequency
+                        update_frequency_type TEXT NOT NULL DEFAULT 'periodic'
+                            CHECK (update_frequency_type IN ('periodic', 'schedule')),
+                        -- periodic: run every N minutes
+                        update_frequency_minutes INT,
+                        -- schedule: reuse the same shape as reset_schedules' recurring fields
+                        update_schedule_weekdays INTEGER[],
+                        update_schedule_days_of_month INTEGER[],
+                        update_schedule_times TIME[],
+                        update_schedule_interval_days INTEGER,
+
+                        -- Page 4: notifications
+                        notify_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                        notify_channel_id BIGINT,
+                        notify_message TEXT,
+                        notify_mention_roles BOOLEAN NOT NULL DEFAULT FALSE,
+                        notify_frequency_minutes INT,
+                        notify_schedule_weekdays INTEGER[],
+                        notify_schedule_times TIME[],
+
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: autoroles")
+
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_autoroles_guild '
+                    'ON autoroles(guild_id)'
+                )
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_autoroles_guild_active '
+                    'ON autoroles(guild_id, is_active)'
+                )
+                print("  ✅ Created/verified indexes: autoroles")
+
+                # ----- autorole_templates: ordered requirement rows, chained pairwise -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS autorole_templates (
+                        id BIGSERIAL PRIMARY KEY,
+                        autorole_id BIGINT NOT NULL REFERENCES autoroles(id) ON DELETE CASCADE,
+                        position INT NOT NULL,
+
+                        stat_type TEXT NOT NULL CHECK (stat_type IN (
+                            'message', 'voice', 'emoji', 'invites', 'mentions',
+                            'activity', 'joined_age', 'account_age', 'event'
+                        )),
+                        requirement_type TEXT NOT NULL CHECK (requirement_type IN (
+                            'amount', 'top_percent', 'streak', 'specific',
+                            'sessions', 'total_time', 'age_days'
+                        )),
+
+                        -- Scope override for this template: server/channel/category
+                        -- (not applicable to activity/joined_age/account_age/event)
+                        scope_type TEXT NOT NULL DEFAULT 'server'
+                            CHECK (scope_type IN ('server', 'channel', 'category')),
+                        scope_channel_id BIGINT,
+                        scope_category_id BIGINT,
+
+                        -- Time period subtype, matches reset_schedules' time-mode pattern
+                        time_mode TEXT NOT NULL DEFAULT 'all_time'
+                            CHECK (time_mode IN ('all_time', 'days_back', 'date_range', 'rolling_window')),
+                        time_days_back INT,
+                        time_from_date TIMESTAMPTZ,
+                        time_to_date TIMESTAMPTZ,
+                        time_rolling_type TEXT,
+                        time_rolling_value INT,
+
+                        -- Amount requirement
+                        amount_threshold BIGINT,
+
+                        -- Top % requirement
+                        top_percent NUMERIC(5,2),
+
+                        -- Streak requirement (daily threshold, min 2 days)
+                        streak_daily_threshold BIGINT,
+                        streak_min_days INT CHECK (streak_min_days IS NULL OR streak_min_days >= 2),
+
+                        -- Specific requirement (emoji string, or activity name/type)
+                        specific_value TEXT,
+                        specific_activity_type TEXT,
+
+                        -- Invites: which invite_type to filter on ('normal', 'vanity', etc, or NULL = any)
+                        invite_type_filter TEXT,
+
+                        -- Mentions: direction
+                        mention_direction TEXT CHECK (mention_direction IN ('sent', 'received')),
+
+                        -- Joined age / account age (in days)
+                        age_days_threshold INT,
+
+                        -- Event: guild tag flag (no extra config needed beyond stat_type/requirement_type)
+
+                        -- Operator linking THIS template to the NEXT one in position order
+                        -- (NULL on the last template in the chain)
+                        operator_to_next TEXT CHECK (operator_to_next IN ('AND', 'OR')),
+
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                        UNIQUE(autorole_id, position)
+                    )
+                ''')
+                print("  ✅ Created/verified table: autorole_templates")
+
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_autorole_templates_autorole '
+                    'ON autorole_templates(autorole_id, position)'
+                )
+                print("  ✅ Created/verified indexes: autorole_templates")
+
+                # ----- autorole_filters: user/data/role filtering config, one row per autorole -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS autorole_filters (
+                        autorole_id BIGINT PRIMARY KEY REFERENCES autoroles(id) ON DELETE CASCADE,
+
+                        -- User filtering: allow bots, users, or both
+                        allow_bots BOOLEAN NOT NULL DEFAULT FALSE,
+                        allow_users BOOLEAN NOT NULL DEFAULT TRUE,
+
+                        -- Role filtering: which roles this autorole is allowed to add/remove
+                        -- (free plan limit of 1 is NOT enforced yet, per current scope)
+                        allowed_target_roles BIGINT[] DEFAULT '{}',
+
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: autorole_filters")
+
+                # ----- autorole_role_exclusions: assign-if-role-present/absent -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS autorole_role_exclusions (
+                        id BIGSERIAL PRIMARY KEY,
+                        autorole_id BIGINT NOT NULL REFERENCES autoroles(id) ON DELETE CASCADE,
+                        role_id BIGINT NOT NULL,
+                        condition TEXT NOT NULL CHECK (condition IN ('present', 'absent')),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(autorole_id, role_id)
+                    )
+                ''')
+                print("  ✅ Created/verified table: autorole_role_exclusions")
+
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_autorole_role_exclusions_autorole '
+                    'ON autorole_role_exclusions(autorole_id)'
+                )
+
+                # ----- autorole_blacklist / autorole_whitelist -----
+                # entity_type distinguishes what kind of ID is stored in entity_id.
+                # Whitelist always takes priority over blacklist when both match the same user.
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS autorole_blacklist (
+                        id BIGSERIAL PRIMARY KEY,
+                        autorole_id BIGINT NOT NULL REFERENCES autoroles(id) ON DELETE CASCADE,
+                        entity_type TEXT NOT NULL CHECK (entity_type IN ('user', 'role', 'channel', 'category')),
+                        entity_id BIGINT NOT NULL,
+                        added_by BIGINT NOT NULL DEFAULT 0,
+                        added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(autorole_id, entity_type, entity_id)
+                    )
+                ''')
+                print("  ✅ Created/verified table: autorole_blacklist")
+
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS autorole_whitelist (
+                        id BIGSERIAL PRIMARY KEY,
+                        autorole_id BIGINT NOT NULL REFERENCES autoroles(id) ON DELETE CASCADE,
+                        entity_type TEXT NOT NULL CHECK (entity_type IN ('user', 'role', 'channel', 'category')),
+                        entity_id BIGINT NOT NULL,
+                        added_by BIGINT NOT NULL DEFAULT 0,
+                        added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(autorole_id, entity_type, entity_id)
+                    )
+                ''')
+                print("  ✅ Created/verified table: autorole_whitelist")
+
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_autorole_blacklist_lookup '
+                    'ON autorole_blacklist(autorole_id, entity_type, entity_id)'
+                )
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_autorole_whitelist_lookup '
+                    'ON autorole_whitelist(autorole_id, entity_type, entity_id)'
+                )
+                print(
+                    "  ✅ Created/verified indexes: autorole_blacklist / autorole_whitelist")
+
+                # ----- autorole_execution_state: cron-managed scheduling/tracking -----
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS autorole_execution_state (
+                        autorole_id BIGINT PRIMARY KEY REFERENCES autoroles(id) ON DELETE CASCADE,
+                        guild_id BIGINT NOT NULL,
+
+                        next_run_at TIMESTAMPTZ,
+                        last_run_at TIMESTAMPTZ,
+                        last_synced_config_at TIMESTAMPTZ,
+
+                        last_status TEXT,
+                        last_error TEXT,
+                        last_run_assigned_count INT DEFAULT 0,
+                        last_run_removed_count INT DEFAULT 0,
+
+                        -- notification scheduling tracked separately since its own
+                        -- frequency can differ from the assignment update frequency
+                        notify_next_run_at TIMESTAMPTZ,
+                        notify_last_run_at TIMESTAMPTZ,
+                        pending_notify_user_ids BIGINT[] DEFAULT '{}',
+
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                ''')
+                print("  ✅ Created/verified table: autorole_execution_state")
+
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_autorole_execution_state_next_run '
+                    'ON autorole_execution_state(next_run_at) WHERE next_run_at IS NOT NULL'
+                )
+                await conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_autorole_execution_state_guild '
+                    'ON autorole_execution_state(guild_id)'
+                )
+                print("  ✅ Created/verified indexes: autorole_execution_state")
+
+                await conn.execute('''
+                    ALTER TABLE autoroles
+                        ADD COLUMN IF NOT EXISTS notify_on_assignment BOOLEAN NOT NULL DEFAULT FALSE,
+                        ADD COLUMN IF NOT EXISTS notify_batch_cooldown_seconds INT NOT NULL DEFAULT 10
+                ''')
+                print(
+                    "  ✅ Added notify_on_assignment / notify_batch_cooldown_seconds to autoroles")
 
                 # ===== ADD PRIMARY KEYS AND CONSTRAINTS =====
                 print("\n" + "="*60)
@@ -4377,6 +5600,7 @@ class DatabaseStats(commands.Cog):
             self.init_pools,
             self.metrics_reset_task,
             self.redis_batch_flusher,
+            self.voice_session_reconciler,
         ]
         if hasattr(self, 'channel_sync_cron'):
             self.channel_sync_cron.stop()
@@ -4475,6 +5699,7 @@ class DatabaseStats(commands.Cog):
         # so we defer the write to a one-shot background task instead of
         # blocking cog_load, which would delay the rest of bot startup.
         asyncio.create_task(self._record_restart_when_ready())
+        self.voice_session_reconciler.start()
 
     async def _record_restart_when_ready(self):
         # Wait until init_pools has actually set self.pool
@@ -4759,6 +5984,63 @@ class DatabaseStats(commands.Cog):
         params = params[:16]  # 👈 Changed from 15 to 16
 
         await self.redis_batch_write('voice_sessions', {'params': params})
+
+    async def _resolve_member(self, guild: Optional[discord.Guild], user_id: int) -> Optional[discord.Member]:
+        """
+        Resolve a Member object with guaranteed-correct identity resolution:
+        1. Try local cache first (instant, no API call, no rate limit cost).
+        2. On cache miss, fall back to a live API fetch through the rate
+            limiter, so we never return "Unknown User" just because
+            discord.py's local cache happened to be cold.
+
+        Returns None only when the member has genuinely left the guild
+        (discord.NotFound) or the fetch itself failed/timed out — at that
+        point there is no name to resolve because the user isn't a member
+        anymore, not because of a cache gap.
+        """
+        if guild is None:
+            return None
+
+        # Fast path: cache hit, no API call needed.
+        member = guild.get_member(user_id)
+        if member is not None:
+            return member
+
+        # Cache miss: fall back to a real API call, gated by the rate limiter.
+        try:
+            await self.rate_limiter.acquire(RateLimitType.API, timeout=30.0)
+        except asyncio.TimeoutError:
+            print(
+                f"[_resolve_member] Rate limiter acquire timed out after 30s "
+                f"for user={user_id} guild={guild.id}"
+            )
+            return None
+        except Exception as e:
+            print(
+                f"[_resolve_member] Unexpected rate limiter error for "
+                f"user={user_id} guild={guild.id}: {e}"
+            )
+            return None
+
+        try:
+            member = await guild.fetch_member(user_id)
+            return member
+        except discord.NotFound:
+            # User has genuinely left the guild. "Unknown User" is correct here
+            # — there is no name to resolve, this isn't a cache artifact.
+            return None
+        except discord.HTTPException as e:
+            print(
+                f"[_resolve_member] fetch_member HTTP error for user={user_id} "
+                f"guild={guild.id}: {e}"
+            )
+            return None
+        except Exception as e:
+            print(
+                f"[_resolve_member] Unexpected error fetching user={user_id} "
+                f"guild={guild.id}: {e}"
+            )
+            return None
 
     async def _record_voice_session_history_direct(self, guild_id: int, user_id: int, channel_id: int,
                                                    join_time: datetime, leave_time: datetime,
@@ -5421,6 +6703,1157 @@ class DatabaseStats(commands.Cog):
                 return row['role_name'] if row else None
         except:
             return None
+
+    async def _apply_autorole_list_filter(self, autorole_id: int, user_id: int,
+                                          role_ids: Optional[List[int]] = None,
+                                          channel_id: Optional[int] = None,
+                                          category_id: Optional[int] = None,
+                                          conn=None) -> bool:
+        """
+        Determine whether a given user is eligible for a specific autorole,
+        based on that autorole's blacklist/whitelist tables.
+
+        Whitelist ALWAYS takes priority: if any whitelist entry matches this
+        user (by user_id, by any of their role_ids, by channel_id, or by
+        category_id), the user is eligible regardless of any blacklist match.
+
+        If nothing in the whitelist matches, the user is eligible UNLESS
+        something in the blacklist matches them.
+
+        Returns True if the user is allowed to receive/keep the autorole,
+        False if they should be excluded.
+        """
+        if not self.pool:
+            return True
+
+        role_ids = role_ids or []
+
+        async def _run(c):
+            whitelist_rows = await c.fetch('''
+                SELECT entity_type, entity_id
+                FROM autorole_whitelist
+                WHERE autorole_id = $1
+            ''', autorole_id)
+
+            if whitelist_rows:
+                for row in whitelist_rows:
+                    etype, eid = row['entity_type'], row['entity_id']
+                    if etype == 'user' and eid == user_id:
+                        return True
+                    if etype == 'role' and eid in role_ids:
+                        return True
+                    if etype == 'channel' and channel_id is not None and eid == channel_id:
+                        return True
+                    if etype == 'category' and category_id is not None and eid == category_id:
+                        return True
+                # Whitelist exists but this user matched none of it — fall
+                # through to blacklist check either way below.
+
+            blacklist_rows = await c.fetch('''
+                SELECT entity_type, entity_id
+                FROM autorole_blacklist
+                WHERE autorole_id = $1
+            ''', autorole_id)
+
+            for row in blacklist_rows:
+                etype, eid = row['entity_type'], row['entity_id']
+                if etype == 'user' and eid == user_id:
+                    return False
+                if etype == 'role' and eid in role_ids:
+                    return False
+                if etype == 'channel' and channel_id is not None and eid == channel_id:
+                    return False
+                if etype == 'category' and category_id is not None and eid == category_id:
+                    return False
+
+            return True
+
+        try:
+            if conn is not None:
+                return await _run(conn)
+            async with self.pool.acquire() as new_conn:
+                return await _run(new_conn)
+        except Exception as e:
+            print(
+                f"Error applying autorole list filter for autorole {autorole_id}, user {user_id}: {e}")
+            # Fail open: don't block assignment due to a filter-check error,
+            # since blacklist/whitelist is a refinement, not the core requirement check
+            return True
+
+    async def _get_autorole_eligible_user_ids(self, autorole_id: int, guild_id: int,
+                                              candidate_user_ids: List[int],
+                                              conn=None) -> List[int]:
+        """
+        Batch version: given a list of user_ids that already meet an autorole's
+        stat requirements, filter them down to only those who pass the
+        blacklist/whitelist check. Also pulls each candidate's current role_ids
+        from current_role_members so role-based list entries can be checked
+        without a Discord API call.
+        """
+        if not self.pool or not candidate_user_ids:
+            return []
+
+        async def _run(c):
+            whitelist_rows = await c.fetch('''
+                SELECT entity_type, entity_id
+                FROM autorole_whitelist
+                WHERE autorole_id = $1
+            ''', autorole_id)
+
+            blacklist_rows = await c.fetch('''
+                SELECT entity_type, entity_id
+                FROM autorole_blacklist
+                WHERE autorole_id = $1
+            ''', autorole_id)
+
+            whitelisted_users = {r['entity_id']
+                                 for r in whitelist_rows if r['entity_type'] == 'user'}
+            whitelisted_roles = {r['entity_id']
+                                 for r in whitelist_rows if r['entity_type'] == 'role'}
+            blacklisted_users = {r['entity_id']
+                                 for r in blacklist_rows if r['entity_type'] == 'user'}
+            blacklisted_roles = {r['entity_id']
+                                 for r in blacklist_rows if r['entity_type'] == 'role'}
+
+            has_whitelist = bool(whitelist_rows)
+
+            user_roles: Dict[int, List[int]] = {}
+            if whitelisted_roles or blacklisted_roles:
+                role_rows = await c.fetch('''
+                    SELECT user_id, role_id
+                    FROM current_role_members
+                    WHERE guild_id = $1 AND user_id = ANY($2::bigint[])
+                ''', guild_id, candidate_user_ids)
+                for row in role_rows:
+                    user_roles.setdefault(
+                        row['user_id'], []).append(row['role_id'])
+
+            eligible = []
+            for uid in candidate_user_ids:
+                roles = user_roles.get(uid, [])
+
+                is_whitelisted = (uid in whitelisted_users) or any(
+                    r in whitelisted_roles for r in roles)
+                if is_whitelisted:
+                    eligible.append(uid)
+                    continue
+
+                if has_whitelist:
+                    continue
+
+                is_blacklisted = (uid in blacklisted_users) or any(
+                    r in blacklisted_roles for r in roles)
+                if is_blacklisted:
+                    continue
+
+                eligible.append(uid)
+
+            return eligible
+
+        try:
+            if conn is not None:
+                return await _run(conn)
+            async with self.pool.acquire() as new_conn:
+                return await _run(new_conn)
+        except Exception as e:
+            print(
+                f"Error batch-filtering eligible users for autorole {autorole_id}: {e}")
+            return candidate_user_ids
+
+    # ======================================================================
+    # AUTOROLE STAT QUERY FUNCTIONS
+    # ======================================================================
+    # Pattern: for each stat type, three (or four) functions:
+    #   autorole_<stat>_amount        -> returns user_ids meeting a threshold
+    #   autorole_<stat>_top_percent   -> returns user_ids in top X%
+    #   autorole_<stat>_streak        -> returns user_ids with a qualifying daily streak
+    # All take a scope (server/channel/category) and a time window, and all
+    # exclude bots by default the same way _apply_bot_filter does elsewhere.
+    # All accept an optional existing `conn` to avoid a fresh pool acquire
+    # when called from a caller that already holds one (e.g. preview mode
+    # or the autorole worker pass).
+
+    def _build_autorole_scope_clause(self, scope_type: str, channel_id: Optional[int],
+                                     category_id: Optional[int], params: List, param_start: int) -> Tuple[str, List, int]:
+        """Build the WHERE fragment for server/channel/category scope. Returns
+        (clause, updated_params, next_param_index)."""
+        if scope_type == 'channel' and channel_id is not None:
+            params.append(channel_id)
+            return f" AND channel_id = ${param_start}", params, param_start + 1
+        elif scope_type == 'category' and category_id is not None:
+            params.append(category_id)
+            return f" AND category_id = ${param_start}", params, param_start + 1
+        return "", params, param_start
+
+    def _build_autorole_time_clause(self, time_mode: str, days_back: Optional[int],
+                                    from_date: Optional[datetime], to_date: Optional[datetime],
+                                    rolling_type: Optional[str], rolling_value: Optional[int],
+                                    time_col: str, params: List, param_start: int) -> Tuple[str, List, int]:
+        """Build the WHERE fragment for the template's time period, mirroring
+        the reset_schedules time-mode pattern (all_time/days_back/date_range/rolling_window)."""
+        now = datetime.now(timezone.utc)
+
+        if time_mode == 'all_time':
+            return "", params, param_start
+
+        elif time_mode == 'days_back' and days_back:
+            start = now - timedelta(days=days_back)
+            params.append(start)
+            return f" AND {time_col} >= ${param_start}", params, param_start + 1
+
+        elif time_mode == 'date_range':
+            clause = ""
+            if from_date:
+                params.append(ensure_aware(from_date))
+                clause += f" AND {time_col} >= ${param_start}"
+                param_start += 1
+            if to_date:
+                params.append(ensure_aware(to_date))
+                clause += f" AND {time_col} <= ${param_start}"
+                param_start += 1
+            return clause, params, param_start
+
+        elif time_mode == 'rolling_window' and rolling_type and rolling_value is not None:
+            if rolling_type == 'weekday':
+                days_since = (now.weekday() - rolling_value) % 7
+                if days_since == 0:
+                    days_since = 7
+                start = (now - timedelta(days=days_since)).replace(
+                    hour=0, minute=0, second=0, microsecond=0)
+            else:  # monthly
+                current_day = now.day
+                if current_day >= rolling_value:
+                    try:
+                        start = now.replace(
+                            day=rolling_value, hour=0, minute=0, second=0, microsecond=0)
+                    except ValueError:
+                        start = now.replace(
+                            day=28, hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    prev_month = now.month - 1 if now.month > 1 else 12
+                    prev_year = now.year if now.month > 1 else now.year - 1
+                    try:
+                        start = now.replace(year=prev_year, month=prev_month, day=rolling_value,
+                                            hour=0, minute=0, second=0, microsecond=0)
+                    except ValueError:
+                        start = now.replace(year=prev_year, month=prev_month, day=28,
+                                            hour=0, minute=0, second=0, microsecond=0)
+            params.append(start)
+            return f" AND {time_col} >= ${param_start}", params, param_start + 1
+
+        return "", params, param_start
+
+    def _find_users_with_streak(self, rows, min_days: int) -> List[int]:
+        """Shared helper: given rows of (user_id, day) that already passed the
+        daily threshold filter, find users with >= min_days consecutive days."""
+        by_user: Dict[int, List] = {}
+        for row in rows:
+            by_user.setdefault(row['user_id'], []).append(row['day'])
+
+        qualifying = []
+        for user_id, days in by_user.items():
+            days = sorted(days)
+            longest = 1
+            current = 1
+            for i in range(1, len(days)):
+                if (days[i] - days[i - 1]).days == 1:
+                    current += 1
+                    longest = max(longest, current)
+                else:
+                    current = 1
+            if len(days) >= 1 and longest >= min_days:
+                qualifying.append(user_id)
+        return qualifying
+
+    # ---------------- MESSAGE ----------------
+
+    async def autorole_message_amount(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        query = f'''
+            SELECT user_id, SUM(message_count) as total
+            FROM message_tracking_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}{time_clause}
+            GROUP BY user_id
+            HAVING SUM(message_count) >= ${param_idx}
+        '''
+        params.append(template['amount_threshold'])
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_message_top_percent(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        query = f'''
+            SELECT user_id, SUM(message_count) as total,
+                   PERCENT_RANK() OVER (ORDER BY SUM(message_count) DESC) as pct_rank
+            FROM message_tracking_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}{time_clause}
+            GROUP BY user_id
+            HAVING SUM(message_count) > 0
+        '''
+        cutoff = template['top_percent'] / 100.0
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows if row['pct_rank'] <= cutoff]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_message_streak(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+
+        lookback_days = max(90, (template.get('streak_min_days') or 2) * 3)
+        params.append(datetime.now(timezone.utc) -
+                      timedelta(days=lookback_days))
+        lookback_param = param_idx
+        param_idx += 1
+
+        query = f'''
+            SELECT user_id, DATE(hour) as day, SUM(message_count) as daily_total
+            FROM message_tracking_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}
+            AND hour >= ${lookback_param}
+            GROUP BY user_id, DATE(hour)
+            HAVING SUM(message_count) >= {int(template['streak_daily_threshold'])}
+            ORDER BY user_id, day
+        '''
+
+        async def _run(c):
+            return await c.fetch(query, *params)
+
+        if conn is not None:
+            rows = await _run(conn)
+        else:
+            async with self.pool.acquire() as new_conn:
+                rows = await _run(new_conn)
+
+        return self._find_users_with_streak(rows, template['streak_min_days'])
+
+    # ---------------- VOICE ----------------
+
+    async def autorole_voice_amount(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        query = f'''
+            SELECT user_id, SUM(total_seconds) as total
+            FROM voice_session_history_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}{time_clause}
+            GROUP BY user_id
+            HAVING SUM(total_seconds) >= ${param_idx}
+        '''
+        params.append(template['amount_threshold'])
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_voice_top_percent(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        query = f'''
+            SELECT user_id, SUM(total_seconds) as total,
+                   PERCENT_RANK() OVER (ORDER BY SUM(total_seconds) DESC) as pct_rank
+            FROM voice_session_history_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}{time_clause}
+            GROUP BY user_id
+            HAVING SUM(total_seconds) > 0
+        '''
+        cutoff = template['top_percent'] / 100.0
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows if row['pct_rank'] <= cutoff]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_voice_streak(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+
+        lookback_days = max(90, (template.get('streak_min_days') or 2) * 3)
+        params.append(datetime.now(timezone.utc) -
+                      timedelta(days=lookback_days))
+        lookback_param = param_idx
+        param_idx += 1
+
+        query = f'''
+            SELECT user_id, DATE(hour) as day, SUM(total_seconds) as daily_total
+            FROM voice_session_history_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}
+            AND hour >= ${lookback_param}
+            GROUP BY user_id, DATE(hour)
+            HAVING SUM(total_seconds) >= {int(template['streak_daily_threshold'])}
+            ORDER BY user_id, day
+        '''
+
+        async def _run(c):
+            return await c.fetch(query, *params)
+
+        if conn is not None:
+            rows = await _run(conn)
+        else:
+            async with self.pool.acquire() as new_conn:
+                rows = await _run(new_conn)
+
+        return self._find_users_with_streak(rows, template['streak_min_days'])
+
+    # ---------------- EMOJI ----------------
+
+    async def autorole_emoji_amount(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        specific_clause = ""
+        if template.get('specific_value'):
+            params.append(template['specific_value'])
+            specific_clause = f" AND emoji_str = ${param_idx}"
+            param_idx += 1
+
+        query = f'''
+            SELECT user_id, SUM(usage_count) as total
+            FROM emoji_usage_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}{time_clause}{specific_clause}
+            GROUP BY user_id
+            HAVING SUM(usage_count) >= ${param_idx}
+        '''
+        params.append(template['amount_threshold'])
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_emoji_top_percent(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        specific_clause = ""
+        if template.get('specific_value'):
+            params.append(template['specific_value'])
+            specific_clause = f" AND emoji_str = ${param_idx}"
+            param_idx += 1
+
+        query = f'''
+            SELECT user_id, SUM(usage_count) as total,
+                   PERCENT_RANK() OVER (ORDER BY SUM(usage_count) DESC) as pct_rank
+            FROM emoji_usage_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}{time_clause}{specific_clause}
+            GROUP BY user_id
+            HAVING SUM(usage_count) > 0
+        '''
+        cutoff = template['top_percent'] / 100.0
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows if row['pct_rank'] <= cutoff]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_emoji_specific(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        """'Specific' for emoji: user must have used the named emoji at least once
+        (or >= amount_threshold times, if provided) in scope/time."""
+        if not self.pool or not template.get('specific_value'):
+            return []
+        params = [guild_id, template['specific_value']]
+        param_idx = 3
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        min_count = template.get('amount_threshold') or 1
+
+        query = f'''
+            SELECT user_id, SUM(usage_count) as total
+            FROM emoji_usage_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE AND emoji_str = $2
+            {scope_clause}{time_clause}
+            GROUP BY user_id
+            HAVING SUM(usage_count) >= {int(min_count)}
+        '''
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_emoji_streak(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+
+        lookback_days = max(90, (template.get('streak_min_days') or 2) * 3)
+        params.append(datetime.now(timezone.utc) -
+                      timedelta(days=lookback_days))
+        lookback_param = param_idx
+        param_idx += 1
+
+        specific_clause = ""
+        if template.get('specific_value'):
+            params.append(template['specific_value'])
+            specific_clause = f" AND emoji_str = ${param_idx}"
+            param_idx += 1
+
+        query = f'''
+            SELECT user_id, DATE(hour) as day, SUM(usage_count) as daily_total
+            FROM emoji_usage_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}
+            AND hour >= ${lookback_param}
+            {specific_clause}
+            GROUP BY user_id, DATE(hour)
+            HAVING SUM(usage_count) >= {int(template['streak_daily_threshold'])}
+            ORDER BY user_id, day
+        '''
+
+        async def _run(c):
+            return await c.fetch(query, *params)
+
+        if conn is not None:
+            rows = await _run(conn)
+        else:
+            async with self.pool.acquire() as new_conn:
+                rows = await _run(new_conn)
+
+        return self._find_users_with_streak(rows, template['streak_min_days'])
+
+    # ---------------- INVITES ----------------
+
+    async def autorole_invites_amount(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        """Counts successful invites where this user was the inviter."""
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'created_at', params, param_idx)
+
+        type_clause = ""
+        if template.get('invite_type_filter'):
+            params.append(template['invite_type_filter'])
+            type_clause = f" AND invite_type = ${param_idx}"
+            param_idx += 1
+
+        query = f'''
+            SELECT inviter_id as user_id, COUNT(*) as total
+            FROM invite_tracking
+            WHERE guild_id = $1 AND is_bot = FALSE AND inviter_id != 0
+            {time_clause}{type_clause}
+            GROUP BY inviter_id
+            HAVING COUNT(*) >= ${param_idx}
+        '''
+        params.append(template['amount_threshold'])
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_invites_top_percent(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'created_at', params, param_idx)
+
+        type_clause = ""
+        if template.get('invite_type_filter'):
+            params.append(template['invite_type_filter'])
+            type_clause = f" AND invite_type = ${param_idx}"
+            param_idx += 1
+
+        query = f'''
+            SELECT inviter_id as user_id, COUNT(*) as total,
+                   PERCENT_RANK() OVER (ORDER BY COUNT(*) DESC) as pct_rank
+            FROM invite_tracking
+            WHERE guild_id = $1 AND is_bot = FALSE AND inviter_id != 0
+            {time_clause}{type_clause}
+            GROUP BY inviter_id
+            HAVING COUNT(*) > 0
+        '''
+        cutoff = template['top_percent'] / 100.0
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows if row['pct_rank'] <= cutoff]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_invites_streak(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+
+        lookback_days = max(90, (template.get('streak_min_days') or 2) * 3)
+        params.append(datetime.now(timezone.utc) -
+                      timedelta(days=lookback_days))
+        lookback_param = param_idx
+        param_idx += 1
+
+        type_clause = ""
+        if template.get('invite_type_filter'):
+            params.append(template['invite_type_filter'])
+            type_clause = f" AND invite_type = ${param_idx}"
+            param_idx += 1
+
+        query = f'''
+            SELECT inviter_id as user_id, DATE(created_at) as day, COUNT(*) as daily_total
+            FROM invite_tracking
+            WHERE guild_id = $1 AND is_bot = FALSE AND inviter_id != 0
+            AND created_at >= ${lookback_param}
+            {type_clause}
+            GROUP BY inviter_id, DATE(created_at)
+            HAVING COUNT(*) >= {int(template['streak_daily_threshold'])}
+            ORDER BY inviter_id, day
+        '''
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [{'user_id': r['user_id'], 'day': r['day']} for r in rows]
+
+        if conn is not None:
+            rows = await _run(conn)
+        else:
+            async with self.pool.acquire() as new_conn:
+                rows = await _run(new_conn)
+
+        return self._find_users_with_streak(rows, template['streak_min_days'])
+
+    # ---------------- MENTIONS ----------------
+
+    async def autorole_mentions_amount(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        direction = template.get('mention_direction', 'received')
+        id_col = 'mentioner_user_id' if direction == 'sent' else 'mentioned_user_id'
+
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        query = f'''
+            SELECT {id_col} as user_id, SUM(mention_count) as total
+            FROM user_mentions_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}{time_clause}
+            GROUP BY {id_col}
+            HAVING SUM(mention_count) >= ${param_idx}
+        '''
+        params.append(template['amount_threshold'])
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_mentions_top_percent(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        direction = template.get('mention_direction', 'received')
+        id_col = 'mentioner_user_id' if direction == 'sent' else 'mentioned_user_id'
+
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        query = f'''
+            SELECT {id_col} as user_id, SUM(mention_count) as total,
+                   PERCENT_RANK() OVER (ORDER BY SUM(mention_count) DESC) as pct_rank
+            FROM user_mentions_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}{time_clause}
+            GROUP BY {id_col}
+            HAVING SUM(mention_count) > 0
+        '''
+        cutoff = template['top_percent'] / 100.0
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows if row['pct_rank'] <= cutoff]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_mentions_streak(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        if not self.pool:
+            return []
+        direction = template.get('mention_direction', 'received')
+        id_col = 'mentioner_user_id' if direction == 'sent' else 'mentioned_user_id'
+
+        params = [guild_id]
+        param_idx = 2
+        scope_clause, params, param_idx = self._build_autorole_scope_clause(
+            template['scope_type'], template.get(
+                'scope_channel_id'), template.get('scope_category_id'),
+            params, param_idx)
+
+        lookback_days = max(90, (template.get('streak_min_days') or 2) * 3)
+        params.append(datetime.now(timezone.utc) -
+                      timedelta(days=lookback_days))
+        lookback_param = param_idx
+        param_idx += 1
+
+        query = f'''
+            SELECT {id_col} as user_id, DATE(hour) as day, SUM(mention_count) as daily_total
+            FROM user_mentions_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {scope_clause}
+            AND hour >= ${lookback_param}
+            GROUP BY {id_col}, DATE(hour)
+            HAVING SUM(mention_count) >= {int(template['streak_daily_threshold'])}
+            ORDER BY {id_col}, day
+        '''
+
+        async def _run(c):
+            return await c.fetch(query, *params)
+
+        if conn is not None:
+            rows = await _run(conn)
+        else:
+            async with self.pool.acquire() as new_conn:
+                rows = await _run(new_conn)
+
+        return self._find_users_with_streak(rows, template['streak_min_days'])
+
+    # ---------------- ACTIVITY (sessions/total_time/specific/streak) ----------------
+    # Note: no channel/category scope for activity — it filters by
+    # activity_name / activity_type instead, per confirmed design.
+
+    async def autorole_activity_sessions(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        """'Sessions' requirement type: total session_count >= amount_threshold,
+        optionally scoped to a specific activity_type/name via specific_value fields."""
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+
+        name_clause = ""
+        if template.get('specific_value'):
+            params.append(template['specific_value'])
+            name_clause += f" AND activity_name = ${param_idx}"
+            param_idx += 1
+        if template.get('specific_activity_type'):
+            params.append(template['specific_activity_type'])
+            name_clause += f" AND activity_type = ${param_idx}"
+            param_idx += 1
+
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        query = f'''
+            SELECT user_id, SUM(session_count) as total
+            FROM activity_sessions_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {name_clause}{time_clause}
+            GROUP BY user_id
+            HAVING SUM(session_count) >= ${param_idx}
+        '''
+        params.append(template['amount_threshold'])
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_activity_total_time(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        """'Total time spent' requirement type: total_seconds >= amount_threshold."""
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+
+        name_clause = ""
+        if template.get('specific_value'):
+            params.append(template['specific_value'])
+            name_clause += f" AND activity_name = ${param_idx}"
+            param_idx += 1
+        if template.get('specific_activity_type'):
+            params.append(template['specific_activity_type'])
+            name_clause += f" AND activity_type = ${param_idx}"
+            param_idx += 1
+
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        query = f'''
+            SELECT user_id, SUM(total_duration_seconds) as total
+            FROM activity_sessions_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            {name_clause}{time_clause}
+            GROUP BY user_id
+            HAVING SUM(total_duration_seconds) >= ${param_idx}
+        '''
+        params.append(template['amount_threshold'])
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_activity_specific(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        """'Specific' requirement type: user must have any recorded time/sessions
+        for the named activity_name (+ optional activity_type/category) in the window."""
+        if not self.pool or not template.get('specific_value'):
+            return []
+        params = [guild_id, template['specific_value']]
+        param_idx = 3
+
+        type_clause = ""
+        if template.get('specific_activity_type'):
+            params.append(template['specific_activity_type'])
+            type_clause = f" AND activity_type = ${param_idx}"
+            param_idx += 1
+
+        time_clause, params, param_idx = self._build_autorole_time_clause(
+            template['time_mode'], template.get(
+                'time_days_back'), template.get('time_from_date'),
+            template.get('time_to_date'), template.get(
+                'time_rolling_type'), template.get('time_rolling_value'),
+            'hour', params, param_idx)
+
+        query = f'''
+            SELECT DISTINCT user_id
+            FROM activity_sessions_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE AND activity_name = $2
+            {type_clause}{time_clause}
+        '''
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    async def autorole_activity_streak(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        """Streak requirement for activity reuses the existing per-activity
+        streak tracker (activity_streaks_by_name) rather than a new daily-
+        threshold query, per confirmed design. streak_min_days is compared
+        directly against best_streak_days."""
+        if not self.pool:
+            return []
+        params = [guild_id]
+        param_idx = 2
+
+        name_clause = ""
+        if template.get('specific_value'):
+            params.append(template['specific_value'])
+            name_clause += f" AND display_name = ${param_idx}"
+            param_idx += 1
+        if template.get('specific_activity_type'):
+            params.append(template['specific_activity_type'])
+            name_clause += f" AND activity_type = ${param_idx}"
+            param_idx += 1
+
+        query = f'''
+            SELECT DISTINCT user_id
+            FROM activity_streaks_by_name
+            WHERE guild_id = $1
+            {name_clause}
+            AND best_streak_days >= ${param_idx}
+        '''
+        params.append(template['streak_min_days'])
+
+        async def _run(c):
+            rows = await c.fetch(query, *params)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    # ---------------- JOINED AGE ----------------
+
+    async def autorole_joined_age(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+        """Returns user_ids whose current guild membership duration meets or
+        exceeds age_days_threshold. Uses member_joins_hourly's most recent
+        join event per user as the join reference point."""
+        if not self.pool:
+            return []
+
+        query = '''
+            SELECT user_id, MAX(hour) as last_join
+            FROM member_joins_hourly
+            WHERE guild_id = $1 AND is_bot = FALSE
+            GROUP BY user_id
+            HAVING MAX(hour) <= $2
+        '''
+        cutoff = datetime.now(timezone.utc) - \
+            timedelta(days=template['age_days_threshold'])
+
+        async def _run(c):
+            rows = await c.fetch(query, guild_id, cutoff)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    # ---------------- ACCOUNT AGE ----------------
+    # NOTE: Discord account creation date is derived from the snowflake ID
+    # itself (no Discord API call needed) — it's embedded in the user_id.
+    # Takes no `conn` param: it does no DB query of its own, it only
+    # operates on the candidate_user_ids list passed in.
+
+    async def autorole_account_age(self, guild_id: int, template: Dict, candidate_user_ids: List[int]) -> List[int]:
+        """
+        Returns user_ids from candidate_user_ids whose Discord account is older
+        than age_days_threshold. Computed locally from the snowflake ID
+        (Discord epoch = 2015-01-01), NO Discord API call required.
+
+        candidate_user_ids must come from somewhere else (e.g.
+        _get_guild_member_ids for this guild) since account age has no
+        dedicated table of its own.
+        """
+        DISCORD_EPOCH = 1420070400000  # ms
+        cutoff = datetime.now(timezone.utc) - \
+            timedelta(days=template['age_days_threshold'])
+        cutoff_ms = int(cutoff.timestamp() * 1000) - DISCORD_EPOCH
+
+        qualifying = []
+        for user_id in candidate_user_ids:
+            snowflake_ms = (user_id >> 22)
+            if snowflake_ms <= cutoff_ms:
+                qualifying.append(user_id)
+        return qualifying
+
+    async def _get_guild_member_ids(self, guild_id: int, conn=None) -> List[int]:
+        """Helper: get all known non-bot user_ids for a guild from current_role_members
+        (used as the candidate pool for account_age checks, which have no
+        dedicated stat table of their own)."""
+        if not self.pool:
+            return []
+
+        async def _run(c):
+            rows = await c.fetch('''
+                SELECT DISTINCT user_id FROM current_role_members
+                WHERE guild_id = $1 AND is_bot = FALSE
+            ''', guild_id)
+            return [row['user_id'] for row in rows]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
+
+    # ---------------- CURRENT ROLE HOLDERS ----------------
+
+    async def _get_current_target_role_holders(self, guild_id: int, role_id: int,
+                                               conn=None) -> set:
+        """Read current holders of a role from current_role_members (no API call)."""
+        if not self.pool:
+            return set()
+
+        async def _run(c):
+            rows = await c.fetch('''
+                SELECT user_id FROM current_role_members
+                WHERE guild_id = $1 AND role_id = $2
+            ''', guild_id, role_id)
+            return {row['user_id'] for row in rows}
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.pool.acquire() as new_conn:
+            return await _run(new_conn)
 
     # ======================================================================
     # SUBSCRIPTION / MODULE ACCESS CHECKS - usable by other cogs
@@ -21482,24 +23915,47 @@ class DatabaseStats(commands.Cog):
             async with self.voice_lock:
                 sessions_copy = copy.deepcopy(self.active_voice_sessions)
 
+            # Cache toggles per guild to avoid N+1 DB calls inside the loop
+            guild_toggles_cache = {}
+
             for user_id, session_data in sessions_copy.items():
                 try:
                     guild_id = session_data['guild_id']
 
-                    # ✅ TOGGLE CHECK - voice
-                    toggles = await self._get_stat_toggles(guild_id)
-                    if not toggles.get('track_voice'):
+                    # Fetch toggles once per guild per cycle
+                    if guild_id not in guild_toggles_cache:
+                        guild_toggles_cache[guild_id] = await self._get_stat_toggles(guild_id)
+
+                    if not guild_toggles_cache[guild_id].get('track_voice'):
                         continue
 
                     guild = self.bot.get_guild(guild_id)
                     if not guild:
                         async with self.voice_lock:
-                            if user_id in self.active_voice_sessions:
-                                del self.active_voice_sessions[user_id]
+                            self.active_voice_sessions.pop(user_id, None)
                         continue
 
+                    # Try local RAM cache first
                     member = guild.get_member(user_id)
-                    if not member or not member.voice or not member.voice.channel:
+
+                    # Fallback to API with rate-limiter protection if uncached
+                    if not member:
+                        try:
+                            await self.rate_limiter.acquire(RateLimitType.API, timeout=30.0)
+                            member = await guild.fetch_member(user_id)
+                        except discord.NotFound:
+                            async with self.voice_lock:
+                                self.active_voice_sessions.pop(user_id, None)
+                            continue
+                        except TimeoutError:
+                            print(
+                                f"⏱️ Rate limiter timed out waiting to fetch member {user_id}")
+                            continue
+                        except discord.HTTPException as e:
+                            print(f"⚠️ Failed to fetch member {user_id}: {e}")
+                            continue
+
+                    if not member.voice or not member.voice.channel:
                         continue
 
                     last_tracked = session_data.get(
@@ -21541,15 +23997,17 @@ class DatabaseStats(commands.Cog):
                                 self.active_voice_sessions[user_id].update(
                                     updated_session_data)
 
-                    async with self.metrics_lock:
-                        self.metrics['voice_updates'] += 1
+                        async with self.metrics_lock:
+                            self.metrics['voice_updates'] += 1
 
                 except Exception as e:
+                    print(
+                        f"❌ Error processing voice tracking for user {user_id}: {e}")
                     continue
 
         except Exception as e:
             raise DatabaseQueryError(
-                "Error in voice activity tracker",
+                "Error in voice activity tracker loop",
                 context={'operation': 'voice_activity_tracker'},
                 original=e
             )
@@ -21563,178 +24021,531 @@ class DatabaseStats(commands.Cog):
             current_time - old_session.get('last_activity', current_time)).total_seconds()
         return time_since_last_activity > 300
 
+    # ---------------- Save-slot helpers (prevents double-save race) ----------------
+
+    async def _acquire_save_slot(self, user_id: int):
+        """Atomically claim a session for saving.
+
+        Returns the session dict to save, or None if there's nothing to save
+        for this user, or if another task (listener vs. reconciler) is
+        already in the middle of saving it. Callers must pair a successful
+        acquire with a call to _release_save_slot.
+        """
+        async with self.voice_lock:
+            session_data = self.active_voice_sessions.get(user_id)
+            if session_data is None or session_data.get("_saving"):
+                return None
+            session_data["_saving"] = True
+            return session_data
+
+    async def _release_save_slot(self, user_id: int, session_data: dict, saved: bool):
+        """Called after a save attempt for a session claimed via
+        _acquire_save_slot.
+
+        - On success (saved=True): pops the session, but only if it's still
+          the exact same object currently stored for this user (identity
+          check) — guards against popping a newer session that replaced it
+          while the save was in flight.
+        - On failure (saved=False): clears the in-flight flag so a later
+          retry (next listener event or next reconciler sweep) can pick it
+          up again, instead of leaving it stuck as "_saving": True forever.
+        """
+        async with self.voice_lock:
+            current = self.active_voice_sessions.get(user_id)
+            if current is session_data:
+                if saved:
+                    self.active_voice_sessions.pop(user_id, None)
+                else:
+                    session_data["_saving"] = False
+
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ):
         """Track voice state changes."""
         if not member.guild or self.shutting_down:
             return
 
-        if await self._is_privacy_mode_enabled(member.id, member.guild.id):
-            return
+        guild = member.guild
+        guild_id = guild.id
+        user_id = member.id
+        current_time = datetime.now(timezone.utc)
 
-        # ✅ TOGGLE CHECK - voice only, checked once at entry
-        toggles = await self._get_stat_toggles(member.guild.id)
-        if not toggles.get('track_voice'):
+        def ensure_channel_id(channel):
+            if channel and hasattr(channel, "id"):
+                return channel.id
+            return 0
+
+        # --- Determine whether NEW tracking is allowed (toggle / privacy) ---
+        # NOTE: these gates only block *starting* new sessions. They must never
+        # block closing out a session that already exists in memory, or that
+        # session leaks forever.
+        privacy_enabled = await self._is_privacy_mode_enabled(user_id, guild_id)
+        toggles = await self._get_stat_toggles(guild_id)
+        tracking_allowed = toggles.get("track_voice") and not privacy_enabled
+
+        async with self.voice_lock:
+            has_existing_session = user_id in self.active_voice_sessions
+
+        if not tracking_allowed and not has_existing_session:
             return
 
         try:
-            guild = member.guild
-            guild_id = guild.id
-            user_id = member.id
-
-            current_time = datetime.now(timezone.utc)
-
-            def ensure_channel_id(channel):
-                if channel and hasattr(channel, 'id'):
-                    return channel.id
-                return 0
-
-            async with self.voice_lock:
-                old_session = self.active_voice_sessions.get(user_id)
-
             if before.channel is None and after.channel is not None:
-                # User joined a voice channel
-                is_afk_channel = getattr(
-                    after.channel, 'afk_channel', False) if after.channel else False
+                # ---------------- User joined a voice channel ----------------
+                if not tracking_allowed:
+                    return
+
+                is_afk_channel = bool(
+                    guild.afk_channel
+                    and after.channel
+                    and after.channel.id == guild.afk_channel.id
+                )
                 channel_id = ensure_channel_id(after.channel)
-                category_id = None
+                category_id = getattr(after.channel, "category_id", None)
 
-                if after.channel and hasattr(after.channel, 'category_id') and after.channel.category_id:
-                    category_id = after.channel.category_id
+                # Hold lock across entire read-decide-write sequence — safe
+                # here because there's no await (no DB call) inside it.
+                async with self.voice_lock:
+                    old_session = self.active_voice_sessions.get(user_id)
+                    should_continue = (
+                        old_session
+                        and not self._should_create_new_session(
+                            old_session, current_time
+                        )
+                    )
 
-                should_continue = not self._should_create_new_session(
-                    old_session, current_time) and old_session
-
-                if should_continue and old_session:
-                    async with self.voice_lock:
+                    if should_continue:
                         self.active_voice_sessions[user_id].update({
-                            'channel_id': channel_id,
-                            'category_id': category_id,
-                            'server_mute': after.mute,
-                            'server_deaf': after.deaf,
-                            'self_mute': after.self_mute,
-                            'self_deaf': after.self_deaf,
-                            'streaming': after.self_stream,
-                            'video': after.self_video,
-                            'suppressed': after.suppress,
-                            'is_afk_channel': is_afk_channel,
-                            'last_activity': current_time,
-                            'last_join_time': old_session.get('last_join_time', old_session['join_time'])
+                            "channel_id": channel_id,
+                            "category_id": category_id,
+                            "server_mute": after.mute,
+                            "server_deaf": after.deaf,
+                            "self_mute": after.self_mute,
+                            "self_deaf": after.self_deaf,
+                            "streaming": after.self_stream,
+                            "video": after.self_video,
+                            "suppressed": after.suppress,
+                            "is_afk_channel": is_afk_channel,
+                            "last_activity": current_time,
+                            "last_join_time": old_session.get(
+                                "last_join_time", old_session["join_time"]
+                            ),
                         })
-                else:
-                    async with self.voice_lock:
+                    else:
                         self.active_voice_sessions[user_id] = {
-                            'guild_id': guild_id,
-                            'user_id': user_id,
-                            'channel_id': channel_id,
-                            'category_id': category_id,
-                            'server_mute': after.mute,
-                            'server_deaf': after.deaf,
-                            'self_mute': after.self_mute,
-                            'self_deaf': after.self_deaf,
-                            'streaming': after.self_stream,
-                            'video': after.self_video,
-                            'suppressed': after.suppress,
-                            'is_afk_channel': is_afk_channel,
-                            'join_time': current_time,
-                            'last_join_time': current_time,
-                            'last_activity': current_time,
-                            'last_minute_tracked': current_time,
-                            'is_bot': member.bot
+                            "guild_id": guild_id,
+                            "user_id": user_id,
+                            "channel_id": channel_id,
+                            "category_id": category_id,
+                            "server_mute": after.mute,
+                            "server_deaf": after.deaf,
+                            "self_mute": after.self_mute,
+                            "self_deaf": after.self_deaf,
+                            "streaming": after.self_stream,
+                            "video": after.self_video,
+                            "suppressed": after.suppress,
+                            "is_afk_channel": is_afk_channel,
+                            "join_time": current_time,
+                            "last_join_time": current_time,
+                            "last_activity": current_time,
+                            "last_minute_tracked": current_time,
+                            "is_bot": member.bot,
+                            "_saving": False,
                         }
 
+            elif before.channel is None and after.channel is None:
+                # Shouldn't happen (no-op state update with no channel on
+                # either side) — nothing to do.
+                pass
+
             elif before.channel is not None and after.channel is None:
-                # User left voice channel
-                async with self.voice_lock:
-                    session_data = self.active_voice_sessions.pop(
-                        user_id, None)
+                # ---------------- User left voice channel ----------------
+                # FIX: claim the session via the save-slot helper instead of a
+                # bare peek. This prevents two things at once:
+                #   1. A concurrent rejoin overwriting the dict entry and then
+                #      getting wiped out by this handler's later pop (fixed
+                #      via the identity check inside _release_save_slot).
+                #   2. The reconciler independently saving this same session
+                #      while this save is still in flight, causing a double
+                #      write to the DB (fixed via the "_saving" flag — if the
+                #      reconciler gets here first, this handler's acquire
+                #      returns None and it backs off).
+                session_data = await self._acquire_save_slot(user_id)
 
                 if session_data:
                     last_join_time = session_data.get(
-                        'last_join_time', session_data['join_time'])
+                        "last_join_time", session_data["join_time"]
+                    )
                     duration = int(
-                        (current_time - last_join_time).total_seconds())
+                        (current_time - last_join_time).total_seconds()
+                    )
 
                     if duration > 0:
-                        state_flags = self._calculate_state_flags(session_data)
-                        category_id = session_data.get('category_id')
-
-                        if category_id is None and before.channel and hasattr(before.channel, 'category_id') and before.channel.category_id:
+                        category_id = session_data.get("category_id")
+                        if (
+                            category_id is None
+                            and before.channel
+                            and hasattr(before.channel, "category_id")
+                            and before.channel.category_id
+                        ):
                             category_id = before.channel.category_id
 
-                        encrypted_username = self.encrypt_username(
-                            str(member)) if member else None
-                        channel_id = session_data.get('channel_id')
-
+                        channel_id = session_data.get("channel_id")
                         if channel_id is None:
                             channel_id = ensure_channel_id(before.channel)
 
-                        await self._save_voice_session(
-                            guild_id=guild_id,
-                            user_id=user_id,
-                            member=member,
-                            session_data=session_data,
-                            leave_time=current_time,
-                            duration=duration
-                        )
+                        to_save = {
+                            k: v for k, v in session_data.items() if k != "_saving"
+                        }
+                        to_save["category_id"] = category_id
+                        to_save["channel_id"] = channel_id
 
-            elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
-                # User moved between voice channels
+                        try:
+                            await self._save_voice_session(
+                                guild_id=guild_id,
+                                user_id=user_id,
+                                member=member,
+                                session_data=to_save,
+                                leave_time=current_time,
+                                duration=duration,
+                            )
+                            await self._release_save_slot(
+                                user_id, session_data, saved=True
+                            )
+                        except Exception as save_err:
+                            print(
+                                f"Failed to save voice session on leave for user={user_id} "
+                                f"guild={guild_id}, keeping in-memory session for retry: {save_err}"
+                            )
+                            await self._release_save_slot(
+                                user_id, session_data, saved=False
+                            )
+                    else:
+                        # Zero/negative duration — nothing worth saving, safe
+                        # to clear (still identity-checked by the helper).
+                        await self._release_save_slot(
+                            user_id, session_data, saved=True
+                        )
+                # If session_data is None, either there was nothing to close
+                # out, or another task (the reconciler) is already saving
+                # this user's session right now — in which case there's
+                # nothing for this handler to do.
+
+            elif (
+                before.channel is not None
+                and after.channel is not None
+                and before.channel.id != after.channel.id
+            ):
+                # ---------------- User moved between voice channels ----------------
+                # The old segment has to vacate this user_id's slot immediately
+                # because a new session for the new channel is about to take
+                # over that slot. So unlike the leave-branch, we can't keep
+                # retrying it in place. FIX: on save failure, park the segment
+                # in a separate retry queue (self.pending_voice_saves) instead
+                # of dropping it, and let the reconciler flush that queue.
                 async with self.voice_lock:
-                    old_session_data = self.active_voice_sessions.get(user_id)
+                    old_session_data = self.active_voice_sessions.pop(
+                        user_id, None
+                    )
 
                 if old_session_data:
                     last_join_time = old_session_data.get(
-                        'last_join_time', old_session_data['join_time'])
+                        "last_join_time", old_session_data["join_time"]
+                    )
                     duration = int(
-                        (current_time - last_join_time).total_seconds())
+                        (current_time - last_join_time).total_seconds()
+                    )
 
                     if duration > 0:
-                        await self._save_voice_session(
-                            guild_id=guild_id,
-                            user_id=user_id,
-                            member=member,
-                            session_data=old_session_data,
-                            leave_time=current_time,
-                            duration=duration
-                        )
+                        to_save = {
+                            k: v
+                            for k, v in old_session_data.items()
+                            if k != "_saving"
+                        }
+                        try:
+                            await self._save_voice_session(
+                                guild_id=guild_id,
+                                user_id=user_id,
+                                member=member,
+                                session_data=to_save,
+                                leave_time=current_time,
+                                duration=duration,
+                            )
+                        except Exception as save_err:
+                            print(
+                                f"Failed to save voice session on channel switch for user={user_id} "
+                                f"guild={guild_id}, queued for retry: {save_err}"
+                            )
+                            async with self.voice_lock:
+                                self.pending_voice_saves.append({
+                                    **to_save,
+                                    "_leave_time": current_time,
+                                    "_duration": duration,
+                                })
+
+                if not tracking_allowed:
+                    return
 
                 # Start new session in new channel
-                is_afk_channel = getattr(
-                    after.channel, 'afk_channel', False) if after.channel else False
+                is_afk_channel = bool(
+                    guild.afk_channel
+                    and after.channel
+                    and after.channel.id == guild.afk_channel.id
+                )
                 channel_id = ensure_channel_id(after.channel)
-                category_id = None
-
-                if after.channel and hasattr(after.channel, 'category_id') and after.channel.category_id:
-                    category_id = after.channel.category_id
+                category_id = getattr(after.channel, "category_id", None)
 
                 async with self.voice_lock:
                     self.active_voice_sessions[user_id] = {
-                        'guild_id': guild_id,
-                        'user_id': user_id,
-                        'channel_id': channel_id,
-                        'category_id': category_id,
-                        'server_mute': after.mute,
-                        'server_deaf': after.deaf,
-                        'self_mute': after.self_mute,
-                        'self_deaf': after.self_deaf,
-                        'streaming': after.self_stream,
-                        'video': after.self_video,
-                        'suppressed': after.suppress,
-                        'is_afk_channel': is_afk_channel,
-                        'join_time': current_time,
-                        'last_join_time': current_time,
-                        'last_activity': current_time,
-                        'last_minute_tracked': current_time,
-                        'is_bot': member.bot
+                        "guild_id": guild_id,
+                        "user_id": user_id,
+                        "channel_id": channel_id,
+                        "category_id": category_id,
+                        "server_mute": after.mute,
+                        "server_deaf": after.deaf,
+                        "self_mute": after.self_mute,
+                        "self_deaf": after.self_deaf,
+                        "streaming": after.self_stream,
+                        "video": after.self_video,
+                        "suppressed": after.suppress,
+                        "is_afk_channel": is_afk_channel,
+                        "join_time": current_time,
+                        "last_join_time": current_time,
+                        "last_activity": current_time,
+                        "last_minute_tracked": current_time,
+                        "is_bot": member.bot,
+                        "_saving": False,
                     }
+
+            else:
+                # ---------------- Same-channel state update (mute/deaf/stream/video) ----------------
+                if after.channel is not None:
+                    is_afk_channel = bool(
+                        guild.afk_channel
+                        and after.channel
+                        and after.channel.id == guild.afk_channel.id
+                    )
+                    channel_id = ensure_channel_id(after.channel)
+                    category_id = getattr(after.channel, "category_id", None)
+
+                    async with self.voice_lock:
+                        if user_id not in self.active_voice_sessions:
+                            if not tracking_allowed:
+                                return
+                            self.active_voice_sessions[user_id] = {
+                                "guild_id": guild_id,
+                                "user_id": user_id,
+                                "channel_id": channel_id,
+                                "category_id": category_id,
+                                "server_mute": after.mute,
+                                "server_deaf": after.deaf,
+                                "self_mute": after.self_mute,
+                                "self_deaf": after.self_deaf,
+                                "streaming": after.self_stream,
+                                "video": after.self_video,
+                                "suppressed": after.suppress,
+                                "is_afk_channel": is_afk_channel,
+                                "join_time": current_time,
+                                "last_join_time": current_time,
+                                "last_activity": current_time,
+                                "last_minute_tracked": current_time,
+                                "is_bot": member.bot,
+                                "_saving": False,
+                            }
+                        else:
+                            self.active_voice_sessions[user_id].update({
+                                "server_mute": after.mute,
+                                "server_deaf": after.deaf,
+                                "self_mute": after.self_mute,
+                                "self_deaf": after.self_deaf,
+                                "streaming": after.self_stream,
+                                "video": after.self_video,
+                                "suppressed": after.suppress,
+                                "last_activity": current_time,
+                            })
 
         except Exception as e:
             raise DatabaseQueryError(
                 "Error in voice state update",
-                context={'guild_id': member.guild.id, 'user_id': member.id},
-                original=e
+                context={"guild_id": member.guild.id, "user_id": member.id},
+                original=e,
             )
+
+    @tasks.loop(seconds=Constants.VOICE_RECONCILE_INTERVAL)
+    async def voice_session_reconciler(self):
+        """Diffs self.active_voice_sessions against Discord's live voice-channel
+        membership and corrects drift:
+
+        - In-memory entries for users no longer connected -> saved and popped.
+        - Connected users missing from memory -> auto-populated.
+        - Orphaned "move" segments that failed to save immediately -> retried.
+        """
+        if self.shutting_down:
+            return
+
+        try:
+            current_time = datetime.now(timezone.utc)
+
+            # Ground truth: every user connected to voice/stage right now
+            live_voice_state: dict[int, tuple] = {}
+            for guild in self.bot.guilds:
+                channels = list(guild.voice_channels) + getattr(
+                    guild, "stage_channels", []
+                )
+                for vc in channels:
+                    for member in vc.members:
+                        live_voice_state[member.id] = (member, vc, guild)
+
+            async with self.voice_lock:
+                cached_user_ids = set(self.active_voice_sessions.keys())
+
+            live_user_ids = set(live_voice_state.keys())
+
+            stale_user_ids = cached_user_ids - live_user_ids  # ghosts
+            missing_user_ids = live_user_ids - cached_user_ids  # missed joins
+
+            # ---------------- Close out ghost sessions ----------------
+            for user_id in stale_user_ids:
+                # FIX: use the same acquire/release-slot helpers the listener
+                # uses. If the listener is mid-save for this exact user right
+                # now (e.g. they just disconnected and the leave handler is
+                # awaiting _save_voice_session), acquire returns None and this
+                # sweep skips them cleanly instead of firing a second,
+                # duplicate save for the same segment.
+                session_data = await self._acquire_save_slot(user_id)
+                if not session_data:
+                    continue
+
+                last_join_time = session_data.get(
+                    "last_join_time", session_data["join_time"]
+                )
+                duration = int(
+                    (current_time - last_join_time).total_seconds()
+                )
+                guild_id = session_data.get("guild_id")
+
+                if duration > 0:
+                    member = None
+                    if guild_id:
+                        guild_obj = self.bot.get_guild(guild_id)
+                        member = await self._resolve_member(guild_obj, user_id)
+
+                    to_save = {
+                        k: v for k, v in session_data.items() if k != "_saving"
+                    }
+                    try:
+                        await self._save_voice_session(
+                            guild_id=guild_id,
+                            user_id=user_id,
+                            member=member,
+                            session_data=to_save,
+                            leave_time=current_time,
+                            duration=duration,
+                        )
+                        await self._release_save_slot(
+                            user_id, session_data, saved=True
+                        )
+                    except Exception as save_err:
+                        print(
+                            f"[voice_reconciler] Failed to save ghost session for "
+                            f"user={user_id} guild={guild_id}, retrying next sweep: {save_err}"
+                        )
+                        await self._release_save_slot(
+                            user_id, session_data, saved=False
+                        )
+                else:
+                    await self._release_save_slot(user_id, session_data, saved=True)
+
+            # ---------------- Retry orphaned "move" segments ----------------
+            async with self.voice_lock:
+                pending_snapshot = list(self.pending_voice_saves)
+
+            for entry in pending_snapshot:
+                p_guild_id = entry.get("guild_id")
+                p_user_id = entry.get("user_id")
+                guild_obj = self.bot.get_guild(p_guild_id) if p_guild_id else None
+                member = (
+                    await self._resolve_member(guild_obj, p_user_id)
+                    if guild_obj
+                    else None
+                )
+
+                to_save = {
+                    k: v
+                    for k, v in entry.items()
+                    if k not in ("_saving", "_leave_time", "_duration")
+                }
+                try:
+                    await self._save_voice_session(
+                        guild_id=p_guild_id,
+                        user_id=p_user_id,
+                        member=member,
+                        session_data=to_save,
+                        leave_time=entry["_leave_time"],
+                        duration=entry["_duration"],
+                    )
+                    async with self.voice_lock:
+                        if entry in self.pending_voice_saves:
+                            self.pending_voice_saves.remove(entry)
+                except Exception as save_err:
+                    print(
+                        f"[voice_reconciler] Retry failed for orphaned move segment "
+                        f"user={p_user_id} guild={p_guild_id}: {save_err}"
+                    )
+
+            # ---------------- Auto-populate missed joins ----------------
+            for user_id in missing_user_ids:
+                member, vc, guild = live_voice_state[user_id]
+
+                toggles = await self._get_stat_toggles(guild.id)
+                if not toggles.get("track_voice"):
+                    continue
+                if await self._is_privacy_mode_enabled(user_id, guild.id):
+                    continue
+
+                voice_state = member.voice
+                if voice_state is None:
+                    continue
+
+                is_afk_channel = bool(
+                    guild.afk_channel and vc.id == guild.afk_channel.id
+                )
+                category_id = getattr(vc, "category_id", None)
+
+                async with self.voice_lock:
+                    if user_id in self.active_voice_sessions:
+                        continue
+                    self.active_voice_sessions[user_id] = {
+                        "guild_id": guild.id,
+                        "user_id": user_id,
+                        "channel_id": vc.id,
+                        "category_id": category_id,
+                        "server_mute": voice_state.mute,
+                        "server_deaf": voice_state.deaf,
+                        "self_mute": voice_state.self_mute,
+                        "self_deaf": voice_state.self_deaf,
+                        "streaming": voice_state.self_stream,
+                        "video": voice_state.self_video,
+                        "suppressed": voice_state.suppress,
+                        "is_afk_channel": is_afk_channel,
+                        "join_time": current_time,
+                        "last_join_time": current_time,
+                        "last_activity": current_time,
+                        "last_minute_tracked": current_time,
+                        "is_bot": member.bot,
+                        "_saving": False,
+                    }
+
+        except Exception as e:
+            print(f"[voice_reconciler] Unexpected error during sweep: {e}")
+
+    @voice_session_reconciler.before_loop
+    async def before_voice_session_reconciler(self):
+        await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
