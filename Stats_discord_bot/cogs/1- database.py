@@ -7358,121 +7358,237 @@ class DatabaseStats(commands.Cog):
     # ---------------- INVITES ----------------
 
     async def autorole_invites_amount(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+
         """Counts successful invites where this user was the inviter."""
+
         if not self.pool:
+
             return []
+
         params = [guild_id]
+
         param_idx = 2
+
         time_clause, params, param_idx = self._build_autorole_time_clause(
+
             template['time_mode'], template.get(
+
                 'time_days_back'), template.get('time_from_date'),
+
             template.get('time_to_date'), template.get(
+
                 'time_rolling_type'), template.get('time_rolling_value'),
+
             'created_at', params, param_idx)
 
+
+
         type_clause = ""
+
         if template.get('invite_type_filter'):
+
             params.append(template['invite_type_filter'])
+
             type_clause = f" AND invite_type = ${param_idx}"
+
             param_idx += 1
 
+
+
         query = f'''
+
             SELECT inviter_id as user_id, COUNT(*) as total
+
             FROM invite_tracking
+
             WHERE guild_id = $1 AND is_bot = FALSE AND inviter_id != 0
+
             {time_clause}{type_clause}
+
             GROUP BY inviter_id
+
             HAVING COUNT(*) >= ${param_idx}
+
         '''
+
         params.append(template['amount_threshold'])
 
+
+
         async def _run(c):
+
             rows = await c.fetch(query, *params)
+
             return [row['user_id'] for row in rows]
 
+
+
         if conn is not None:
+
             return await _run(conn)
+
         async with self.pool.acquire() as new_conn:
+
             return await _run(new_conn)
+
+
 
     async def autorole_invites_top_percent(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+
         if not self.pool:
+
             return []
+
         params = [guild_id]
+
         param_idx = 2
+
         time_clause, params, param_idx = self._build_autorole_time_clause(
+
             template['time_mode'], template.get(
+
                 'time_days_back'), template.get('time_from_date'),
+
             template.get('time_to_date'), template.get(
+
                 'time_rolling_type'), template.get('time_rolling_value'),
+
             'created_at', params, param_idx)
 
+
+
         type_clause = ""
+
         if template.get('invite_type_filter'):
+
             params.append(template['invite_type_filter'])
+
             type_clause = f" AND invite_type = ${param_idx}"
+
             param_idx += 1
 
+
+
         query = f'''
+
             SELECT inviter_id as user_id, COUNT(*) as total,
+
                    PERCENT_RANK() OVER (ORDER BY COUNT(*) DESC) as pct_rank
+
             FROM invite_tracking
+
             WHERE guild_id = $1 AND is_bot = FALSE AND inviter_id != 0
+
             {time_clause}{type_clause}
+
             GROUP BY inviter_id
+
             HAVING COUNT(*) > 0
+
         '''
+
         cutoff = template['top_percent'] / 100.0
 
+
+
         async def _run(c):
+
             rows = await c.fetch(query, *params)
+
             return [row['user_id'] for row in rows if row['pct_rank'] <= cutoff]
 
+
+
         if conn is not None:
+
             return await _run(conn)
+
         async with self.pool.acquire() as new_conn:
+
             return await _run(new_conn)
 
+
+
     async def autorole_invites_streak(self, guild_id: int, template: Dict, conn=None) -> List[int]:
+
         if not self.pool:
+
             return []
+
         params = [guild_id]
+
         param_idx = 2
 
+
+
         lookback_days = max(90, (template.get('streak_min_days') or 2) * 3)
+
         params.append(datetime.now(timezone.utc) -
+
                       timedelta(days=lookback_days))
+
         lookback_param = param_idx
+
         param_idx += 1
 
+
+
         type_clause = ""
+
         if template.get('invite_type_filter'):
+
             params.append(template['invite_type_filter'])
+
             type_clause = f" AND invite_type = ${param_idx}"
+
             param_idx += 1
 
+
+
         query = f'''
+
             SELECT inviter_id as user_id, DATE(created_at) as day, COUNT(*) as daily_total
+
             FROM invite_tracking
+
             WHERE guild_id = $1 AND is_bot = FALSE AND inviter_id != 0
+
             AND created_at >= ${lookback_param}
+
             {type_clause}
+
             GROUP BY inviter_id, DATE(created_at)
+
             HAVING COUNT(*) >= {int(template['streak_daily_threshold'])}
+
             ORDER BY inviter_id, day
+
         '''
 
+
+
         async def _run(c):
+
             rows = await c.fetch(query, *params)
+
             return [{'user_id': r['user_id'], 'day': r['day']} for r in rows]
 
+
+
         if conn is not None:
+
             rows = await _run(conn)
+
         else:
+
             async with self.pool.acquire() as new_conn:
+
                 rows = await _run(new_conn)
 
+
+
         return self._find_users_with_streak(rows, template['streak_min_days'])
+
 
     # ---------------- MENTIONS ----------------
 
@@ -17428,7 +17544,7 @@ class DatabaseStats(commands.Cog):
                 query = '''
                     SELECT 
                         COUNT(*) as total_invites,
-                        COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+                        COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
                         COUNT(*) FILTER (WHERE invite_type = 'left') as left_invites,
                         COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_invites
                     FROM invite_tracking
@@ -17540,7 +17656,7 @@ class DatabaseStats(commands.Cog):
                         SELECT 
                             inviter_id,
                             COUNT(*) as total_invites,
-                            COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+                            COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
                             COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_invites,
                             COUNT(*) FILTER (WHERE invite_type = 'left') as left_invites
                         FROM invite_tracking
@@ -17552,7 +17668,7 @@ class DatabaseStats(commands.Cog):
                         SELECT 
                             inviter_id,
                             COUNT(*) as total_invites,
-                            COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+                            COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
                             COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_invites,
                             COUNT(*) FILTER (WHERE invite_type = 'left') as left_invites
                         FROM invite_tracking
@@ -18644,84 +18760,162 @@ class DatabaseStats(commands.Cog):
             )
 
     async def q_server_distribution_invites(self, guild_id: int,
+
                                             role_filter_ids: Optional[List[int]] = None,
+
                                             start_time: Optional[datetime] = None,
+
                                             end_time: Optional[datetime] = None,
+
                                             timezone_str: str = 'UTC') -> Dict[str, Any]:
+
         """Get invite distribution by hour for a server using invite_tracking table."""
+
         if not self.pool:
+
+            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+        
+        guild = self.bot.get_guild(guild_id)
+
+        if not guild:
+
             return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
-        guild = self.bot.get_guild(guild_id)
-        if not guild:
-            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
 
         try:
+
             start_time = ensure_aware(start_time)
+
             end_time = ensure_aware(end_time)
 
+
+
             async with self.pool.acquire() as conn:
+
                 query = f'''
+
                     SELECT 
+
                         EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+
                         COUNT(*) as invite_count
+
                     FROM invite_tracking
+
                     WHERE guild_id = $1
-                    AND invite_type IN ('valid', 'suspicious')
+
+                    AND invite_type IN ('valid', 'suspicious', 'unknown', 'vanity')
+
                 '''
+
                 params = [guild_id]
 
+
+
                 if start_time:
+
                     query += f" AND created_at >= ${len(params) + 1}"
+
                     params.append(start_time)
+
                 if end_time:
+
                     query += f" AND created_at <= ${len(params) + 1}"
+
                     params.append(end_time)
+
+
 
                 query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
 
+
+
                 if role_filter_ids:
+
                     inviter_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+
                     if inviter_ids:
+
                         query += f" AND inviter_id = ANY(${len(params) + 1}::bigint[])"
+
                         params.append(inviter_ids)
 
+
+
                 query, params = await self._apply_comprehensive_blacklist_filters(
+
                     guild_id, guild, query, params, 'invite_tracking',
+
                     include_users=True, include_channels=False
+
                 )
 
+
+
                 query += '''
+
                     GROUP BY hour_of_day
+
                     ORDER BY hour_of_day
+
                 '''
+
+
 
                 rows = await conn.fetch(query, *params)
 
+
+
                 result = {f'hour_{i}': 0 for i in range(24)}
+
                 total = 0
+
                 peak_hour = -1
+
                 peak_count = 0
 
+
+
                 for row in rows:
+
                     hour = int(row['hour_of_day'])
+
                     count = row['invite_count'] or 0
+
                     result[f'hour_{hour}'] = count
+
                     total += count
+
                     if count > peak_count:
+
                         peak_count = count
+
                         peak_hour = hour
 
+
+
                 result['total'] = total
+
                 result['peak_hour'] = peak_hour
+
                 return result
 
+
+
         except asyncpg.exceptions.PostgresError as e:
+
             raise DatabaseQueryError(
+
                 "Failed to fetch server invites distribution",
+
                 context={'guild_id': guild_id},
+
                 original=e
+
             )
+
+
 
     async def q_server_distribution_mentions_sent(self, guild_id: int,
                                                   role_filter_ids: Optional[List[int]] = None,
@@ -20357,285 +20551,554 @@ class DatabaseStats(commands.Cog):
     # ======================================================================
 
     async def q_user_distribution_invites_sent(self, guild_id: int, user_id: int,
+
                                                role_filter_ids: Optional[List[int]] = None,
+
                                                start_time: Optional[datetime] = None,
+
                                                end_time: Optional[datetime] = None,
+
                                                timezone_str: str = 'UTC') -> Dict[str, Any]:
+
         """
+
         Get invite distribution by hour for a user (invites they SENT).
+
         Shows when the user's invites were used to bring people into the server.
+
         """
+
         if not self.pool:
+
             return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+
 
         guild = self.bot.get_guild(guild_id)
+
         if not guild:
+
             return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
+
+
         try:
+
             start_time = ensure_aware(start_time)
+
             end_time = ensure_aware(end_time)
 
+
+
             async with self.pool.acquire() as conn:
+
                 query = f'''
+
                     SELECT 
+
                         EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+
                         COUNT(*) as invite_count
+
                     FROM invite_tracking
+
                     WHERE guild_id = $1 
+
                     AND inviter_id = $2
-                    AND invite_type IN ('valid', 'suspicious')
+
+                    AND invite_type IN ('valid', 'suspicious', 'unknown', 'vanity')
+
                 '''
+
                 params = [guild_id, user_id]
 
+
+
                 if start_time:
+
                     query += f" AND created_at >= ${len(params) + 1}"
+
                     params.append(start_time)
+
                 if end_time:
+
                     query += f" AND created_at <= ${len(params) + 1}"
+
                     params.append(end_time)
+
+
 
                 query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
 
+
+
                 if role_filter_ids:
+
                     user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+
                     if user_ids and user_id not in user_ids:
+
                         return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
+
+
                 # Invite tracking doesn't have channel/category columns, so skip those filters
+
                 query, params = await self._apply_comprehensive_blacklist_filters(
+
                     guild_id, guild, query, params, 'invite_tracking',
+
                     include_users=True, include_channels=False
+
                 )
 
+
+
                 if query is None:
+
                     return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
+
+
                 query += '''
+
                     GROUP BY hour_of_day
+
                     ORDER BY hour_of_day
+
                 '''
+
+
 
                 rows = await conn.fetch(query, *params)
 
+
+
                 result = {f'hour_{i}': 0 for i in range(24)}
+
                 total = 0
+
                 peak_hour = -1
+
                 peak_count = 0
 
+
+
                 for row in rows:
+
                     hour = int(row['hour_of_day'])
+
                     count = row['invite_count'] or 0
+
                     result[f'hour_{hour}'] = count
+
                     total += count
+
                     if count > peak_count:
+
                         peak_count = count
+
                         peak_hour = hour
 
+
+
                 result['total'] = total
+
                 result['peak_hour'] = peak_hour
+
                 return result
 
+
+
         except asyncpg.exceptions.PostgresError as e:
+
             raise DatabaseQueryError(
+
                 "Failed to fetch user invites sent distribution",
+
                 context={'guild_id': guild_id, 'user_id': user_id},
+
                 original=e
+
             )
+
+
 
     # ======================================================================
     # USER INVITE RECEIVED DISTRIBUTION (User JOINED via invite)
     # ======================================================================
 
     async def q_user_distribution_invites_received(self, guild_id: int, user_id: int,
+
                                                    role_filter_ids: Optional[List[int]] = None,
+
                                                    start_time: Optional[datetime] = None,
+
                                                    end_time: Optional[datetime] = None,
+
                                                    timezone_str: str = 'UTC') -> Dict[str, Any]:
+
         """
+
         Get invite distribution by hour for a user (invites they RECEIVED - i.e., when they joined).
+
         Shows what time of day this user typically joins the server.
+
         """
+
         if not self.pool:
+
             return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+
 
         guild = self.bot.get_guild(guild_id)
+
         if not guild:
+
             return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
+
+
         try:
+
             start_time = ensure_aware(start_time)
+
             end_time = ensure_aware(end_time)
 
+
+
             async with self.pool.acquire() as conn:
+
                 query = f'''
+
                     SELECT 
+
                         EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+
                         COUNT(*) as invite_count
+
                     FROM invite_tracking
+
                     WHERE guild_id = $1 
+
                     AND invitee_id = $2
-                    AND invite_type IN ('valid', 'suspicious')
+
+                    AND invite_type IN ('valid', 'suspicious', 'unknown', 'vanity')
+
                 '''
+
                 params = [guild_id, user_id]
 
+
+
                 if start_time:
+
                     query += f" AND created_at >= ${len(params) + 1}"
+
                     params.append(start_time)
+
                 if end_time:
+
                     query += f" AND created_at <= ${len(params) + 1}"
+
                     params.append(end_time)
+
+
 
                 query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
 
+
+
                 if role_filter_ids:
+
                     user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+
                     if user_ids and user_id not in user_ids:
+
                         return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
+
+
                 query, params = await self._apply_comprehensive_blacklist_filters(
+
                     guild_id, guild, query, params, 'invite_tracking',
+
                     include_users=True, include_channels=False
+
                 )
 
+
+
                 if query is None:
+
                     return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
+
+
                 query += '''
+
                     GROUP BY hour_of_day
+
                     ORDER BY hour_of_day
+
                 '''
+
+
 
                 rows = await conn.fetch(query, *params)
 
+
+
                 result = {f'hour_{i}': 0 for i in range(24)}
+
                 total = 0
+
                 peak_hour = -1
+
                 peak_count = 0
 
+
+
                 for row in rows:
+
                     hour = int(row['hour_of_day'])
+
                     count = row['invite_count'] or 0
+
                     result[f'hour_{hour}'] = count
+
                     total += count
+
                     if count > peak_count:
+
                         peak_count = count
+
                         peak_hour = hour
 
+
+
                 result['total'] = total
+
                 result['peak_hour'] = peak_hour
+
                 return result
 
+
+
         except asyncpg.exceptions.PostgresError as e:
+
             raise DatabaseQueryError(
+
                 "Failed to fetch user invites received distribution",
+
                 context={'guild_id': guild_id, 'user_id': user_id},
+
                 original=e
+
             )
 
-    # ======================================================================
-    # USER INVITE VALIDITY DISTRIBUTION (Valid vs Suspicious invites SENT)
-    # ======================================================================
+
 
     async def q_user_distribution_invites_by_type(self, guild_id: int, user_id: int,
-                                                  invite_type_filter: str = 'valid',
-                                                  role_filter_ids: Optional[List[int]] = None,
-                                                  start_time: Optional[datetime] = None,
-                                                  end_time: Optional[datetime] = None,
-                                                  timezone_str: str = 'UTC') -> Dict[str, Any]:
-        """
-        Get invite distribution by hour for a user filtered by invite type.
-        invite_type_filter can be: 'valid', 'suspicious', 'left', or 'all'
-        """
-        if not self.pool:
-            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
-        guild = self.bot.get_guild(guild_id)
-        if not guild:
-            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+                                                    invite_type_filter: str = 'valid',
 
-        try:
-            start_time = ensure_aware(start_time)
-            end_time = ensure_aware(end_time)
+                                                    role_filter_ids: Optional[List[int]] = None,
 
-            async with self.pool.acquire() as conn:
-                if invite_type_filter == 'all':
-                    query = f'''
-                        SELECT 
-                            EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
-                            COUNT(*) as invite_count
-                        FROM invite_tracking
-                        WHERE guild_id = $1 
-                        AND inviter_id = $2
-                        AND invite_type IN ('valid', 'suspicious')
-                    '''
-                    params = [guild_id, user_id]
-                else:
-                    query = f'''
-                        SELECT 
-                            EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
-                            COUNT(*) as invite_count
-                        FROM invite_tracking
-                        WHERE guild_id = $1 
-                        AND inviter_id = $2
-                        AND invite_type = ${3}
-                    '''
-                    params = [guild_id, user_id, invite_type_filter]
+                                                    start_time: Optional[datetime] = None,
 
-                if start_time:
-                    query += f" AND created_at >= ${len(params) + 1}"
-                    params.append(start_time)
-                if end_time:
-                    query += f" AND created_at <= ${len(params) + 1}"
-                    params.append(end_time)
+                                                    end_time: Optional[datetime] = None,
 
-                query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+                                                    timezone_str: str = 'UTC') -> Dict[str, Any]:
 
-                if role_filter_ids:
-                    user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
-                    if user_ids and user_id not in user_ids:
+            """
+
+            Get invite distribution by hour for a user filtered by invite type.
+
+            invite_type_filter can be: 'valid', 'suspicious', 'left', or 'all'
+
+            """
+
+            if not self.pool:
+
+                return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+
+
+            guild = self.bot.get_guild(guild_id)
+
+            if not guild:
+
+                return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+
+
+            try:
+
+                start_time = ensure_aware(start_time)
+
+                end_time = ensure_aware(end_time)
+
+
+
+                async with self.pool.acquire() as conn:
+
+                    if invite_type_filter == 'all':
+
+                        query = f'''
+
+                            SELECT 
+
+                                EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+
+                                COUNT(*) as invite_count
+
+                            FROM invite_tracking
+
+                            WHERE guild_id = $1 
+
+                            AND inviter_id = $2
+
+                            AND invite_type IN ('valid', 'suspicious', 'unknown', 'vanity')
+
+                        '''
+
+                        params = [guild_id, user_id]
+
+                    else:
+
+                        query = f'''
+
+                            SELECT 
+
+                                EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}') as hour_of_day,
+
+                                COUNT(*) as invite_count
+
+                            FROM invite_tracking
+
+                            WHERE guild_id = $1 
+
+                            AND inviter_id = $2
+
+                            AND invite_type = ${3}
+
+                        '''
+
+                        params = [guild_id, user_id, invite_type_filter]
+
+
+
+                    if start_time:
+
+                        query += f" AND created_at >= ${len(params) + 1}"
+
+                        params.append(start_time)
+
+                    if end_time:
+
+                        query += f" AND created_at <= ${len(params) + 1}"
+
+                        params.append(end_time)
+
+
+
+                    query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+
+
+
+                    if role_filter_ids:
+
+                        user_ids = await self._get_users_with_roles(guild_id, role_filter_ids)
+
+                        if user_ids and user_id not in user_ids:
+
+                            return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
+
+
+
+                    query, params = await self._apply_comprehensive_blacklist_filters(
+
+                        guild_id, guild, query, params, 'invite_tracking',
+
+                        include_users=True, include_channels=False
+
+                    )
+
+
+
+                    if query is None:
+
                         return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
-                query, params = await self._apply_comprehensive_blacklist_filters(
-                    guild_id, guild, query, params, 'invite_tracking',
-                    include_users=True, include_channels=False
+
+
+                    query += '''
+
+                        GROUP BY hour_of_day
+
+                        ORDER BY hour_of_day
+
+                    '''
+
+
+
+                    rows = await conn.fetch(query, *params)
+
+
+
+                    result = {f'hour_{i}': 0 for i in range(24)}
+
+                    total = 0
+
+                    peak_hour = -1
+
+                    peak_count = 0
+
+
+
+                    for row in rows:
+
+                        hour = int(row['hour_of_day'])
+
+                        count = row['invite_count'] or 0
+
+                        result[f'hour_{hour}'] = count
+
+                        total += count
+
+                        if count > peak_count:
+
+                            peak_count = count
+
+                            peak_hour = hour
+
+
+
+                    result['total'] = total
+
+                    result['peak_hour'] = peak_hour
+
+                    return result
+
+
+
+            except asyncpg.exceptions.PostgresError as e:
+
+                raise DatabaseQueryError(
+
+                    "Failed to fetch user invites by type distribution",
+
+                    context={'guild_id': guild_id, 'user_id': user_id,
+
+                            'invite_type': invite_type_filter},
+
+                    original=e
+
                 )
 
-                if query is None:
-                    return {f'hour_{i}': 0 for i in range(24)} | {'total': 0, 'peak_hour': -1}
 
-                query += '''
-                    GROUP BY hour_of_day
-                    ORDER BY hour_of_day
-                '''
-
-                rows = await conn.fetch(query, *params)
-
-                result = {f'hour_{i}': 0 for i in range(24)}
-                total = 0
-                peak_hour = -1
-                peak_count = 0
-
-                for row in rows:
-                    hour = int(row['hour_of_day'])
-                    count = row['invite_count'] or 0
-                    result[f'hour_{hour}'] = count
-                    total += count
-                    if count > peak_count:
-                        peak_count = count
-                        peak_hour = hour
-
-                result['total'] = total
-                result['peak_hour'] = peak_hour
-                return result
-
-        except asyncpg.exceptions.PostgresError as e:
-            raise DatabaseQueryError(
-                "Failed to fetch user invites by type distribution",
-                context={'guild_id': guild_id, 'user_id': user_id,
-                         'invite_type': invite_type_filter},
-                original=e
-            )
     # ======================================================================
     # SLASH COMMAND QUERIES - FIXED EXCEPTION HANDLING
     # ======================================================================
@@ -21961,366 +22424,728 @@ class DatabaseStats(commands.Cog):
             raise
 
     async def q_leaderboard_roles_invites_server(self, guild_id: int,
+
                                                  limit: int = 100000000000,
+
                                                  role_filter_ids: Optional[List[int]] = None,
+
                                                  start_time: Optional[datetime] = None,
+
                                                  end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+
         """Get role leaderboard by invites in the server (uses raw table - static)."""
+
         if not self.pool:
+
             return []
+
+
 
         guild = self.bot.get_guild(guild_id)
+
         if not guild:
+
             return []
 
+
+
         try:
+
             start_time = ensure_aware(start_time)
+
             end_time = ensure_aware(end_time)
 
+
+
             async with self.pool.acquire() as conn:
+
                 blacklists = await self._get_cached_blacklists(guild_id)
 
+
+
                 # OPTIMIZATION: Get all role members at once
+
                 all_role_members = await self._get_all_role_members(guild_id)
+
+
 
                 role_invite_counts = {}
 
+
+
                 for role in guild.roles:
+
                     if role.is_default():
+
                         continue
+
+
 
                     if role.id in blacklists['roles']:
+
                         continue
+
+
 
                     # Get users with this role from pre-fetched data
+
                     user_ids = all_role_members.get(role.id, [])
+
                     if not user_ids:
+
                         continue
 
+
+
                     # Filter out blacklisted users
+
                     filtered_member_ids = [
+
                         uid for uid in user_ids if uid not in blacklists['users']]
+
                     if not filtered_member_ids:
+
                         continue
+
+
 
                     # FIXED: Removed channel_id reference (doesn't exist in invite_tracking)
+
                     query = '''
+
                         SELECT 
-                            COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+
+                            COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
+
                             COUNT(*) as total_invites
+
                         FROM invite_tracking
+
                         WHERE guild_id = $1 
+
                         AND inviter_id = ANY($2::bigint[])
-                        AND invite_type IN ('valid', 'suspicious')
+
+                        AND invite_type IN ('valid', 'suspicious', 'unknown', 'vanity')
+
                     '''
+
                     params = [guild_id, filtered_member_ids]
 
+
+
                     if start_time:
+
                         query += f" AND created_at >= ${len(params) + 1}"
+
                         params.append(start_time)
+
                     if end_time:
+
                         query += f" AND created_at <= ${len(params) + 1}"
+
                         params.append(end_time)
 
+
+
                     query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+
+
 
                     # FIXED: Removed channel_id from blacklist filters (invite_tracking doesn't have channel_id)
+
                     query, params = await self._apply_comprehensive_blacklist_filters(
+
                         guild_id, guild, query, params, 'invite_tracking',
+
                         include_users=False, include_channels=False  # Changed to False
+
                     )
+
+
 
                     row = await conn.fetchrow(query, *params)
 
+
+
                     valid_invites = row['valid_invites'] or 0
 
+
+
                     if valid_invites > 0:
+
                         role_invite_counts[role.id] = {
+
                             'role_id': role.id,
+
                             'valid_invites': valid_invites,
+
                             'total_invites': row['total_invites'] or 0,
+
                             'member_count': len(filtered_member_ids),
+
                             'avg_per_member': valid_invites / len(filtered_member_ids) if len(filtered_member_ids) > 0 else 0
+
                         }
 
+
+
                 sorted_roles = sorted(role_invite_counts.values(),
+
                                       key=lambda x: x['valid_invites'],
+
                                       reverse=True)[:limit]
+
+
 
                 return sorted_roles
 
+
+
         except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+
             raise DatabaseConnectionError(
+
                 "Database connection does not exist while fetching role invite leaderboard",
+
                 context={'guild_id': guild_id},
+
                 original=e
+
             )
+
         except asyncpg.exceptions.ConnectionFailureError as e:
+
             raise DatabaseConnectionError(
+
                 "Database connection failed while fetching role invite leaderboard",
+
                 context={'guild_id': guild_id},
+
                 original=e
+
             )
+
         except asyncpg.exceptions.QueryCanceledError as e:
+
             raise DatabaseTimeoutError(
+
                 "Database operation timed out while fetching role invite leaderboard",
+
                 context={'guild_id': guild_id},
+
                 original=e
+
             )
+
         except asyncpg.exceptions.PostgresError as e:
+
             raise DatabaseQueryError(
+
                 "Database error fetching role invite leaderboard",
+
                 context={'guild_id': guild_id},
+
                 original=e
+
             )
+
         except Exception as e:
+
             if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+
                 raise DatabaseQueryError(
+
                     "Unexpected error fetching role invite leaderboard",
+
                     context={'guild_id': guild_id},
+
                     original=e
+
                 )
+
             raise
+
+
 
     async def q_leaderboard_roles_invites_category(self, guild_id: int, category_id: int,
+
                                                    limit: int = 100000000000,
+
                                                    role_filter_ids: Optional[List[int]] = None,
+
                                                    start_time: Optional[datetime] = None,
+
                                                    end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+
         """Get role leaderboard by invites in a category (uses raw table - static)."""
+
         if not self.pool:
+
             return []
+
+
 
         guild = self.bot.get_guild(guild_id)
+
         if not guild:
+
             return []
 
+
+
         try:
+
             start_time = ensure_aware(start_time)
+
             end_time = ensure_aware(end_time)
 
+
+
             async with self.pool.acquire() as conn:
+
                 blacklists = await self._get_cached_blacklists(guild_id)
 
+
+
                 # OPTIMIZATION: Get all role members at once
+
                 all_role_members = await self._get_all_role_members(guild_id)
+
+
 
                 role_invite_counts = {}
 
+
+
                 for role in guild.roles:
+
                     if role.is_default():
+
                         continue
+
+
 
                     if role.id in blacklists['roles']:
+
                         continue
+
+
 
                     # Get users with this role from pre-fetched data
+
                     user_ids = all_role_members.get(role.id, [])
+
                     if not user_ids:
+
                         continue
+
+
 
                     # Filter out blacklisted users
+
                     filtered_member_ids = [
+
                         uid for uid in user_ids if uid not in blacklists['users']]
+
                     if not filtered_member_ids:
+
                         continue
 
+
+
                     query = '''
+
                         SELECT 
-                            COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+
+                            COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
+
                             COUNT(*) as total_invites
+
                         FROM invite_tracking
+
                         WHERE guild_id = $1 
+
                         AND inviter_id = ANY($2::bigint[])
-                        AND invite_type IN ('valid', 'suspicious')
+
+                        AND invite_type IN ('valid', 'suspicious', 'unknown', 'vanity')
+
                     '''
+
                     params = [guild_id, filtered_member_ids]
 
+
+
                     if start_time:
+
                         query += f" AND created_at >= ${len(params) + 1}"
+
                         params.append(start_time)
+
                     if end_time:
+
                         query += f" AND created_at <= ${len(params) + 1}"
+
                         params.append(end_time)
+
+
 
                     query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
 
+
+
                     query, params = await self._apply_comprehensive_blacklist_filters(
+
                         guild_id, guild, query, params, 'invite_tracking',
+
                         include_users=False, include_channels=True
+
                     )
+
+
 
                     row = await conn.fetchrow(query, *params)
 
+
+
                     valid_invites = row['valid_invites'] or 0
 
+
+
                     if valid_invites > 0:
+
                         role_invite_counts[role.id] = {
+
                             'role_id': role.id,
+
                             'valid_invites': valid_invites,
+
                             'total_invites': row['total_invites'] or 0,
+
                             'member_count': len(filtered_member_ids),
+
                             'avg_per_member': valid_invites / len(filtered_member_ids) if len(filtered_member_ids) > 0 else 0
+
                         }
 
+
+
                 sorted_roles = sorted(role_invite_counts.values(),
+
                                       key=lambda x: x['valid_invites'],
+
                                       reverse=True)[:limit]
+
+
 
                 return sorted_roles
 
+
+
         except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+
             raise DatabaseConnectionError(
+
                 "Database connection does not exist while fetching category role invite leaderboard",
+
                 context={'guild_id': guild_id, 'category_id': category_id},
+
                 original=e
+
             )
+
         except asyncpg.exceptions.ConnectionFailureError as e:
+
             raise DatabaseConnectionError(
+
                 "Database connection failed while fetching category role invite leaderboard",
+
                 context={'guild_id': guild_id, 'category_id': category_id},
+
                 original=e
+
             )
+
         except asyncpg.exceptions.QueryCanceledError as e:
+
             raise DatabaseTimeoutError(
+
                 "Database operation timed out while fetching category role invite leaderboard",
+
                 context={'guild_id': guild_id, 'category_id': category_id},
+
                 original=e
+
             )
+
         except asyncpg.exceptions.PostgresError as e:
+
             raise DatabaseQueryError(
+
                 "Database error fetching category role invite leaderboard",
+
                 context={'guild_id': guild_id, 'category_id': category_id},
+
                 original=e
+
             )
+
         except Exception as e:
+
             if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+
                 raise DatabaseQueryError(
+
                     "Unexpected error fetching category role invite leaderboard",
+
                     context={'guild_id': guild_id, 'category_id': category_id},
+
                     original=e
+
                 )
+
             raise
+
+
 
     async def q_leaderboard_roles_invites_channel(self, guild_id: int, channel_id: int,
+
                                                   limit: int = 100000000000,
+
                                                   role_filter_ids: Optional[List[int]] = None,
+
                                                   start_time: Optional[datetime] = None,
+
                                                   end_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+
         """Get role leaderboard by invites in a channel (uses raw table - static)."""
+
         if not self.pool:
+
             return []
+
+
 
         guild = self.bot.get_guild(guild_id)
+
         if not guild:
+
             return []
 
+
+
         try:
+
             start_time = ensure_aware(start_time)
+
             end_time = ensure_aware(end_time)
 
+
+
             async with self.pool.acquire() as conn:
+
                 blacklists = await self._get_cached_blacklists(guild_id)
 
+
+
                 # OPTIMIZATION: Get all role members at once
+
                 all_role_members = await self._get_all_role_members(guild_id)
+
+
 
                 role_invite_counts = {}
 
+
+
                 for role in guild.roles:
+
                     if role.is_default():
+
                         continue
+
+
 
                     if role.id in blacklists['roles']:
+
                         continue
+
+
 
                     # Get users with this role from pre-fetched data
+
                     user_ids = all_role_members.get(role.id, [])
+
                     if not user_ids:
+
                         continue
+
+
 
                     # Filter out blacklisted users
+
                     filtered_member_ids = [
+
                         uid for uid in user_ids if uid not in blacklists['users']]
+
                     if not filtered_member_ids:
+
                         continue
 
+
+
                     query = '''
+
                         SELECT 
-                            COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+
+                            COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
+
                             COUNT(*) as total_invites
+
                         FROM invite_tracking
+
                         WHERE guild_id = $1 
+
                         AND inviter_id = ANY($2::bigint[])
-                        AND invite_type IN ('valid', 'suspicious')
+
+                        AND invite_type IN ('valid', 'suspicious', 'unknown', 'vanity')
+
                     '''
+
                     params = [guild_id, filtered_member_ids]
 
+
+
                     if start_time:
+
                         query += f" AND created_at >= ${len(params) + 1}"
+
                         params.append(start_time)
+
                     if end_time:
+
                         query += f" AND created_at <= ${len(params) + 1}"
+
                         params.append(end_time)
+
+
 
                     query, params = await self._apply_bot_filter(query, params, guild_id, 'invite_tracking')
 
+
+
                     query, params = await self._apply_comprehensive_blacklist_filters(
+
                         guild_id, guild, query, params, 'invite_tracking',
+
                         include_users=False, include_channels=True
+
                     )
+
+
 
                     row = await conn.fetchrow(query, *params)
 
+
+
                     valid_invites = row['valid_invites'] or 0
 
+
+
                     if valid_invites > 0:
+
                         role_invite_counts[role.id] = {
+
                             'role_id': role.id,
+
                             'valid_invites': valid_invites,
+
                             'total_invites': row['total_invites'] or 0,
+
                             'member_count': len(filtered_member_ids),
+
                             'avg_per_member': valid_invites / len(filtered_member_ids) if len(filtered_member_ids) > 0 else 0
+
                         }
 
+
+
                 sorted_roles = sorted(role_invite_counts.values(),
+
                                       key=lambda x: x['valid_invites'],
+
                                       reverse=True)[:limit]
+
+
 
                 return sorted_roles
 
+
+
         except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+
             raise DatabaseConnectionError(
+
                 "Database connection does not exist while fetching channel role invite leaderboard",
+
                 context={'guild_id': guild_id, 'channel_id': channel_id},
+
                 original=e
+
             )
+
         except asyncpg.exceptions.ConnectionFailureError as e:
+
             raise DatabaseConnectionError(
+
                 "Database connection failed while fetching channel role invite leaderboard",
+
                 context={'guild_id': guild_id, 'channel_id': channel_id},
+
                 original=e
+
             )
+
         except asyncpg.exceptions.QueryCanceledError as e:
+
             raise DatabaseTimeoutError(
+
                 "Database operation timed out while fetching channel role invite leaderboard",
+
                 context={'guild_id': guild_id, 'channel_id': channel_id},
+
                 original=e
+
             )
+
         except asyncpg.exceptions.PostgresError as e:
+
             raise DatabaseQueryError(
+
                 "Database error fetching channel role invite leaderboard",
+
                 context={'guild_id': guild_id, 'channel_id': channel_id},
+
                 original=e
+
             )
+
         except Exception as e:
+
             if not isinstance(e, (DatabaseConnectionError, DatabaseTimeoutError, DatabaseQueryError)):
+
                 raise DatabaseQueryError(
+
                     "Unexpected error fetching channel role invite leaderboard",
+
                     context={'guild_id': guild_id, 'channel_id': channel_id},
+
                     original=e
+
                 )
+
             raise
+
+
 
     # ======================================================================
     # EMOJI USER QUERY - FIXED EXCEPTION HANDLING
@@ -25269,6 +26094,20 @@ class DatabaseStats(commands.Cog):
                     'uncertain': False
                 }
 
+        # Vanity invites report uses=None, so they can never win the diff above.
+        # If no regular invite explains the join and the guild has a vanity URL,
+        # treat it as a vanity join using the real code from the snapshot instead
+        # of falling through to "unknown".
+        vanity_info = after.get('vanity_info') or before.get('vanity_info')
+        if vanity_info:
+            return {
+                'code': vanity_info['code'],
+                'inviter_id': vanity_info.get('inviter_id', 0),
+                'uses': None,
+                'is_vanity': True,
+                'uncertain': False
+            }
+
         print(f"  ❌ No invite found!")
         return None
 
@@ -25385,6 +26224,23 @@ class DatabaseStats(commands.Cog):
         if await self._is_privacy_mode_enabled(member.id, member.guild.id):
             return
 
+        # ✅ ALWAYS run - keeps guild_members current between full syncs,
+        # same bookkeeping tier as update_user_servers_in_db below. No rate
+        # limit needed — single-row upsert, not a REST call.
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    await conn.execute('''
+                        INSERT INTO guild_members (guild_id, user_id, is_bot, joined_at, last_synced_at)
+                        VALUES ($1, $2, $3, $4, NOW())
+                        ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                            is_bot = EXCLUDED.is_bot,
+                            joined_at = EXCLUDED.joined_at,
+                            last_synced_at = NOW()
+                    ''', member.guild.id, member.id, member.bot, member.joined_at)
+            except Exception as e:
+                print(f"⚠️ Failed to upsert guild_members for {member.id} in {member.guild.id}: {e}")
+
         # ✅ TOGGLE CHECK - fetch once, used for both member_growth and invites below.
         # update_user_servers_in_db is internal bookkeeping and always runs.
         toggles = await self._get_stat_toggles(member.guild.id)
@@ -25470,6 +26326,9 @@ class DatabaseStats(commands.Cog):
 
                 is_suspicious = await self._is_suspicious_account(member, inviter, min_age_days)
 
+                # NOTE: suspicious is now checked BEFORE vanity, so a new/suspicious
+                # account joining through a vanity invite is still flagged suspicious
+                # instead of always being bucketed as "vanity".
                 if used_invite is None:
                     invite_type = "unknown"
                     invite_code = "unknown"
@@ -25480,12 +26339,12 @@ class DatabaseStats(commands.Cog):
                     invite_code = "unknown"
                     inviter_id = 0
                     is_vanity = False
-                elif is_vanity:
-                    invite_type = "vanity"
-                    invite_code = used_invite['code']
-                    inviter_id = used_invite['inviter_id']
                 elif is_suspicious:
                     invite_type = "suspicious"
+                    invite_code = used_invite['code']
+                    inviter_id = used_invite['inviter_id']
+                elif is_vanity:
+                    invite_type = "vanity"
                     invite_code = used_invite['code']
                     inviter_id = used_invite['inviter_id']
                 else:

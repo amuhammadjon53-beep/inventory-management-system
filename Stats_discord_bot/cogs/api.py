@@ -26818,14 +26818,14 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
         except ValueError:
             raise HTTPException(
                 status_code=400, detail=f"Invalid guild_id format: {request.guild_id}")
-
+ 
         async with db_stats.pool.acquire() as conn:
             # Build query for user leaderboard
             query = """
                 SELECT
                     inviter_id,
                     COUNT(*) as total_invites,
-                    COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+                    COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'left') as left_invites
                 FROM invite_tracking
@@ -26833,15 +26833,20 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
             """
             params = [guild_id_int]
             param_index = 2
-
+ 
             # Apply filter_type - use the value, not the enum
             filter_value = request.filter_type.value if hasattr(
                 request.filter_type, 'value') else request.filter_type
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
-
+ 
             # Apply role filtering
             if request.role_filter_ids:
                 user_ids = await db_stats._get_users_with_roles(request.guild_id, request.role_filter_ids)
@@ -26853,7 +26858,7 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                     param_index += len(user_ids)
                 else:
                     return []
-
+ 
             # Apply time filtering
             if request.start_time and request.end_time:
                 query += f" AND created_at >= ${param_index} AND created_at <= ${param_index + 1}"
@@ -26872,14 +26877,14 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                 query += f" AND created_at >= NOW() - INTERVAL '1 day' * ${param_index}"
                 params.append(request.days)
                 param_index += 1
-
+ 
             # Apply bot filter
             query, params = await db_stats._apply_bot_filter(
                 query, params, request.guild_id, 'invite_tracking'
             )
-
+ 
             query += " GROUP BY inviter_id"
-
+ 
             # Determine sort column based on filter_type
             if filter_value == "valid":
                 sort_column = "valid_invites"
@@ -26889,7 +26894,7 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                 sort_column = "left_invites"
             else:
                 sort_column = "total_invites"
-
+ 
             # Add keyset pagination
             if request.after_value is not None:
                 params.append(request.after_value)
@@ -26900,24 +26905,24 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                     query += f" HAVING {sort_column} < ${len(params)}"
             else:
                 query += " HAVING COUNT(*) > 0"
-
+ 
             query += f" ORDER BY {sort_column} DESC, inviter_id DESC LIMIT ${param_index}"
             params.append(request.limit)
-
+ 
             rows = await conn.fetch(query, *params)
-
+ 
             # Fetch user display info and format results
             result = []
             for idx, row in enumerate(rows):
                 inviter_id = str(row['inviter_id'])
-
+ 
                 # Get user display info
                 user_info = await get_user_display_info(None, request.guild_id, int(inviter_id))
-
+ 
                 total = row['total_invites'] or 0
                 valid = row['valid_invites'] or 0
                 percentage = (valid / total * 100) if total > 0 else 0
-
+ 
                 result.append(InviteUserLeaderboardEntry(
                     user_id=inviter_id,
                     username=user_info.get('name', f"User {inviter_id}"),
@@ -26930,9 +26935,9 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                     percentage_valid=round(percentage, 1),
                     rank=idx + 1
                 ))
-
+ 
             return result
-
+ 
     except ValueError as e:
         logger.error(f"Invalid ID format in invite_user_leaderboard: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
@@ -26942,12 +26947,12 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
     except Exception as e:
         logger.error(f"Unexpected error in invite_user_leaderboard: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
+ 
+ 
 # ============================================
 # INVITE CODE LEADERBOARD - FIXED
 # ============================================
-
+ 
 @app.post("/api/invite/leaderboard/codes", response_model=List[InviteCodeLeaderboardEntry])
 async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
     """
@@ -26962,7 +26967,7 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
         except ValueError:
             raise HTTPException(
                 status_code=400, detail=f"Invalid guild_id format: {request.guild_id}")
-
+ 
         async with db_stats.pool.acquire() as conn:
             # Build query for invite code leaderboard
             query = """
@@ -26972,7 +26977,7 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                     MIN(created_at) as first_used,
                     MAX(created_at) as last_used,
                     COUNT(*) as total_uses,
-                    COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_uses,
+                    COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_uses,
                     COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_uses,
                     COUNT(*) FILTER (WHERE invite_type = 'left') as left_uses
                 FROM invite_tracking
@@ -26982,15 +26987,20 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
             """
             params = [guild_id_int]
             param_index = 2
-
+ 
             # Apply filter_type - use the value, not the enum
             filter_value = request.filter_type.value if hasattr(
                 request.filter_type, 'value') else request.filter_type
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
-
+ 
             # Apply role filtering
             if request.role_filter_ids:
                 user_ids = await db_stats._get_users_with_roles(request.guild_id, request.role_filter_ids)
@@ -27002,7 +27012,7 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                     param_index += len(user_ids)
                 else:
                     return []
-
+ 
             # Apply time filtering
             if request.start_time and request.end_time:
                 query += f" AND created_at >= ${param_index} AND created_at <= ${param_index + 1}"
@@ -27021,14 +27031,14 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                 query += f" AND created_at >= NOW() - INTERVAL '1 day' * ${param_index}"
                 params.append(request.days)
                 param_index += 1
-
+ 
             # Apply bot filter
             query, params = await db_stats._apply_bot_filter(
                 query, params, request.guild_id, 'invite_tracking'
             )
-
+ 
             query += " GROUP BY invite_code, inviter_id"
-
+ 
             # Determine sort column based on filter_type
             if filter_value == "valid":
                 sort_column = "valid_uses"
@@ -27038,7 +27048,7 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                 sort_column = "left_uses"
             else:
                 sort_column = "total_uses"
-
+ 
             # Add keyset pagination
             if request.after_value is not None:
                 params.append(request.after_value)
@@ -27049,24 +27059,24 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                     query += f" HAVING {sort_column} < ${len(params)}"
             else:
                 query += " HAVING COUNT(*) > 0"
-
+ 
             query += f" ORDER BY {sort_column} DESC, invite_code DESC LIMIT ${param_index}"
             params.append(request.limit)
-
+ 
             rows = await conn.fetch(query, *params)
-
+ 
             # Fetch inviter info and format results
             result = []
             for row in rows:
                 inviter_id = str(row['inviter_id'])
-
+ 
                 # Get inviter display info
                 user_info = await get_user_display_info(None, request.guild_id, int(inviter_id))
-
+ 
                 total = row['total_uses'] or 0
                 valid = row['valid_uses'] or 0
                 percentage = (valid / total * 100) if total > 0 else 0
-
+ 
                 result.append(InviteCodeLeaderboardEntry(
                     invite_code=row['invite_code'],
                     inviter_id=inviter_id,
@@ -27081,9 +27091,9 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                     last_used=row['last_used'].isoformat(
                     ) if row['last_used'] else None
                 ))
-
+ 
             return result
-
+ 
     except ValueError as e:
         logger.error(f"Invalid ID format in invite_code_leaderboard: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
@@ -27093,12 +27103,12 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
     except Exception as e:
         logger.error(f"Unexpected error in invite_code_leaderboard: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
+ 
+ 
 # ============================================
 # INVITE USER INVITER - FIXED
 # ============================================
-
+ 
 @app.post("/api/invite/user/inviter", response_model=InviteUserInviterResponse)
 async def invite_user_inviter(request: InviteUserInviterRequest):
     """
@@ -27113,18 +27123,19 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
         except ValueError as e:
             raise HTTPException(
                 status_code=400, detail=f"Invalid ID format: {e}")
-
+ 
         async with db_stats.pool.acquire() as conn:
             # Get user info first
             user_info = await get_user_display_info(None, request.guild_id, user_id_int)
             username = user_info.get('name', f"User {request.user_id}")
-
+ 
             filter_value = request.filter_type.value if hasattr(
                 request.filter_type, 'value') else request.filter_type
-
+ 
             # Build query based on filter_type
             if filter_value == "all":
                 # Try valid invites first, then any invite
+                # (unknown/vanity count as valid here too)
                 query = """
                     SELECT 
                         inviter_id, 
@@ -27134,14 +27145,14 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                     FROM invite_tracking
                     WHERE guild_id = $1 
                     AND invitee_id = $2
-                    AND invite_type = 'valid'
+                    AND invite_type IN ('valid', 'unknown', 'vanity')
                     ORDER BY created_at DESC
                     LIMIT 1
                 """
                 params = [guild_id_int, user_id_int]
-
+ 
                 row = await conn.fetchrow(query, *params)
-
+ 
                 if not row:
                     # No valid invite, try any invite
                     query = """
@@ -27157,6 +27168,22 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                         LIMIT 1
                     """
                     row = await conn.fetchrow(query, *params)
+            elif filter_value == "valid":
+                # unknown/vanity invites count as valid, so match all three
+                query = """
+                    SELECT 
+                        inviter_id, 
+                        invite_code, 
+                        created_at, 
+                        invite_type
+                    FROM invite_tracking
+                    WHERE guild_id = $1 
+                    AND invitee_id = $2
+                    AND invite_type = ANY($3::text[])
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """
+                row = await conn.fetchrow(query, guild_id_int, user_id_int, ['valid', 'unknown', 'vanity'])
             else:
                 # Filter by specific type
                 query = """
@@ -27173,7 +27200,7 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                     LIMIT 1
                 """
                 row = await conn.fetchrow(query, guild_id_int, user_id_int, filter_value)
-
+ 
             if not row:
                 return InviteUserInviterResponse(
                     user_id=request.user_id,
@@ -27182,10 +27209,10 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                     invite_type="none",
                     message="No invite record found for this user"
                 )
-
+ 
             inviter_id = row['inviter_id']
             invite_type = row['invite_type']
-
+ 
             # Handle case where inviter_id is 0 (unknown/vanity URL)
             if inviter_id == 0:
                 return InviteUserInviterResponse(
@@ -27201,11 +27228,11 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                     invite_type=invite_type,
                     message="User joined via vanity URL or unknown invite"
                 )
-
+ 
             # Get inviter info
             inviter_info = await get_user_display_info(None, request.guild_id, inviter_id)
             inviter_name = inviter_info.get('name', f"User {inviter_id}")
-
+ 
             return InviteUserInviterResponse(
                 user_id=request.user_id,
                 username=username,
@@ -27218,7 +27245,7 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                 ) if row['created_at'] else None,
                 invite_type=invite_type
             )
-
+ 
     except ValueError as e:
         logger.error(f"Invalid ID format in invite_user_inviter: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid ID format: {e}")
@@ -27228,16 +27255,16 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
     except Exception as e:
         logger.error(f"Unexpected error in invite_user_inviter: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
+ 
+ 
 # ============================================
 # INVITE TOTAL STATS - FIXED
 # ============================================
-
+ 
 # ============================================
 # INVITE TOTAL STATS - ULTRA FIXED
 # ============================================
-
+ 
 @app.post("/api/invite/stats/total", response_model=InviteStatsResponse)
 async def invite_total_stats(request: Request):
     """
@@ -27247,7 +27274,7 @@ async def invite_total_stats(request: Request):
     try:
         # Parse the request body manually
         body = await request.json()
-
+ 
         # Extract fields with fallbacks
         guild_id = body.get('guild_id')
         user_id = body.get('user_id')
@@ -27256,32 +27283,32 @@ async def invite_total_stats(request: Request):
         role_filter_ids = body.get('role_filter_ids')
         start_time = body.get('start_time')
         end_time = body.get('end_time')
-
+ 
         # Validate guild_id
         try:
             guild_id_int = int(guild_id)
         except (ValueError, TypeError):
             raise HTTPException(
                 status_code=400, detail=f"Invalid guild_id format: {guild_id}")
-
+ 
         # Validate user_id
         try:
             user_id_int = int(user_id) if user_id else None
         except ValueError:
             raise HTTPException(
                 status_code=400, detail=f"Invalid user_id format: {user_id}")
-
+ 
         # Convert filter_type to string and validate
         filter_value = str(filter_type).lower()
         if filter_value not in ["all", "valid", "suspicious", "left"]:
             filter_value = "all"
-
+ 
         async with db_stats.pool.acquire() as conn:
             # Build base query
             query = """
                 SELECT
                     COALESCE(COUNT(*), 0) as total_invites,
-                    COALESCE(COUNT(*) FILTER (WHERE invite_type = 'valid'), 0) as valid_invites,
+                    COALESCE(COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')), 0) as valid_invites,
                     COALESCE(COUNT(*) FILTER (WHERE invite_type = 'suspicious'), 0) as suspicious_invites,
                     COALESCE(COUNT(*) FILTER (WHERE invite_type = 'left'), 0) as left_invites,
                     COALESCE(COUNT(DISTINCT inviter_id), 0) as unique_inviters,
@@ -27291,13 +27318,18 @@ async def invite_total_stats(request: Request):
             """
             params = [guild_id_int]
             param_index = 2
-
+ 
             # Apply filter_type to the WHERE clause
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
-
+ 
             # Apply role filtering if needed
             if role_filter_ids and len(role_filter_ids) > 0:
                 inviter_ids = await db_stats._get_users_with_roles(guild_id, role_filter_ids)
@@ -27322,7 +27354,7 @@ async def invite_total_stats(request: Request):
                         start_time=start_time,
                         end_time=end_time
                     )
-
+ 
             # Apply time filtering
             if start_time and end_time:
                 query += f" AND created_at >= ${param_index} AND created_at <= ${param_index + 1}"
@@ -27345,14 +27377,14 @@ async def invite_total_stats(request: Request):
                 query += f" AND created_at >= NOW() - INTERVAL '1 day' * ${param_index}"
                 params.append(days)
                 param_index += 1
-
+ 
             # Apply bot filter
             query, params = await db_stats._apply_bot_filter(
                 query, params, guild_id, 'invite_tracking'
             )
-
+ 
             row = await conn.fetchrow(query, *params)
-
+ 
             if not row:
                 return InviteStatsResponse(
                     guild_id=guild_id,
@@ -27367,7 +27399,7 @@ async def invite_total_stats(request: Request):
                     start_time=start_time,
                     end_time=end_time
                 )
-
+ 
             return InviteStatsResponse(
                 guild_id=guild_id,
                 total_invites=row['total_invites'] or 0,
@@ -27381,17 +27413,17 @@ async def invite_total_stats(request: Request):
                 start_time=start_time,
                 end_time=end_time
             )
-
+ 
     except Exception as e:
         logger.error(
             f"Unexpected error in invite_total_stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
+ 
+ 
 # ============================================
 # INVITE USER LEADERBOARD - FIXED
 # ============================================
-
+ 
 @app.post("/api/invite/leaderboard/users", response_model=List[InviteUserLeaderboardEntry])
 async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
     """
@@ -27406,7 +27438,7 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
         except ValueError:
             raise HTTPException(
                 status_code=400, detail=f"Invalid guild_id format: {request.guild_id}")
-
+ 
         # SAFELY get filter value as string
         if request.filter_type is None:
             filter_value = "all"
@@ -27414,14 +27446,14 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
             filter_value = request.filter_type.value
         else:
             filter_value = str(request.filter_type).lower()
-
+ 
         async with db_stats.pool.acquire() as conn:
             # Build query for user leaderboard
             query = """
                 SELECT
                     inviter_id,
                     COUNT(*) as total_invites,
-                    COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+                    COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'left') as left_invites
                 FROM invite_tracking
@@ -27429,13 +27461,18 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
             """
             params = [guild_id_int]
             param_index = 2
-
+ 
             # Apply filter_type - use the string value
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
-
+ 
             # Apply role filtering
             if request.role_filter_ids and len(request.role_filter_ids) > 0:
                 user_ids = await db_stats._get_users_with_roles(request.guild_id, request.role_filter_ids)
@@ -27447,7 +27484,7 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                     param_index += len(user_ids)
                 else:
                     return []
-
+ 
             # Apply time filtering
             if request.start_time and request.end_time:
                 query += f" AND created_at >= ${param_index} AND created_at <= ${param_index + 1}"
@@ -27466,14 +27503,14 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                 query += f" AND created_at >= NOW() - INTERVAL '1 day' * ${param_index}"
                 params.append(request.days)
                 param_index += 1
-
+ 
             # Apply bot filter
             query, params = await db_stats._apply_bot_filter(
                 query, params, request.guild_id, 'invite_tracking'
             )
-
+ 
             query += " GROUP BY inviter_id"
-
+ 
             # Determine sort column based on filter_type
             if filter_value == "valid":
                 sort_column = "valid_invites"
@@ -27483,7 +27520,7 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                 sort_column = "left_invites"
             else:
                 sort_column = "total_invites"
-
+ 
             # Add keyset pagination
             if request.after_value is not None:
                 params.append(request.after_value)
@@ -27494,28 +27531,28 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                     query += f" HAVING {sort_column} < ${len(params)}"
             else:
                 query += " HAVING COUNT(*) > 0"
-
+ 
             query += f" ORDER BY {sort_column} DESC, inviter_id DESC LIMIT ${param_index}"
             params.append(request.limit)
-
+ 
             rows = await conn.fetch(query, *params)
-
+ 
             # Fetch user display info and format results
             result = []
             for idx, row in enumerate(rows):
                 inviter_id = str(row['inviter_id'])
-
+ 
                 # Skip inviter_id 0 (unknown/vanity invites)
                 if inviter_id == "0":
                     continue
-
+ 
                 # Get user display info
                 user_info = await get_user_display_info(None, request.guild_id, int(inviter_id))
-
+ 
                 total = row['total_invites'] or 0
                 valid = row['valid_invites'] or 0
                 percentage = (valid / total * 100) if total > 0 else 0
-
+ 
                 result.append(InviteUserLeaderboardEntry(
                     user_id=inviter_id,
                     username=user_info.get('name', f"User {inviter_id}"),
@@ -27528,19 +27565,19 @@ async def invite_user_leaderboard(request: InviteUserLeaderboardRequest):
                     percentage_valid=round(percentage, 1),
                     rank=idx + 1
                 ))
-
+ 
             return result
-
+ 
     except Exception as e:
         logger.error(
             f"Unexpected error in invite_user_leaderboard: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
+ 
+ 
 # ============================================
 # INVITE CODE LEADERBOARD - FIXED
 # ============================================
-
+ 
 @app.post("/api/invite/leaderboard/codes", response_model=List[InviteCodeLeaderboardEntry])
 async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
     """
@@ -27555,7 +27592,7 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
         except ValueError:
             raise HTTPException(
                 status_code=400, detail=f"Invalid guild_id format: {request.guild_id}")
-
+ 
         # SAFELY get filter value as string
         if request.filter_type is None:
             filter_value = "all"
@@ -27563,7 +27600,7 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
             filter_value = request.filter_type.value
         else:
             filter_value = str(request.filter_type).lower()
-
+ 
         async with db_stats.pool.acquire() as conn:
             # Build query for invite code leaderboard
             # IMPORTANT: We always group by the actual invite_code, not by type
@@ -27574,7 +27611,7 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                     MIN(created_at) as first_used,
                     MAX(created_at) as last_used,
                     COUNT(*) as total_uses,
-                    COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_uses,
+                    COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_uses,
                     COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_uses,
                     COUNT(*) FILTER (WHERE invite_type = 'left') as left_uses
                 FROM invite_tracking
@@ -27586,14 +27623,19 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
             """
             params = [guild_id_int]
             param_index = 2
-
+ 
             # Apply filter_type to the WHERE clause - this filters which records to include
             # but we STILL group by the actual invite_code
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
-
+ 
             # Apply role filtering
             if request.role_filter_ids and len(request.role_filter_ids) > 0:
                 user_ids = await db_stats._get_users_with_roles(request.guild_id, request.role_filter_ids)
@@ -27605,7 +27647,7 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                     param_index += len(user_ids)
                 else:
                     return []
-
+ 
             # Apply time filtering
             if request.start_time and request.end_time:
                 query += f" AND created_at >= ${param_index} AND created_at <= ${param_index + 1}"
@@ -27624,15 +27666,15 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                 query += f" AND created_at >= NOW() - INTERVAL '1 day' * ${param_index}"
                 params.append(request.days)
                 param_index += 1
-
+ 
             # Apply bot filter
             query, params = await db_stats._apply_bot_filter(
                 query, params, request.guild_id, 'invite_tracking'
             )
-
+ 
             # Always group by the actual invite_code and inviter_id
             query += " GROUP BY invite_code, inviter_id"
-
+ 
             # Determine sort column based on filter_type for ordering
             if filter_value == "valid":
                 sort_column = "valid_uses"
@@ -27642,7 +27684,7 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                 sort_column = "left_uses"
             else:
                 sort_column = "total_uses"
-
+ 
             # Add keyset pagination
             if request.after_value is not None:
                 params.append(request.after_value)
@@ -27653,24 +27695,24 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                     query += f" HAVING {sort_column} < ${len(params)}"
             else:
                 query += " HAVING COUNT(*) > 0"
-
+ 
             query += f" ORDER BY {sort_column} DESC, invite_code DESC LIMIT ${param_index}"
             params.append(request.limit)
-
+ 
             rows = await conn.fetch(query, *params)
-
+ 
             # Fetch inviter info and format results
             result = []
             for idx, row in enumerate(rows):
                 inviter_id = str(row['inviter_id'])
-
+ 
                 # Get inviter display info
                 user_info = await get_user_display_info(None, request.guild_id, int(inviter_id)) if inviter_id != "0" else {"name": "Unknown"}
-
+ 
                 total = row['total_uses'] or 0
                 valid = row['valid_uses'] or 0
                 percentage = (valid / total * 100) if total > 0 else 0
-
+ 
                 # IMPORTANT: Always show the actual invite_code, never filter it out
                 result.append(InviteCodeLeaderboardEntry(
                     # This is the actual code like "hwhheqhejh3"
@@ -27687,19 +27729,19 @@ async def invite_code_leaderboard(request: InviteCodeLeaderboardRequest):
                     last_used=row['last_used'].isoformat(
                     ) if row['last_used'] else None
                 ))
-
+ 
             return result
-
+ 
     except Exception as e:
         logger.error(
             f"Unexpected error in invite_code_leaderboard: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
+ 
 # ============================================
 # INVITE USER INVITER - FIXED
 # ============================================
-
-
+ 
+ 
 @app.post("/api/invite/user/inviter", response_model=InviteUserInviterResponse)
 async def invite_user_inviter(request: InviteUserInviterRequest):
     """
@@ -27714,7 +27756,7 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
         except ValueError as e:
             raise HTTPException(
                 status_code=400, detail=f"Invalid ID format: {e}")
-
+ 
         # SAFELY get filter value as string
         if request.filter_type is None:
             filter_value = "all"
@@ -27722,15 +27764,16 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
             filter_value = request.filter_type.value
         else:
             filter_value = str(request.filter_type).lower()
-
+ 
         async with db_stats.pool.acquire() as conn:
             # Get user info first
             user_info = await get_user_display_info(None, request.guild_id, user_id_int)
             username = user_info.get('name', f"User {request.user_id}")
-
+ 
             # Build query based on filter_type
             if filter_value == "all":
                 # Try valid invites first, then any invite
+                # (unknown/vanity count as valid here too)
                 query = """
                     SELECT 
                         inviter_id, 
@@ -27740,14 +27783,14 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                     FROM invite_tracking
                     WHERE guild_id = $1 
                     AND invitee_id = $2
-                    AND invite_type = 'valid'
+                    AND invite_type IN ('valid', 'unknown', 'vanity')
                     ORDER BY created_at DESC
                     LIMIT 1
                 """
                 params = [guild_id_int, user_id_int]
-
+ 
                 row = await conn.fetchrow(query, *params)
-
+ 
                 if not row:
                     # No valid invite, try any invite
                     query = """
@@ -27763,6 +27806,22 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                         LIMIT 1
                     """
                     row = await conn.fetchrow(query, *params)
+            elif filter_value == "valid":
+                # unknown/vanity invites count as valid, so match all three
+                query = """
+                    SELECT 
+                        inviter_id, 
+                        invite_code, 
+                        created_at, 
+                        invite_type
+                    FROM invite_tracking
+                    WHERE guild_id = $1 
+                    AND invitee_id = $2
+                    AND invite_type = ANY($3::text[])
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """
+                row = await conn.fetchrow(query, guild_id_int, user_id_int, ['valid', 'unknown', 'vanity'])
             else:
                 # Filter by specific type
                 query = """
@@ -27779,7 +27838,7 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                     LIMIT 1
                 """
                 row = await conn.fetchrow(query, guild_id_int, user_id_int, filter_value)
-
+ 
             if not row:
                 return InviteUserInviterResponse(
                     user_id=request.user_id,
@@ -27788,10 +27847,10 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                     invite_type="none",
                     message="No invite record found for this user"
                 )
-
+ 
             inviter_id = row['inviter_id']
             invite_type = row['invite_type']
-
+ 
             # Handle case where inviter_id is 0 (unknown/vanity URL)
             if inviter_id == 0:
                 return InviteUserInviterResponse(
@@ -27807,11 +27866,11 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                     invite_type=invite_type,
                     message="User joined via vanity URL or unknown invite"
                 )
-
+ 
             # Get inviter info
             inviter_info = await get_user_display_info(None, request.guild_id, inviter_id)
             inviter_name = inviter_info.get('name', f"User {inviter_id}")
-
+ 
             return InviteUserInviterResponse(
                 user_id=request.user_id,
                 username=username,
@@ -27824,17 +27883,17 @@ async def invite_user_inviter(request: InviteUserInviterRequest):
                 ) if row['created_at'] else None,
                 invite_type=invite_type
             )
-
+ 
     except Exception as e:
         logger.error(
             f"Unexpected error in invite_user_inviter: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
+ 
+ 
 # ============================================
 # INVITE TIMESERIES - COMPLETELY REWRITTEN
 # ============================================
-
+ 
 @app.post("/api/invite/timeseries")
 async def invite_timeseries(request: InviteTimeseriesRequest):
     """
@@ -27843,15 +27902,15 @@ async def invite_timeseries(request: InviteTimeseriesRequest):
     """
     try:
         guild_id_int = int(request.guild_id)
-
+ 
         filter_value = str(request.filter_type).lower(
         ) if request.filter_type else "all"
         if filter_value not in ["all", "valid", "suspicious", "left"]:
             filter_value = "all"
-
+ 
         # Get timezone from request or default to UTC
         timezone_str = getattr(request, 'timezone_str', 'UTC')
-
+ 
         async with db_stats.pool.acquire() as conn:
             # Determine date truncation with timezone support
             if request.interval == "day":
@@ -27863,12 +27922,12 @@ async def invite_timeseries(request: InviteTimeseriesRequest):
                 date_trunc = f"DATE_TRUNC('month', created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}')::DATE"
             else:
                 date_trunc = f"DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE '{timezone_str}')"
-
+ 
             query = f"""
                 SELECT
                     {date_trunc} as date_col,
                     COUNT(*) as total_invites,
-                    COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+                    COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'left') as left_invites,
                     COUNT(DISTINCT inviter_id) as unique_inviters,
@@ -27878,12 +27937,17 @@ async def invite_timeseries(request: InviteTimeseriesRequest):
             """
             params = [guild_id_int]
             param_index = 2
-
+ 
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
-
+ 
             if request.role_filter_ids and len(request.role_filter_ids) > 0:
                 user_ids = await db_stats._get_users_with_roles(request.guild_id, request.role_filter_ids)
                 if user_ids and len(user_ids) > 0:
@@ -27894,7 +27958,7 @@ async def invite_timeseries(request: InviteTimeseriesRequest):
                     param_index += len(user_ids)
                 else:
                     return []
-
+ 
             if request.start_time and request.end_time:
                 query += f" AND created_at >= ${param_index} AND created_at <= ${param_index + 1}"
                 params.append(request.start_time)
@@ -27912,17 +27976,17 @@ async def invite_timeseries(request: InviteTimeseriesRequest):
                 query += f" AND created_at >= NOW() - INTERVAL '1 day' * ${param_index}"
                 params.append(request.days)
                 param_index += 1
-
+ 
             query, params = await db_stats._apply_bot_filter(query, params, request.guild_id, 'invite_tracking')
             query, params = await db_stats._apply_comprehensive_blacklist_filters(
                 request.guild_id, query, params, 'invite_tracking',
                 include_users=True, include_channels=False
             )
-
+ 
             query += f" GROUP BY date_col ORDER BY date_col ASC"
-
+ 
             rows = await conn.fetch(query, *params)
-
+ 
             result = []
             for row in rows:
                 date_value = row['date_col']
@@ -27935,13 +27999,14 @@ async def invite_timeseries(request: InviteTimeseriesRequest):
                     "unique_inviters": row['unique_inviters'] or 0,
                     "unique_invitees": row['unique_invitees'] or 0
                 })
-
+ 
             return result
-
+ 
     except Exception as e:
         logger.error(
             f"Unexpected error in invite_timeseries: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/api/user/timeseries/messages/daily")
@@ -43338,7 +43403,7 @@ async def user_invite_stats(request: InviteStatsRequest):
         except ValueError as e:
             raise HTTPException(
                 status_code=400, detail=f"Invalid ID format: {e}")
-
+ 
         result = await db_stats.q_user_invite_stats(
             guild_id=request.guild_id,
             user_id=request.user_id,
@@ -43356,8 +43421,8 @@ async def user_invite_stats(request: InviteStatsRequest):
     except Exception as e:
         logger.error(f"Unexpected error in user_invite_stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
+ 
+ 
 @app.post("/api/invite/leaderboard")
 async def invite_leaderboard(request: InviteLeaderboardRequest):
     """Get server's invite leaderboard with role filtering"""
@@ -43368,7 +43433,7 @@ async def invite_leaderboard(request: InviteLeaderboardRequest):
         except ValueError:
             raise HTTPException(
                 status_code=400, detail=f"Invalid guild_id format: {request.guild_id}")
-
+ 
         result = await db_stats.q_invite_leaderboard(
             guild_id=request.guild_id,
             limit=request.limit,
@@ -43376,7 +43441,7 @@ async def invite_leaderboard(request: InviteLeaderboardRequest):
             start_time=request.start_time,
             end_time=request.end_time
         )
-
+ 
         return result
     except ValueError as e:
         logger.error(f"Invalid ID format in invite_leaderboard: {e}")
@@ -43384,6 +43449,7 @@ async def invite_leaderboard(request: InviteLeaderboardRequest):
     except DatabaseError as e:
         logger.error(f"Database error in invite_leaderboard: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ============================================
 # SLASH COMMAND ENDPOINTS (with error handling)
@@ -57873,7 +57939,7 @@ async def public_invite_total_stats(request: Request):
             query = """
                 SELECT
                     COALESCE(COUNT(*), 0) as total_invites,
-                    COALESCE(COUNT(*) FILTER (WHERE invite_type = 'valid'), 0) as valid_invites,
+                    COALESCE(COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')), 0) as valid_invites,
                     COALESCE(COUNT(*) FILTER (WHERE invite_type = 'suspicious'), 0) as suspicious_invites,
                     COALESCE(COUNT(*) FILTER (WHERE invite_type = 'left'), 0) as left_invites,
                     COALESCE(COUNT(DISTINCT inviter_id), 0) as unique_inviters,
@@ -57885,8 +57951,13 @@ async def public_invite_total_stats(request: Request):
             param_index = 2
 
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
 
             if role_filter_ids and len(role_filter_ids) > 0:
@@ -57974,7 +58045,7 @@ async def public_invite_user_leaderboard(request: Request):
                 SELECT
                     inviter_id,
                     COUNT(*) as total_invites,
-                    COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+                    COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'left') as left_invites
                 FROM invite_tracking
@@ -57984,8 +58055,13 @@ async def public_invite_user_leaderboard(request: Request):
             param_index = 2
 
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
 
             if role_filter_ids and len(role_filter_ids) > 0:
@@ -58105,7 +58181,7 @@ async def public_invite_code_leaderboard(request: Request):
                     MIN(created_at) as first_used,
                     MAX(created_at) as last_used,
                     COUNT(*) as total_uses,
-                    COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_uses,
+                    COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_uses,
                     COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_uses,
                     COUNT(*) FILTER (WHERE invite_type = 'left') as left_uses
                 FROM invite_tracking
@@ -58119,8 +58195,13 @@ async def public_invite_code_leaderboard(request: Request):
             param_index = 2
 
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
 
             if role_filter_ids and len(role_filter_ids) > 0:
@@ -58253,7 +58334,7 @@ async def public_invite_timeseries(request: Request):
                 SELECT
                     {date_trunc} as date_col,
                     COUNT(*) as total_invites,
-                    COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+                    COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'left') as left_invites,
                     COUNT(DISTINCT inviter_id) as unique_inviters,
@@ -58265,8 +58346,13 @@ async def public_invite_timeseries(request: Request):
             param_index = 2
 
             if filter_value != "all":
-                query += f" AND invite_type = ${param_index}"
-                params.append(filter_value)
+                if filter_value == "valid":
+                    # unknown/vanity invites count as valid, so match all three
+                    query += f" AND invite_type = ANY(${param_index}::text[])"
+                    params.append(['valid', 'unknown', 'vanity'])
+                else:
+                    query += f" AND invite_type = ${param_index}"
+                    params.append(filter_value)
                 param_index += 1
 
             if role_filter_ids and len(role_filter_ids) > 0:
@@ -58357,10 +58443,11 @@ async def public_invite_user_inviter(request: Request):
 
         async with db_stats.pool.acquire() as conn:
             if filter_value == "all":
+                # Try valid invites first (unknown/vanity count as valid here too), then any invite
                 query = """
                     SELECT inviter_id, invite_code, created_at, invite_type
                     FROM invite_tracking
-                    WHERE guild_id = $1 AND invitee_id = $2 AND invite_type = 'valid'
+                    WHERE guild_id = $1 AND invitee_id = $2 AND invite_type IN ('valid', 'unknown', 'vanity')
                     ORDER BY created_at DESC
                     LIMIT 1
                 """
@@ -58391,6 +58478,24 @@ async def public_invite_user_inviter(request: Request):
                     )
 
                     row = await conn.fetchrow(query, *params)
+            elif filter_value == "valid":
+                # unknown/vanity invites count as valid, so match all three
+                query = """
+                    SELECT inviter_id, invite_code, created_at, invite_type
+                    FROM invite_tracking
+                    WHERE guild_id = $1 AND invitee_id = $2 AND invite_type = ANY($3::text[])
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """
+                params = [guild_id_int, user_id_int, ['valid', 'unknown', 'vanity']]
+
+                query, params = await db_stats._apply_bot_filter(query, params, guild_id, 'invite_tracking')
+                query, params = await db_stats._apply_comprehensive_blacklist_filters(
+                    guild_id, query, params, 'invite_tracking',
+                    include_users=True, include_channels=False
+                )
+
+                row = await conn.fetchrow(query, *params)
             else:
                 query = """
                     SELECT inviter_id, invite_code, created_at, invite_type
@@ -58528,7 +58633,7 @@ async def public_user_invite_stats(request: Request):
             query = """
                 SELECT
                     COUNT(*) as total_invites,
-                    COUNT(*) FILTER (WHERE invite_type = 'valid') as valid_invites,
+                    COUNT(*) FILTER (WHERE invite_type IN ('valid', 'unknown', 'vanity')) as valid_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'suspicious') as suspicious_invites,
                     COUNT(*) FILTER (WHERE invite_type = 'left') as left_invites,
                     COUNT(DISTINCT invitee_id) as unique_invitees
