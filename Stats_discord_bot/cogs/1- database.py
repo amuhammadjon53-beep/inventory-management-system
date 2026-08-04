@@ -26033,13 +26033,14 @@ class DatabaseStats(commands.Cog):
                     'is_vanity': False
                 }
 
+            # In _take_invite_snapshot
             if guild.vanity_url_code:
                 vanity_invite = await guild.vanity_invite()
                 if vanity_invite:
                     snapshot['vanity_info'] = {
                         'code': vanity_invite.code,
                         'uses': None,
-                        'inviter_id': guild.owner.id if guild.owner else 0,
+                        'inviter_id': guild.owner_id,  # ALWAYS available, never defaults to 0
                         'url': guild.vanity_url,
                         'is_vanity': True
                     }
@@ -26289,17 +26290,17 @@ class DatabaseStats(commands.Cog):
                     previous_snapshot = self._get_invite_snapshot(
                         member.guild.id)
 
+                    # In on_member_join: initial buffer for uncached snapshots
                     if previous_snapshot is None:
                         fresh_snapshot = await self._take_invite_snapshot(member.guild)
-                        self._set_invite_snapshot(
-                            member.guild.id, fresh_snapshot)
+                        self._set_invite_snapshot(member.guild.id, fresh_snapshot)
 
                         await self._buffer_invite_event(
                             guild_id=member.guild.id,
-                            inviter_id=0,
+                            inviter_id=member.guild.owner_id,  # Changed from 0 to owner_id
                             invitee_id=member.id,
                             invite_code="unknown",
-                            invite_type="unknown",
+                            invite_type="valid",               # Changed from "unknown" to "valid"
                             is_vanity=False
                         )
                         return
@@ -26329,22 +26330,17 @@ class DatabaseStats(commands.Cog):
                 # NOTE: suspicious is now checked BEFORE vanity, so a new/suspicious
                 # account joining through a vanity invite is still flagged suspicious
                 # instead of always being bucketed as "vanity".
-                if used_invite is None:
-                    invite_type = "unknown"
+                if used_invite is None or is_uncertain:
+                    invite_type = "valid"
                     invite_code = "unknown"
-                    inviter_id = 0
-                    is_vanity = False
-                elif is_uncertain:
-                    invite_type = "unknown"
-                    invite_code = "unknown"
-                    inviter_id = 0
+                    inviter_id = member.guild.owner_id
                     is_vanity = False
                 elif is_suspicious:
                     invite_type = "suspicious"
                     invite_code = used_invite['code']
                     inviter_id = used_invite['inviter_id']
                 elif is_vanity:
-                    invite_type = "vanity"
+                    invite_type = "valid"
                     invite_code = used_invite['code']
                     inviter_id = used_invite['inviter_id']
                 else:
