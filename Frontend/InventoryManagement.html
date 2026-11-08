@@ -3,7 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Inventory Management</title>
+
+<title>StockWise</title>
+
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+
 <style>
 body {
   margin: 0;
@@ -13,12 +17,18 @@ body {
 }
 
 .navbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
-  padding: 16px 24px;
+  justify-content: space-between;
+  height: 64px;
+  padding: 0 24px;
   border-bottom: 1px solid #cccccc;
+  background: white;
+  z-index: 6;
 }
 
 .brand {
@@ -26,24 +36,170 @@ body {
   font-weight: bold;
 }
 
-.nav-link {
-  padding: 8px 16px;
-  border: 2px solid white;
-  border-radius: 20px;
+.login-button {
+  padding: 8px 20px;
+  border: 2px solid #4f46e5;
+  border-radius: 8px;
   background: white;
+  color: #4f46e5;
   font-size: 16px;
+  font-weight: bold;
   cursor: pointer;
 }
 
-.nav-link.active {
-  border-color: #4f46e5;
+.login-button:hover {
+  background: #eef2ff;
+}
+
+.sidebar {
+  position: fixed;
+  top: 64px;
+  left: 0;
+  bottom: 0;
+  width: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding-top: 20px;
+  border-right: 1px solid #cccccc;
+  background: white;
+  z-index: 5;
+}
+
+.side-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 12px;
+  background: white;
+  color: black;
+  cursor: pointer;
+}
+
+.side-link svg {
+  width: 22px;
+  height: 22px;
+}
+
+.side-link:hover {
+  background: #f3f4f6;
+}
+
+.side-link.active {
+  background: #eef2ff;
   color: #4f46e5;
+}
+
+.side-link:hover::after {
+  content: attr(data-name);
+  position: absolute;
+  left: 54px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: black;
+  color: white;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.main {
+  margin-left: 72px;
+  margin-top: 64px;
 }
 
 .page {
   max-width: 1000px;
   margin: 0 auto;
   padding: 24px;
+}
+
+.hero {
+  padding: 60px 0 20px 0;
+  text-align: center;
+}
+
+.hero-label {
+  display: inline-block;
+  padding: 6px 16px;
+  border-radius: 20px;
+  background: #ede9fe;
+  color: #6d28d9;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.hero h1 {
+  margin: 20px 0;
+  font-size: 44px;
+}
+
+.hero p {
+  max-width: 640px;
+  margin: 0 auto 32px auto;
+  font-size: 20px;
+  line-height: 1.5;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+}
+
+.section {
+  margin-top: 72px;
+  text-align: center;
+}
+
+.section h2 {
+  font-size: 32px;
+}
+
+.section p {
+  max-width: 640px;
+  margin: 0 auto;
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+.three {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-top: 32px;
+  text-align: left;
+}
+
+.box {
+  padding: 24px;
+  border: 1px solid #cccccc;
+  border-radius: 10px;
+}
+
+.box h3 {
+  margin: 0 0 8px 0;
+}
+
+.box p {
+  margin: 0;
+  font-size: 16px;
+}
+
+.icon-circle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  color: white;
 }
 
 .center {
@@ -68,9 +224,20 @@ body {
   cursor: pointer;
 }
 
+.outline-button {
+  padding: 18px 48px;
+  border: 2px solid #4f46e5;
+  border-radius: 12px;
+  background: white;
+  color: #4f46e5;
+  font-size: 24px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 16px;
   margin-bottom: 24px;
 }
@@ -82,46 +249,113 @@ body {
 }
 
 .stat-number {
-  font-size: 32px;
+  font-size: 26px;
   font-weight: bold;
+  overflow-wrap: anywhere;
 }
 
-.cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 16px;
+  margin-bottom: 16px;
 }
 
-.card {
-  padding: 16px;
+.search-box {
+  max-width: 320px;
+  margin-top: 0;
+}
+
+.sort-box {
+  display: inline;
+  width: auto;
+  margin-top: 0;
+}
+
+.table-wrap {
+  overflow-x: auto;
   border: 1px solid #cccccc;
   border-radius: 10px;
 }
 
-.tag {
-  padding: 3px 10px;
-  border-radius: 20px;
-  background: #7c3aed;
-  color: white;
-  font-size: 13px;
+table {
+  width: 100%;
+  border-collapse: collapse;
 }
 
-.edit-button {
-  padding: 8px 14px;
-  border: none;
+th,
+td {
+  padding: 12px 16px;
+  border-bottom: 1px solid #eeeeee;
+  text-align: left;
+  white-space: nowrap;
+}
+
+th {
+  background: #f9fafb;
+  font-size: 14px;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.badge {
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.in-stock {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.low-stock {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.out-of-stock {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.message-box {
+  padding: 16px;
+  border-radius: 10px;
+}
+
+.loading-box {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.error-box {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.retry-button {
+  margin-left: 12px;
+  padding: 6px 14px;
+  border: 2px solid #991b1b;
   border-radius: 8px;
-  background: #dbeafe;
-  color: #1e40af;
+  background: white;
+  color: #991b1b;
+  font-weight: bold;
   cursor: pointer;
 }
 
-.delete-button {
-  padding: 8px 14px;
-  border: none;
+.form-error {
+  margin: 14px 0 0 0;
+  padding: 10px;
   border-radius: 8px;
   background: #fee2e2;
   color: #991b1b;
-  cursor: pointer;
+  font-size: 14px;
 }
 
 .modal {
@@ -134,6 +368,7 @@ body {
   background: rgba(0, 0, 0, 0.5);
   align-items: center;
   justify-content: center;
+  z-index: 10;
 }
 
 .modal-box {
@@ -161,6 +396,7 @@ select {
   border: 1px solid #cccccc;
   border-radius: 8px;
   font-size: 16px;
+  box-sizing: border-box;
 }
 
 .cancel-button {
@@ -182,235 +418,527 @@ select {
   font-weight: bold;
   cursor: pointer;
 }
+
+.save-button:disabled,
+.cancel-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 </style>
+
 </head>
+
 <body>
 
 <div class="navbar">
-  <div class="brand">Inventory Management</div>
-  <button id="navAdd" class="nav-link active" onclick="showAddPage()">Addition</button>
-  <button id="navInventory" class="nav-link" onclick="showInventoryPage()">Inventory</button>
+  <div class="brand">StockWise</div>
+  <button class="login-button">Login</button>
 </div>
 
-<div id="pageAdd" class="page center">
-  <div class="big-text">Keep track of what you stock, how many you have and what it’s worth!</div>
-  <button class="big-button" onclick="openModal()">+ Add Item</button>
+<div class="sidebar">
+  <button id="navHome" class="side-link active" data-name="Home" aria-label="Home" onclick="showPage('Home')">
+    <i data-lucide="house"></i>
+  </button>
+  <button id="navAdd" class="side-link" data-name="Addition" aria-label="Addition" onclick="showPage('Add')">
+    <i data-lucide="circle-plus"></i>
+  </button>
+  <button id="navInventory" class="side-link" data-name="Inventory" aria-label="Inventory" onclick="showPage('Inventory')">
+    <i data-lucide="package"></i>
+  </button>
 </div>
 
-<div id="pageInventory" class="page" style="display: none;">
-  <h1>Inventory</h1>
+<div class="main">
 
-  <div class="stats">
-    <div class="stat">
-      <div id="statItems" class="stat-number" style="color: #4f46e5;">0</div>
-      <div>Items</div>
+  <div id="pageHome" class="page">
+    <div class="hero">
+      <span class="hero-label">StockWise</span>
+      <h1>Inventory management that keeps your business organized</h1>
+      <p>StockWise is a full-stack web application designed to help small businesses manage products, monitor stock levels, and record inventory movements.</p>
+      <div class="buttons">
+        <button class="big-button" onclick="showPage('Add')">Get started</button>
+        <button class="outline-button" onclick="showPage('Inventory')">View inventory</button>
+      </div>
     </div>
-    <div class="stat">
-      <div id="statUnits" class="stat-number" style="color: #db2777;">0</div>
-      <div>Units in stock</div>
+
+    <div class="section">
+      <h2>The problem</h2>
+      <p>Small businesses may rely on manual records or spreadsheets to track their inventory. StockWise aims to make inventory management more organized and efficient.</p>
     </div>
-    <div class="stat">
-      <div id="statValue" class="stat-number" style="color: #16a34a;">0 ₸</div>
-      <div>Total value</div>
+
+    <div class="section">
+      <h2>What StockWise does</h2>
+      <div class="three">
+        <div class="box">
+          <div class="icon-circle" style="background: #4f46e5;"><i data-lucide="package"></i></div>
+          <h3>Manage products</h3>
+          <p>Add products with a name, quantity and price, and see them stored by the backend.</p>
+        </div>
+        <div class="box">
+          <div class="icon-circle" style="background: #ea580c;"><i data-lucide="triangle-alert"></i></div>
+          <h3>Monitor stock levels</h3>
+          <p>See at a glance what is in stock, running low or out of stock.</p>
+        </div>
+        <div class="box">
+          <div class="icon-circle" style="background: #16a34a;"><i data-lucide="arrow-left-right"></i></div>
+          <h3>Record inventory movements</h3>
+          <p>Keep track of stock coming in and going out as your inventory changes.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Who it’s for</h2>
+      <div class="three">
+        <div class="box">
+          <div class="icon-circle" style="background: #db2777;"><i data-lucide="store"></i></div>
+          <h3>Small business owners</h3>
+          <p>Get a clear picture of your stock and what it’s worth.</p>
+        </div>
+        <div class="box">
+          <div class="icon-circle" style="background: #2563eb;"><i data-lucide="users"></i></div>
+          <h3>Shop employees</h3>
+          <p>Check quantities and update items quickly during the day.</p>
+        </div>
+        <div class="box">
+          <div class="icon-circle" style="background: #7c3aed;"><i data-lucide="clipboard-list"></i></div>
+          <h3>Inventory administrators</h3>
+          <p>Keep product records accurate and well organized.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Ready to get organized?</h2>
+      <p style="margin-bottom: 24px;">Add your first item and see your inventory take shape.</p>
+      <button class="big-button" onclick="showPage('Add')">Add your first item</button>
     </div>
   </div>
 
-  <p>
-    Sort by
-    <select id="sortSelect" onchange="showItems()" style="display: inline; width: auto;">
-      <option value="">Order added</option>
-      <option value="name-az">Name (A–Z)</option>
-      <option value="name-za">Name (Z–A)</option>
-      <option value="price-low">Price (low to high)</option>
-      <option value="price-high">Price (high to low)</option>
-      <option value="quantity-low">Quantity (low to high)</option>
-      <option value="quantity-high">Quantity (high to low)</option>
-    </select>
-  </p>
+  <div id="pageAdd" class="page center" style="display: none;">
+    <div class="big-text">Keep track of what you stock, how many you have and what it’s worth!</div>
+    <button class="big-button" onclick="openModal()">+ Add Item</button>
+  </div>
 
-  <p id="emptyMessage">Your inventory is empty, please head to to the Addition page to add your first item.</p>
-  <div id="cards" class="cards"></div>
+  <div id="pageInventory" class="page" style="display: none;">
+    <h1>Inventory</h1>
+
+    <div class="stats">
+      <div class="stat">
+        <div id="statItems" class="stat-number" style="color: #4f46e5;">0</div>
+        <div>Items</div>
+      </div>
+      <div class="stat">
+        <div id="statUnits" class="stat-number" style="color: #db2777;">0</div>
+        <div>Units in stock</div>
+      </div>
+      <div class="stat">
+        <div id="statValue" class="stat-number" style="color: #16a34a;">0 ₸</div>
+        <div>Total value</div>
+      </div>
+      <div class="stat">
+        <div id="statLow" class="stat-number" style="color: #ea580c;">0</div>
+        <div>Low stock</div>
+      </div>
+      <div class="stat">
+        <div id="statOut" class="stat-number" style="color: #dc2626;">0</div>
+        <div>Out of stock</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <input type="text" id="searchInput" class="search-box" placeholder="Search by name or ID" oninput="showItems()">
+      <div>
+        Sort by
+        <select id="sortSelect" class="sort-box" onchange="showItems()">
+          <option value="">Order added</option>
+          <option value="name-az">Name (A–Z)</option>
+          <option value="name-za">Name (Z–A)</option>
+          <option value="price-low">Price (low to high)</option>
+          <option value="price-high">Price (high to low)</option>
+          <option value="quantity-low">Quantity (low to high)</option>
+          <option value="quantity-high">Quantity (high to low)</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="loadingMessage" class="message-box loading-box" style="display: none;">Loading products...</div>
+    <div id="errorMessage" class="message-box error-box" style="display: none;">
+      <span id="errorText"></span>
+      <button class="retry-button" onclick="loadProducts()">Try again</button>
+    </div>
+
+    <p id="emptyMessage" style="display: none;">Your inventory is empty, please head to the Addition page to add your first item.</p>
+    <p id="noResultsMessage" style="display: none;">No items match your search.</p>
+
+    <div id="tableWrap" class="table-wrap" style="display: none;">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Stock</th>
+            <th>Status</th>
+            <th>Price</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
 </div>
 
 <div id="modal" class="modal">
   <div class="modal-box">
-    <h2 id="modalTitle">Add item</h2>
+    <h2>Add item</h2>
 
-    <form onsubmit="saveItem(event)">
+    <form id="productForm" onsubmit="saveItem(event)" novalidate>
       <label>
-        Item name
-        <input type="text" id="nameInput" required>
-      </label>
-
-      <label>
-        Category
-        <select id="categoryInput">
-          <option>General</option>
-          <option>Food and Drink</option>
-          <option>Clothing</option>
-          <option>Electronics</option>
-          <option>Supplies</option>
-          <option>Other</option>
-        </select>
-      </label>
-
-      <label>
-        Quantity
-        <input type="text" id="quantityInput" inputmode="numeric" oninput="onlyNumbers(this)" required>
+        Product name
+        <input type="text" id="nameInput">
       </label>
 
       <label>
         Price per item (₸)
-        <input type="text" id="priceInput" inputmode="numeric" oninput="onlyNumbers(this)" required>
+        <input type="number" id="priceInput" min="0" step="any">
       </label>
 
+      <label>
+        Quantity
+        <input type="number" id="quantityInput" min="0" step="1">
+      </label>
+
+      <p id="formError" class="form-error" style="display: none;"></p>
+
       <br>
-      <button type="submit" class="save-button">Save item</button>
-      <button type="button" class="cancel-button" onclick="closeModal()">Cancel</button>
+      <button type="submit" id="saveButton" class="save-button">Save item</button>
+      <button type="button" id="cancelButton" class="cancel-button" onclick="closeModal()">Cancel</button>
     </form>
   </div>
 </div>
 
 <script>
-let items = [];
-let editIndex = null;
+// Configuration 
+const API_BASE_URL = "http://localhost:3000";
+const PRODUCTS_URL = API_BASE_URL + "/api/products";
 
-function onlyNumbers(box) {
-  box.value = box.value.replace(/[^0-9]/g, "");
-}
+
+const LOW_STOCK_LIMIT = 5;
+
+
+let items = [];
+let isSaving = false;
+
 
 function formatMoney(number) {
   return number.toLocaleString("ru-RU") + " ₸";
 }
 
-function showAddPage() {
-  document.getElementById("pageAdd").style.display = "block";
-  document.getElementById("pageInventory").style.display = "none";
-  document.getElementById("navAdd").className = "nav-link active";
-  document.getElementById("navInventory").className = "nav-link";
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = String(text);
+  return div.innerHTML;
 }
 
-function showInventoryPage() {
-  document.getElementById("pageAdd").style.display = "none";
-  document.getElementById("pageInventory").style.display = "block";
-  document.getElementById("navAdd").className = "nav-link";
-  document.getElementById("navInventory").className = "nav-link active";
+function showPage(name) {
+  const names = ["Home", "Add", "Inventory"];
+
+  for (let i = 0; i < names.length; i++) {
+    document.getElementById("page" + names[i]).style.display = "none";
+    document.getElementById("nav" + names[i]).className = "side-link";
+  }
+
+  document.getElementById("page" + name).style.display = "block";
+  document.getElementById("nav" + name).className = "side-link active";
+
+  
+  if (name === "Inventory") {
+    loadProducts();
+  }
 }
 
+function getStatus(item) {
+  if (item.quantity === 0) {
+    return "out";
+  }
+  if (item.quantity <= LOW_STOCK_LIMIT) {
+    return "low";
+  }
+  return "in";
+}
+
+
+async function request(url, options) {
+  let response;
+
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    throw new Error("Could not reach the server at " + API_BASE_URL + ". Is the backend running?");
+  }
+
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (error) {
+    
+  }
+
+  if (!response.ok || (body && body.success === false)) {
+    const reason = body && body.message ? body.message : "Server error (status " + response.status + ")";
+    throw new Error(reason);
+  }
+
+  if (body === null) {
+    throw new Error("The server sent a response we could not read.");
+  }
+
+  return body;
+}
+
+//  GET: load products 
+async function loadProducts() {
+  document.getElementById("loadingMessage").style.display = "block";
+  document.getElementById("errorMessage").style.display = "none";
+
+  try {
+    const result = await request(PRODUCTS_URL);
+
+    // The products are inside the "data" property.
+    if (!Array.isArray(result.data)) {
+      throw new Error("Unexpected response from the server: 'data' is not a list.");
+    }
+
+    items = result.data;
+    document.getElementById("loadingMessage").style.display = "none";
+    showItems();
+  } catch (error) {
+    items = [];
+    document.getElementById("loadingMessage").style.display = "none";
+    document.getElementById("errorText").textContent = "Could not load products: " + error.message;
+    document.getElementById("errorMessage").style.display = "block";
+    showItems();
+  }
+}
+
+//Display 
 function showStats() {
   let totalUnits = 0;
   let totalValue = 0;
+  let lowCount = 0;
+  let outCount = 0;
 
   for (let i = 0; i < items.length; i++) {
     totalUnits = totalUnits + items[i].quantity;
     totalValue = totalValue + items[i].quantity * items[i].price;
+
+    const status = getStatus(items[i]);
+    if (status === "low") {
+      lowCount = lowCount + 1;
+    }
+    if (status === "out") {
+      outCount = outCount + 1;
+    }
   }
 
   document.getElementById("statItems").textContent = items.length;
   document.getElementById("statUnits").textContent = totalUnits;
   document.getElementById("statValue").textContent = formatMoney(totalValue);
+  document.getElementById("statLow").textContent = lowCount;
+  document.getElementById("statOut").textContent = outCount;
 }
 
 function showItems() {
   const choice = document.getElementById("sortSelect").value;
+  const search = document.getElementById("searchInput").value.toLowerCase();
+
+  
+  const list = items.slice();
 
   if (choice === "name-az") {
-    items.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    list.sort(function (a, b) { return a.name.localeCompare(b.name); });
   }
   if (choice === "name-za") {
-    items.sort(function (a, b) { return b.name.localeCompare(a.name); });
+    list.sort(function (a, b) { return b.name.localeCompare(a.name); });
   }
   if (choice === "price-low") {
-    items.sort(function (a, b) { return a.price - b.price; });
+    list.sort(function (a, b) { return a.price - b.price; });
   }
   if (choice === "price-high") {
-    items.sort(function (a, b) { return b.price - a.price; });
+    list.sort(function (a, b) { return b.price - a.price; });
   }
   if (choice === "quantity-low") {
-    items.sort(function (a, b) { return a.quantity - b.quantity; });
+    list.sort(function (a, b) { return a.quantity - b.quantity; });
   }
   if (choice === "quantity-high") {
-    items.sort(function (a, b) { return b.quantity - a.quantity; });
+    list.sort(function (a, b) { return b.quantity - a.quantity; });
   }
 
   let html = "";
+  let shown = 0;
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    html += "<div class='card'>";
-    html += "<span class='tag'>" + item.category + "</span>";
-    html += "<h3>" + item.name + "</h3>";
-    html += "<p>Quantity: <b>" + item.quantity + "</b></p>";
-    html += "<p>Price: <b>" + formatMoney(item.price) + "</b></p>";
-    html += "<p>Total value: <b>" + formatMoney(item.quantity * item.price) + "</b></p>";
-    html += "<button class='edit-button' onclick='editItem(" + i + ")'>Edit</button> ";
-    html += "<button class='delete-button' onclick='deleteItem(" + i + ")'>Delete</button>";
-    html += "</div>";
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    const matchesName = String(item.name).toLowerCase().includes(search);
+    const matchesId = String(item.id).includes(search);
+
+    if (matchesName || matchesId) {
+      const status = getStatus(item);
+      let statusText = "In stock";
+      let statusClass = "in-stock";
+
+      if (status === "low") {
+        statusText = "Low stock";
+        statusClass = "low-stock";
+      }
+      if (status === "out") {
+        statusText = "Out of stock";
+        statusClass = "out-of-stock";
+      }
+
+      html += "<tr>";
+      html += "<td>" + escapeHtml(item.id) + "</td>";
+      html += "<td><b>" + escapeHtml(item.name) + "</b></td>";
+      html += "<td>" + item.quantity + "</td>";
+      html += "<td><span class='badge " + statusClass + "'>" + statusText + "</span></td>";
+      html += "<td>" + formatMoney(item.price) + "</td>";
+      html += "</tr>";
+      shown = shown + 1;
+    }
   }
 
-  document.getElementById("cards").innerHTML = html;
+  document.getElementById("rows").innerHTML = html;
 
-  if (items.length === 0) {
-    document.getElementById("emptyMessage").style.display = "block";
-  } else {
-    document.getElementById("emptyMessage").style.display = "none";
+  
+  const loading = document.getElementById("loadingMessage").style.display === "block";
+  const failed = document.getElementById("errorMessage").style.display === "block";
+
+  document.getElementById("emptyMessage").style.display = "none";
+  document.getElementById("noResultsMessage").style.display = "none";
+  document.getElementById("tableWrap").style.display = "none";
+
+  if (!loading && !failed) {
+    if (items.length === 0) {
+      document.getElementById("emptyMessage").style.display = "block";
+    } else if (shown === 0) {
+      document.getElementById("noResultsMessage").style.display = "block";
+    } else {
+      document.getElementById("tableWrap").style.display = "block";
+    }
   }
 
   showStats();
 }
 
+//  Add product form 
+function showFormError(text) {
+  const box = document.getElementById("formError");
+  box.textContent = text;
+  box.style.display = text ? "block" : "none";
+}
+
 function openModal() {
-  editIndex = null;
-  document.getElementById("modalTitle").textContent = "Add item";
   document.getElementById("nameInput").value = "";
-  document.getElementById("categoryInput").value = "General";
-  document.getElementById("quantityInput").value = "";
   document.getElementById("priceInput").value = "";
+  document.getElementById("quantityInput").value = "";
+  showFormError("");
   document.getElementById("modal").style.display = "flex";
 }
 
 function closeModal() {
+  
+  if (isSaving) {
+    return;
+  }
   document.getElementById("modal").style.display = "none";
 }
 
-function editItem(index) {
-  editIndex = index;
-  document.getElementById("modalTitle").textContent = "Edit item";
-  document.getElementById("nameInput").value = items[index].name;
-  document.getElementById("categoryInput").value = items[index].category;
-  document.getElementById("quantityInput").value = items[index].quantity;
-  document.getElementById("priceInput").value = items[index].price;
-  document.getElementById("modal").style.display = "flex";
-}
 
-function deleteItem(index) {
-  if (confirm("Delete this item?")) {
-    items.splice(index, 1);
-    showItems();
+function validateForm(name, priceText, quantityText) {
+  if (name === "") {
+    return "Please enter a product name.";
   }
+  if (priceText.trim() === "" || isNaN(Number(priceText))) {
+    return "Please enter a valid price.";
+  }
+  if (Number(priceText) < 0) {
+    return "Price cannot be negative.";
+  }
+  if (quantityText.trim() === "" || isNaN(Number(quantityText))) {
+    return "Please enter a valid quantity.";
+  }
+  if (!Number.isInteger(Number(quantityText))) {
+    return "Quantity must be a whole number.";
+  }
+  if (Number(quantityText) < 0) {
+    return "Quantity cannot be negative.";
+  }
+  return "";
 }
 
-function saveItem(event) {
+// POST: create a product 
+async function saveItem(event) {
   event.preventDefault();
 
-  const item = {
-    name: document.getElementById("nameInput").value,
-    category: document.getElementById("categoryInput").value,
-    quantity: Number(document.getElementById("quantityInput").value),
-    price: Number(document.getElementById("priceInput").value)
-  };
-
-  if (editIndex === null) {
-    items.push(item);
-  } else {
-    items[editIndex] = item;
+  
+  if (isSaving) {
+    return;
   }
 
-  showItems();
-  closeModal();
+  const name = document.getElementById("nameInput").value.trim();
+  const priceText = document.getElementById("priceInput").value;
+  const quantityText = document.getElementById("quantityInput").value;
+
+  const problem = validateForm(name, priceText, quantityText);
+  if (problem !== "") {
+    showFormError(problem);
+    return;
+  }
+
+  showFormError("");
+
+  const newProduct = {
+    name: name,
+    price: Number(priceText),
+    quantity: Number(quantityText)
+  };
+
+  isSaving = true;
+  document.getElementById("saveButton").disabled = true;
+  document.getElementById("cancelButton").disabled = true;
+  document.getElementById("saveButton").textContent = "Saving...";
+
+  try {
+    const result = await request(PRODUCTS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newProduct)
+    });
+
+    
+    if (result.data && typeof result.data === "object" && result.data.id !== undefined) {
+      items.push(result.data);
+      showItems();
+    } else {
+      
+      await loadProducts();
+    }
+
+    isSaving = false;
+    closeModal();
+    showPage("Inventory");
+  } catch (error) {
+    showFormError("Could not save the product: " + error.message);
+  }
+
+  isSaving = false;
+  document.getElementById("saveButton").disabled = false;
+  document.getElementById("cancelButton").disabled = false;
+  document.getElementById("saveButton").textContent = "Save item";
 }
 
-showItems();
+lucide.createIcons();
 </script>
 </body>
 </html>
