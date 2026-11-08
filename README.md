@@ -26,7 +26,7 @@ Small businesses may rely on manual records or spreadsheets to track their inven
 
 ## Technology Stack
 
-- Frontend: React, HTML, CSS, JavaScript
+- Frontend: HTML, CSS, JavaScript
 - Backend: Node.js and Express
 - Database: MongoDB (planned integration)
 - Version control: Git and GitHub
@@ -39,7 +39,7 @@ Small businesses may rely on manual records or spreadsheets to track their inven
 
 ## Project Structure
 
-- `frontend/` — Frontend application
+- `Frontend/` — Frontend application
 - `backend/` — Backend API
 - `docs/` — Project documentation
 
@@ -62,9 +62,10 @@ The backend currently provides HTTP endpoints for products.
 
 ```json
 {
-  "id": 1,
+  "id": "example-id",
   "name": "Laptop",
-  "price": 500,
+  "category": "Electronics",
+  "price": "500.00",
   "quantity": 10
 }
 ```
@@ -74,6 +75,7 @@ The backend currently provides HTTP endpoints for products.
 ```json
 {
   "name": "Mouse",
+  "category": "General",
   "price": 25,
   "quantity": 15
 }
@@ -87,14 +89,7 @@ The backend generates the product ID automatically.
 {
   "success": true,
   "message": "Products retrieved successfully",
-  "data": [
-    {
-      "id": 1,
-      "name": "Laptop",
-      "price": 500,
-      "quantity": 10
-    }
-  ]
+  "data": []
 }
 ```
 
@@ -134,15 +129,17 @@ To create a product, send a POST request to:
 
 Use JSON as the request body.
 
+## Running the Frontend
+
+1. Make sure the backend server is running.
+2. Open the project's `Frontend` folder.
+3. Open `InventoryManagement.html` in your web browser.
+4. Open the Inventory page to retrieve products from the backend.
+5. Add a product to test the POST request.
+
+The frontend communicates with the backend using JavaScript `fetch()` requests.
+
 ## Development Status
 
 - Express backend configured.
-- GET products endpoint implemented and tested.
-- POST products endpoint implemented and tested.
-- CORS middleware configured.
-- Frontend integration in progress.
-- MongoDB integration planned.
-
-## Important Note
-
-Products are currently stored in a temporary JavaScript array. Data is reset when the backend server restarts. MongoDB persistence will be implemented in a later development stage.
+- GET products endpoint implemented
