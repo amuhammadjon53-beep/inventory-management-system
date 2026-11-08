@@ -1,50 +1,56 @@
-
 const express = require("express");
+const Product = require("../models/Product");
 
 const router = express.Router();
 
+// Temporary in-memory storage for the demo
 const products = [
-    {
-        id: 1,
+    new Product({
         name: "Laptop",
-        price: 500,
+        category: "Electronics",
+        price: "500.00",
         quantity: 10
-    },
-    {
-        id: 2,
+    }).toJSON(),
+
+    new Product({
         name: "Keyboard",
-        price: 30,
+        category: "Electronics",
+        price: "30.00",
         quantity: 25
-    }
+    }).toJSON()
 ];
 
+// GET all products
 router.get("/", (req, res) => {
     res.json({
         success: true,
-        message: "Produts retrieved successfully",
+        message: "Products retrieved successfully",
         data: products
     });
 });
 
-//Post a new Product
+// POST a new product with model validation
+router.post("/", async (req, res) => {
+    try {
+        const newProduct = new Product(req.body);
 
-router.post("/", (req, res) => {
+        await newProduct.validate();
 
-    const { name, price, quantity } = req.body;
+        const productData = newProduct.toJSON();
+        products.push(productData);
 
-    const newProduct = {
-        id: products.length + 1,
-        name,
-        price,
-        quantity
-    };
-
-    products.push(newProduct);
-    res.status(201).json({
-        success: true,
-        message: "Product created successfully",
-        data: newProduct
-    });
+        res.status(201).json({
+            success: true,
+            message: "Product created successfully",
+            data: productData
+        });
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            message: error.message,
+            data: null
+        });
+    }
 });
 
 module.exports = router;
