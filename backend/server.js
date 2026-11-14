@@ -1,5 +1,7 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const connectDB = require("./config/db");
 
 const app = express();
 const PORT = 3000;
@@ -15,6 +17,18 @@ app.get("/", (req, res) => {
 
 app.use("/api/products", productRoutes);
 
-app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
-});
+async function startServer() {
+    try {
+        await connectDB();
+        console.log("MongoDB connected successfully!");
+
+        app.listen(PORT, () => {
+            console.log(`Server is running on http://localhost:${PORT}`);
+        });
+    } catch (error) {
+        console.error("Failed to connect to MongoDB:", error.message);
+        process.exit(1);
+    }
+}
+
+startServer();
