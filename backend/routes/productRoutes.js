@@ -1,48 +1,40 @@
+
 const express = require("express");
 const Product = require("../models/Product");
 
 const router = express.Router();
 
-// Temporary in-memory storage for the demo
-const products = [
-    new Product({
-        name: "Laptop",
-        category: "Electronics",
-        price: "500.00",
-        quantity: 10
-    }).toJSON(),
+// GET all products from MongoDB
+router.get("/", async (req, res) => {
+    try {
+        const products = await Product.find();
 
-    new Product({
-        name: "Keyboard",
-        category: "Electronics",
-        price: "30.00",
-        quantity: 25
-    }).toJSON()
-];
+        res.json({
+            success: true,
+            message: "Products retrieved successfully",
+            data: products
+        });
+   } catch (error) {
+    console.error("GET products error:", error);
 
-// GET all products
-router.get("/", (req, res) => {
-    res.json({
-        success: true,
-        message: "Products retrieved successfully",
-        data: products
+    res.status(500).json({
+        success: false,
+        message: "Failed to retrieve products",
+        data: null
     });
+}
 });
 
-// POST a new product with model validation
+// POST a new product to MongoDB
 router.post("/", async (req, res) => {
     try {
         const newProduct = new Product(req.body);
-
-        await newProduct.validate();
-
-        const productData = newProduct.toJSON();
-        products.push(productData);
+        const savedProduct = await newProduct.save();
 
         res.status(201).json({
             success: true,
             message: "Product created successfully",
-            data: productData
+            data: savedProduct
         });
     } catch (error) {
         res.status(400).json({

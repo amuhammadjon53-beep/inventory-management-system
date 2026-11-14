@@ -49,10 +49,12 @@ const productSchema = new mongoose.Schema({
     getters: true,
     versionKey: false,
     transform(doc, result) {
-      result.id = result._id.toString();
+      if (doc._id) {
+          result.id = doc._id.toString();
+      }
       delete result._id;
       return result;
-    }
+  }
   }
 });
 
