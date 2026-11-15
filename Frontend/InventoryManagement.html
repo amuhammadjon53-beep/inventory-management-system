@@ -32,7 +32,7 @@ body {
 }
 
 .brand {
-  font-size: 22px;
+  font-size: 1.375rem;
   font-weight: bold;
 }
 
@@ -42,7 +42,7 @@ body {
   border-radius: 8px;
   background: white;
   color: #4f46e5;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: bold;
   cursor: pointer;
 }
@@ -95,7 +95,7 @@ body {
   color: #4f46e5;
 }
 
-.side-link:hover::after {
+.side-link::after {
   content: attr(data-name);
   position: absolute;
   left: 54px;
@@ -103,13 +103,29 @@ body {
   border-radius: 6px;
   background: black;
   color: white;
-  font-size: 14px;
+  font-size: 0.875rem;
   white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-8px);
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.side-link:hover::after {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 .main {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 64px);
   margin-left: 72px;
   margin-top: 64px;
+}
+
+.pages {
+  flex: 1;
 }
 
 .page {
@@ -123,25 +139,15 @@ body {
   text-align: center;
 }
 
-.hero-label {
-  display: inline-block;
-  padding: 6px 16px;
-  border-radius: 20px;
-  background: #ede9fe;
-  color: #6d28d9;
-  font-size: 14px;
-  font-weight: bold;
-}
-
 .hero h1 {
   margin: 20px 0;
-  font-size: 44px;
+  font-size: 2.75rem;
 }
 
 .hero p {
   max-width: 640px;
   margin: 0 auto 32px auto;
-  font-size: 20px;
+  font-size: 1.25rem;
   line-height: 1.5;
 }
 
@@ -158,13 +164,13 @@ body {
 }
 
 .section h2 {
-  font-size: 32px;
+  font-size: 2rem;
 }
 
 .section p {
   max-width: 640px;
   margin: 0 auto;
-  font-size: 18px;
+  font-size: 1.125rem;
   line-height: 1.5;
 }
 
@@ -188,7 +194,7 @@ body {
 
 .box p {
   margin: 0;
-  font-size: 16px;
+  font-size: 1rem;
 }
 
 .icon-circle {
@@ -209,7 +215,7 @@ body {
 
 .big-text {
   margin-bottom: 40px;
-  font-size: 30px;
+  font-size: 1.875rem;
   font-weight: bold;
 }
 
@@ -219,7 +225,7 @@ body {
   border-radius: 12px;
   background: #4f46e5;
   color: white;
-  font-size: 24px;
+  font-size: 1.5rem;
   font-weight: bold;
   cursor: pointer;
 }
@@ -230,7 +236,7 @@ body {
   border-radius: 12px;
   background: white;
   color: #4f46e5;
-  font-size: 24px;
+  font-size: 1.5rem;
   font-weight: bold;
   cursor: pointer;
 }
@@ -249,7 +255,7 @@ body {
 }
 
 .stat-number {
-  font-size: 26px;
+  font-size: 1.625rem;
   font-weight: bold;
   overflow-wrap: anywhere;
 }
@@ -294,7 +300,15 @@ td {
 
 th {
   background: #f9fafb;
-  font-size: 14px;
+  font-size: 0.875rem;
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr:hover {
+  background: #f9fafb;
 }
 
 tbody tr:last-child td {
@@ -304,7 +318,7 @@ tbody tr:last-child td {
 .badge {
   padding: 3px 10px;
   border-radius: 20px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: bold;
 }
 
@@ -321,6 +335,16 @@ tbody tr:last-child td {
 .out-of-stock {
   background: #fee2e2;
   color: #991b1b;
+}
+
+.edit-button {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 0.875rem;
+  cursor: pointer;
 }
 
 .message-box {
@@ -351,11 +375,38 @@ tbody tr:last-child td {
 
 .form-error {
   margin: 14px 0 0 0;
-  padding: 10px;
+  padding: 10px 14px;
   border-radius: 8px;
   background: #fee2e2;
   color: #991b1b;
-  font-size: 14px;
+  font-size: 0.875rem;
+}
+
+.form-error ul {
+  margin: 6px 0 0 0;
+  padding-left: 20px;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 48px;
+  padding: 24px;
+  border-top: 1px solid #cccccc;
+}
+
+.footer a {
+  margin-left: 20px;
+  color: #4f46e5;
+  font-weight: bold;
+  text-decoration: none;
+}
+
+.footer a:hover {
+  text-decoration: underline;
 }
 
 .modal {
@@ -381,10 +432,35 @@ tbody tr:last-child td {
   background: white;
 }
 
+.details-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+  margin: 16px 0;
+}
+
+.details-list dt {
+  font-size: 0.8125rem;
+  color: #555555;
+}
+
+.details-list dd {
+  margin: 0;
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
 label {
   display: block;
   margin-top: 14px;
   font-weight: bold;
+}
+
+.hint {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: normal;
+  color: #555555;
 }
 
 input,
@@ -395,7 +471,7 @@ select {
   padding: 8px;
   border: 1px solid #cccccc;
   border-radius: 8px;
-  font-size: 16px;
+  font-size: 1rem;
   box-sizing: border-box;
 }
 
@@ -404,7 +480,7 @@ select {
   border: none;
   border-radius: 8px;
   background: #eeeeee;
-  font-size: 16px;
+  font-size: 1rem;
   cursor: pointer;
 }
 
@@ -414,7 +490,7 @@ select {
   border-radius: 8px;
   background: #16a34a;
   color: white;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: bold;
   cursor: pointer;
 }
@@ -424,6 +500,616 @@ select {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+.side-link {
+  transition: background 0.2s, color 0.2s, transform 0.2s;
+}
+
+.side-link svg {
+  transition: transform 0.25s;
+}
+
+.side-link:hover svg {
+  transform: translateY(-3px) scale(1.15);
+}
+
+.side-link:active {
+  transform: scale(0.92);
+}
+
+.side-link.active svg {
+  animation: iconPop 0.45s ease;
+}
+
+.login-button,
+.big-button,
+.outline-button,
+.save-button,
+.cancel-button,
+.edit-button,
+.retry-button {
+  transition: transform 0.2s, box-shadow 0.2s, background 0.2s, color 0.2s;
+}
+
+.login-button:hover,
+.big-button:hover,
+.outline-button:hover,
+.save-button:hover,
+.cancel-button:hover,
+.edit-button:hover,
+.retry-button:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.15);
+}
+
+.login-button:active,
+.big-button:active,
+.outline-button:active,
+.save-button:active,
+.cancel-button:active,
+.edit-button:active,
+.retry-button:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: none;
+}
+
+.save-button:disabled:hover,
+.cancel-button:disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.big-button:hover {
+  background: #4338ca;
+}
+
+.outline-button:hover {
+  background: #eef2ff;
+}
+
+.cancel-button:hover {
+  background: #e0e0e0;
+}
+
+input,
+select {
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+
+input:hover,
+select:hover {
+  border-color: #a5b4fc;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px #e0e7ff;
+}
+
+.login-button,
+.big-button,
+.outline-button,
+.save-button,
+.cancel-button,
+.edit-button,
+.retry-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+button svg {
+  width: 1.1em;
+  height: 1.1em;
+  flex-shrink: 0;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge svg {
+  width: 14px;
+  height: 14px;
+}
+
+.stat-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stat-icon {
+  display: flex;
+}
+
+.stat-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.input-wrap {
+  position: relative;
+  margin-top: 4px;
+}
+
+.input-wrap svg {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  width: 18px;
+  height: 18px;
+  margin-top: -9px;
+  color: #6b7280;
+  pointer-events: none;
+  transition: color 0.2s;
+}
+
+.input-wrap input,
+.input-wrap select {
+  margin-top: 0;
+  padding-left: 36px;
+}
+
+.input-wrap:focus-within svg {
+  color: #4f46e5;
+}
+
+.search-wrap {
+  width: 320px;
+  max-width: 100%;
+  margin-top: 0;
+}
+
+.sort-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sort-wrap {
+  display: inline-block;
+  margin-top: 0;
+  transition: transform 0.2s;
+}
+
+.sort-wrap:hover,
+.sort-wrap:focus-within {
+  transform: translateY(-2px);
+}
+
+.sort-wrap select {
+  width: auto;
+}
+
+.message-box svg {
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  vertical-align: -4px;
+}
+
+.retry-button svg {
+  width: 16px;
+  height: 16px;
+  margin-right: 0;
+  vertical-align: middle;
+}
+
+.spin {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+
+.form-error b {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-error svg {
+  width: 16px;
+  height: 16px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.stat,
+.box {
+  transition: transform 0.25s, box-shadow 0.25s;
+}
+
+.stat:hover,
+.box:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.08);
+}
+
+.icon-circle {
+  transition: transform 0.25s;
+}
+
+.box:hover .icon-circle {
+  transform: rotate(-8deg) scale(1.1);
+}
+
+tbody tr {
+  transition: background 0.2s;
+}
+
+.footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: transform 0.2s, color 0.2s;
+}
+
+.footer a svg {
+  width: 16px;
+  height: 16px;
+}
+
+.footer a:hover {
+  transform: translateY(-2px);
+  color: #3730a3;
+}
+
+.page {
+  animation: pageIn 0.4s ease;
+}
+
+.hero h1 {
+  animation: pageIn 0.7s ease both;
+}
+
+.hero p {
+  animation: pageIn 0.7s ease 0.12s both;
+}
+
+.hero .buttons {
+  animation: pageIn 0.7s ease 0.24s both;
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.6s, transform 0.6s;
+}
+
+.reveal.visible {
+  opacity: 1;
+  transform: none;
+}
+
+.modal {
+  animation: fadeIn 0.2s ease;
+}
+
+.modal-box {
+  animation: popIn 0.3s ease;
+}
+
+.loading-box {
+  animation: pulse 1.4s ease infinite;
+}
+
+.error-box,
+.form-error {
+  animation: shake 0.4s ease;
+}
+
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.menu-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s;
+}
+
+.menu-button:hover {
+  background: #f3f4f6;
+  transform: scale(1.08);
+}
+
+.menu-button svg {
+  width: 22px;
+  height: 22px;
+}
+
+.sidebar {
+  padding-bottom: 20px;
+  transition: transform 0.3s;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.main {
+  transition: margin-left 0.3s;
+}
+
+body.sidebar-closed .sidebar {
+  transform: translateX(-100%);
+}
+
+body.sidebar-closed .main {
+  margin-left: 0;
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+}
+
+.setting-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 0;
+  border-bottom: 1px solid #dddddd;
+}
+
+.setting-title {
+  font-weight: bold;
+}
+
+.setting-text {
+  font-size: 0.875rem;
+  color: #555555;
+}
+
+.setting-select {
+  width: 220px;
+  margin-top: 0;
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid #cccccc;
+  border-radius: 8px;
+  background: white;
+  color: #111111;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: transform 0.2s, background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.choice:hover {
+  transform: translateY(-2px);
+  background: #f3f4f6;
+}
+
+.choice.active {
+  border-color: #4f46e5;
+  background: #eef2ff;
+  color: #4f46e5;
+  font-weight: bold;
+}
+
+.choice svg {
+  width: 16px;
+  height: 16px;
+}
+
+body.dark {
+  background: #121212;
+  color: #e8e8e8;
+}
+
+body.dark .navbar,
+body.dark .sidebar,
+body.dark .modal-box,
+body.dark .menu-button,
+body.dark .side-link,
+body.dark .login-button,
+body.dark .outline-button,
+body.dark .choice,
+body.dark th {
+  background: #1c1c1c;
+}
+
+body.dark .navbar,
+body.dark .sidebar,
+body.dark .footer,
+body.dark .stat,
+body.dark .box,
+body.dark .table-wrap,
+body.dark .setting-row {
+  border-color: #333333;
+}
+
+body.dark .side-link,
+body.dark .menu-button,
+body.dark .choice {
+  color: #e8e8e8;
+}
+
+body.dark .choice {
+  border-color: #444444;
+}
+
+body.dark .side-link:hover,
+body.dark .menu-button:hover,
+body.dark .choice:hover {
+  background: #2a2a2a;
+}
+
+body.dark .side-link.active,
+body.dark .choice.active,
+body.dark .login-button:hover,
+body.dark .outline-button:hover {
+  background: #2b2f5c;
+}
+
+body.dark .side-link.active,
+body.dark .choice.active,
+body.dark .login-button,
+body.dark .outline-button,
+body.dark .footer a {
+  color: #a5b4fc;
+}
+
+body.dark .choice.active,
+body.dark .login-button,
+body.dark .outline-button {
+  border-color: #6366f1;
+}
+
+body.dark .side-link::after {
+  background: #e8e8e8;
+  color: #111111;
+}
+
+body.dark td {
+  border-bottom-color: #2a2a2a;
+}
+
+body.dark tbody tr:hover {
+  background: #222222;
+}
+
+body.dark input,
+body.dark select {
+  background: #1c1c1c;
+  color: #e8e8e8;
+  border-color: #444444;
+}
+
+body.dark input:hover,
+body.dark select:hover {
+  border-color: #6366f1;
+}
+
+body.dark input:focus,
+body.dark select:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px #2b2f5c;
+}
+
+body.dark .cancel-button {
+  background: #333333;
+  color: #e8e8e8;
+}
+
+body.dark .cancel-button:hover {
+  background: #444444;
+}
+
+body.dark .details-list dt,
+body.dark .hint,
+body.dark .setting-text {
+  color: #aaaaaa;
+}
+
+body.dark .footer a:hover {
+  color: #c7d2fe;
+}
+
+body.dark .loading-box {
+  background: #2b2f5c;
+  color: #c7d2fe;
+}
+
+body.dark .input-wrap svg {
+  color: #9ca3af;
+}
+
+body.dark .input-wrap:focus-within svg {
+  color: #a5b4fc;
+}
+
+body.dark .stat:hover,
+body.dark .box:hover {
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.5);
+}
+
+body.no-animations *,
+body.no-animations *::before,
+body.no-animations *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+body.no-animations .reveal {
+  opacity: 1;
+  transform: none;
+}
+
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(20px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes iconPop {
+  0% { transform: scale(0.6) rotate(-20deg); }
+  60% { transform: scale(1.25) rotate(8deg); }
+  100% { transform: scale(1) rotate(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-6px); }
+  75% { transform: translateX(6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .reveal {
+    opacity: 1;
+    transform: none;
+  }
+}
 </style>
 
 </head>
@@ -431,8 +1117,11 @@ select {
 <body>
 
 <div class="navbar">
-  <div class="brand">StockWise</div>
-  <button class="login-button">Login</button>
+  <div class="nav-left">
+    <button class="menu-button" aria-label="Open or close the sidebar" onclick="toggleSidebar()"><i data-lucide="menu"></i></button>
+    <div class="brand">StockWise</div>
+  </div>
+  <button class="login-button"><i data-lucide="log-in"></i>Login</button>
 </div>
 
 <div class="sidebar">
@@ -445,27 +1134,32 @@ select {
   <button id="navInventory" class="side-link" data-name="Inventory" aria-label="Inventory" onclick="showPage('Inventory')">
     <i data-lucide="package"></i>
   </button>
+  <div class="spacer"></div>
+  <button id="navSettings" class="side-link" data-name="Settings" aria-label="Settings" onclick="showPage('Settings')">
+    <i data-lucide="settings"></i>
+  </button>
 </div>
 
 <div class="main">
 
+  <div class="pages">
+
   <div id="pageHome" class="page">
     <div class="hero">
-      <span class="hero-label">StockWise</span>
       <h1>Inventory management that keeps your business organized</h1>
       <p>StockWise is a full-stack web application designed to help small businesses manage products, monitor stock levels, and record inventory movements.</p>
       <div class="buttons">
-        <button class="big-button" onclick="showPage('Add')">Get started</button>
-        <button class="outline-button" onclick="showPage('Inventory')">View inventory</button>
+        <button class="big-button" onclick="showPage('Add')">Get started<i data-lucide="arrow-right"></i></button>
+        <button class="outline-button" onclick="showPage('Inventory')"><i data-lucide="package"></i>View inventory</button>
       </div>
     </div>
 
-    <div class="section">
+    <div class="section reveal">
       <h2>The problem</h2>
       <p>Small businesses may rely on manual records or spreadsheets to track their inventory. StockWise aims to make inventory management more organized and efficient.</p>
     </div>
 
-    <div class="section">
+    <div class="section reveal">
       <h2>What StockWise does</h2>
       <div class="three">
         <div class="box">
@@ -486,7 +1180,7 @@ select {
       </div>
     </div>
 
-    <div class="section">
+    <div class="section reveal">
       <h2>Who it’s for</h2>
       <div class="three">
         <div class="box">
@@ -507,16 +1201,16 @@ select {
       </div>
     </div>
 
-    <div class="section">
+    <div class="section reveal">
       <h2>Ready to get organized?</h2>
       <p style="margin-bottom: 24px;">Add your first item and see your inventory take shape.</p>
-      <button class="big-button" onclick="showPage('Add')">Add your first item</button>
+      <button class="big-button" onclick="showPage('Add')"><i data-lucide="plus"></i>Add your first item</button>
     </div>
   </div>
 
   <div id="pageAdd" class="page center" style="display: none;">
     <div class="big-text">Keep track of what you stock, how many you have and what it’s worth!</div>
-    <button class="big-button" onclick="openModal()">+ Add Item</button>
+    <button class="big-button" onclick="openModal()"><i data-lucide="plus"></i>Add Item</button>
   </div>
 
   <div id="pageInventory" class="page" style="display: none;">
@@ -525,30 +1219,35 @@ select {
     <div class="stats">
       <div class="stat">
         <div id="statItems" class="stat-number" style="color: #4f46e5;">0</div>
-        <div>Items</div>
+        <div class="stat-label"><span class="stat-icon" style="color: #4f46e5;"><i data-lucide="boxes"></i></span>Items</div>
       </div>
       <div class="stat">
         <div id="statUnits" class="stat-number" style="color: #db2777;">0</div>
-        <div>Units in stock</div>
+        <div class="stat-label"><span class="stat-icon" style="color: #db2777;"><i data-lucide="layers"></i></span>Units in stock</div>
       </div>
       <div class="stat">
-        <div id="statValue" class="stat-number" style="color: #16a34a;">0 ₸</div>
-        <div>Total value</div>
+        <div id="statValue" class="stat-number" style="color: #16a34a;">0,00 ₸</div>
+        <div class="stat-label"><span class="stat-icon" style="color: #16a34a;"><i data-lucide="banknote"></i></span>Total value</div>
       </div>
       <div class="stat">
         <div id="statLow" class="stat-number" style="color: #ea580c;">0</div>
-        <div>Low stock</div>
+        <div class="stat-label"><span class="stat-icon" style="color: #ea580c;"><i data-lucide="triangle-alert"></i></span>Low stock</div>
       </div>
       <div class="stat">
         <div id="statOut" class="stat-number" style="color: #dc2626;">0</div>
-        <div>Out of stock</div>
+        <div class="stat-label"><span class="stat-icon" style="color: #dc2626;"><i data-lucide="circle-x"></i></span>Out of stock</div>
       </div>
     </div>
 
     <div class="toolbar">
-      <input type="text" id="searchInput" class="search-box" placeholder="Search by name or ID" oninput="showItems()">
-      <div>
+      <div class="input-wrap search-wrap">
+        <i data-lucide="search"></i>
+        <input type="text" id="searchInput" class="search-box" placeholder="Search by name, category or ID" oninput="showItems()">
+      </div>
+      <div class="sort-row">
         Sort by
+        <div class="input-wrap sort-wrap">
+        <i data-lucide="arrow-up-down"></i>
         <select id="sortSelect" class="sort-box" onchange="showItems()">
           <option value="">Order added</option>
           <option value="name-az">Name (A–Z)</option>
@@ -558,13 +1257,14 @@ select {
           <option value="quantity-low">Quantity (low to high)</option>
           <option value="quantity-high">Quantity (high to low)</option>
         </select>
+        </div>
       </div>
     </div>
 
-    <div id="loadingMessage" class="message-box loading-box" style="display: none;">Loading products...</div>
+    <div id="loadingMessage" class="message-box loading-box" style="display: none;"><span class="spin"><i data-lucide="loader-circle"></i></span>Loading products...</div>
     <div id="errorMessage" class="message-box error-box" style="display: none;">
-      <span id="errorText"></span>
-      <button class="retry-button" onclick="loadProducts()">Try again</button>
+      <i data-lucide="triangle-alert"></i><span id="errorText"></span>
+      <button class="retry-button" onclick="loadProducts()"><i data-lucide="rotate-cw"></i>Try again</button>
     </div>
 
     <p id="emptyMessage" style="display: none;">Your inventory is empty, please head to the Addition page to add your first item.</p>
@@ -576,9 +1276,11 @@ select {
           <tr>
             <th>ID</th>
             <th>Name</th>
+            <th>Category</th>
             <th>Stock</th>
             <th>Status</th>
             <th>Price</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -586,54 +1288,162 @@ select {
     </div>
   </div>
 
+  <div id="pageSettings" class="page" style="display: none;">
+    <h1>Settings</h1>
+    <p>Change how StockWise looks. Your choices are saved in this browser.</p>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-title">Theme</div>
+        <div class="setting-text">Choose a light or a dark page.</div>
+      </div>
+      <div class="choices">
+        <button id="theme-light" class="choice" onclick="changeSetting('theme', 'light')"><i data-lucide="sun"></i>Light</button>
+        <button id="theme-dark" class="choice" onclick="changeSetting('theme', 'dark')"><i data-lucide="moon"></i>Dark</button>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-title">Font size</div>
+        <div class="setting-text">Make the text smaller or larger.</div>
+      </div>
+      <div class="choices">
+        <button id="size-small" class="choice" onclick="changeSetting('fontSize', 'small')">Small</button>
+        <button id="size-medium" class="choice" onclick="changeSetting('fontSize', 'medium')">Medium</button>
+        <button id="size-large" class="choice" onclick="changeSetting('fontSize', 'large')">Large</button>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-title">Font style</div>
+        <div class="setting-text">Pick the typeface used across the site.</div>
+      </div>
+      <div class="input-wrap setting-select">
+        <i data-lucide="type"></i>
+        <select id="fontSelect" onchange="changeSetting('fontStyle', this.value)">
+          <option value="Arial, sans-serif">Arial</option>
+          <option value="Georgia, serif">Georgia</option>
+          <option value="Verdana, sans-serif">Verdana</option>
+          <option value="'Courier New', monospace">Courier New</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-title">Animations</div>
+        <div class="setting-text">Turn hover and page movement on or off.</div>
+      </div>
+      <div class="choices">
+        <button id="anim-on" class="choice" onclick="changeSetting('animations', 'on')"><i data-lucide="zap"></i>On</button>
+        <button id="anim-off" class="choice" onclick="changeSetting('animations', 'off')"><i data-lucide="zap-off"></i>Off</button>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-title">Reset</div>
+        <div class="setting-text">Go back to the original look.</div>
+      </div>
+      <button class="choice" onclick="resetSettings()"><i data-lucide="rotate-ccw"></i>Reset to defaults</button>
+    </div>
+  </div>
+
+  </div>
+
+  <div class="footer">
+    <div class="brand">StockWise</div>
+    <div>
+      <a href="#" onclick="showPage('Home'); return false;"><i data-lucide="house"></i>Home</a>
+      <a href="#" onclick="showPage('Add'); return false;"><i data-lucide="circle-plus"></i>Addition</a>
+      <a href="#" onclick="showPage('Inventory'); return false;"><i data-lucide="package"></i>Inventory</a>
+    </div>
+  </div>
+
 </div>
 
 <div id="modal" class="modal">
   <div class="modal-box">
-    <h2>Add item</h2>
+    <h2 id="modalTitle">Add item</h2>
 
     <form id="productForm" onsubmit="saveItem(event)" novalidate>
       <label>
         Product name
-        <input type="text" id="nameInput">
+        <div class="input-wrap"><i data-lucide="tag"></i><input type="text" id="nameInput"></div>
+      </label>
+
+      <label>
+        Category
+        <div class="input-wrap"><i data-lucide="layers"></i>
+        <select id="categoryInput">
+          <option value="">Choose a category</option>
+          <option>General</option>
+          <option>Electronics</option>
+          <option>Clothing</option>
+          <option>Supplies</option>
+          <option>Food and Drink</option>
+          <option>Other</option>
+        </select>
+        </div>
       </label>
 
       <label>
         Price per item (₸)
-        <input type="number" id="priceInput" min="0" step="any">
+        <span class="hint">Up to two decimal places, for example 1500.50</span>
+        <div class="input-wrap"><i data-lucide="banknote"></i><input type="text" id="priceInput" inputmode="decimal" oninput="onlyPrice(this)"></div>
       </label>
 
       <label>
         Quantity
-        <input type="number" id="quantityInput" min="0" step="1">
+        <div class="input-wrap"><i data-lucide="hash"></i><input type="text" id="quantityInput" inputmode="numeric" oninput="onlyNumbers(this)"></div>
       </label>
 
-      <p id="formError" class="form-error" style="display: none;"></p>
+      <label>
+        Low stock level
+        <span class="hint">The item shows as low stock when its quantity reaches this number or less.</span>
+        <div class="input-wrap"><i data-lucide="triangle-alert"></i><input type="text" id="lowInput" inputmode="numeric" oninput="onlyNumbers(this)"></div>
+      </label>
+
+      <div id="formError" class="form-error" style="display: none;"></div>
 
       <br>
-      <button type="submit" id="saveButton" class="save-button">Save item</button>
-      <button type="button" id="cancelButton" class="cancel-button" onclick="closeModal()">Cancel</button>
+      <button type="submit" id="saveButton" class="save-button"><i data-lucide="check"></i><span id="saveText">Save item</span></button>
+      <button type="button" id="cancelButton" class="cancel-button" onclick="closeModal()"><i data-lucide="x"></i>Cancel</button>
     </form>
   </div>
 </div>
 
+<div id="detailsModal" class="modal">
+  <div class="modal-box">
+    <h2 id="detailsName"></h2>
+    <dl id="detailsList" class="details-list"></dl>
+    <button type="button" class="edit-button" onclick="editFromDetails()"><i data-lucide="pencil"></i>Edit</button>
+    <button type="button" class="cancel-button" onclick="closeDetails()"><i data-lucide="x"></i>Close</button>
+  </div>
+</div>
+
 <script>
-// Configuration 
 const API_BASE_URL = "http://localhost:3000";
 const PRODUCTS_URL = API_BASE_URL + "/api/products";
 
-
 const LOW_STOCK_LIMIT = 5;
-
 
 let items = [];
 let isSaving = false;
-
+let editId = null;
+let detailsId = null;
 
 function formatMoney(number) {
-  return number.toLocaleString("ru-RU") + " ₸";
+  return number.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₸";
 }
 
+function drawIcons() {
+  if (typeof lucide !== "undefined") {
+    lucide.createIcons();
+  }
+}
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -641,8 +1451,21 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function onlyNumbers(box) {
+  box.value = box.value.replace(/[^0-9]/g, "");
+}
+
+function onlyPrice(box) {
+  const parts = box.value.replace(/[^0-9.]/g, "").split(".");
+  if (parts.length === 1) {
+    box.value = parts[0];
+  } else {
+    box.value = parts[0] + "." + parts[1].slice(0, 2);
+  }
+}
+
 function showPage(name) {
-  const names = ["Home", "Add", "Inventory"];
+  const names = ["Home", "Add", "Inventory", "Settings"];
 
   for (let i = 0; i < names.length; i++) {
     document.getElementById("page" + names[i]).style.display = "none";
@@ -651,23 +1474,73 @@ function showPage(name) {
 
   document.getElementById("page" + name).style.display = "block";
   document.getElementById("nav" + name).className = "side-link active";
+  window.scrollTo(0, 0);
 
-  
   if (name === "Inventory") {
     loadProducts();
   }
+}
+
+function categoryOf(item) {
+  if (item.category) {
+    return item.category;
+  }
+  return "-";
+}
+
+function lowStockOf(item) {
+  if (item.lowStock === undefined || item.lowStock === null) {
+    return LOW_STOCK_LIMIT;
+  }
+  return item.lowStock;
 }
 
 function getStatus(item) {
   if (item.quantity === 0) {
     return "out";
   }
-  if (item.quantity <= LOW_STOCK_LIMIT) {
+  if (item.quantity <= lowStockOf(item)) {
     return "low";
   }
   return "in";
 }
 
+function findItem(id) {
+  for (let i = 0; i < items.length; i++) {
+    if (String(items[i].id) === String(id)) {
+      return items[i];
+    }
+  }
+  return null;
+}
+
+function getMessages(body, status) {
+  const messages = [];
+
+  if (body && Array.isArray(body.errors)) {
+    for (let i = 0; i < body.errors.length; i++) {
+      const error = body.errors[i];
+      if (typeof error === "string") {
+        messages.push(error);
+      } else {
+        messages.push((error.field ? error.field + ": " : "") + (error.message || error.msg));
+      }
+    }
+  } else if (body && body.errors && typeof body.errors === "object") {
+    for (const field in body.errors) {
+      messages.push(field + ": " + body.errors[field]);
+    }
+  }
+
+  if (messages.length === 0 && body && body.message) {
+    messages.push(body.message);
+  }
+  if (messages.length === 0) {
+    messages.push("Server error (status " + status + ")");
+  }
+
+  return messages;
+}
 
 async function request(url, options) {
   let response;
@@ -682,12 +1555,14 @@ async function request(url, options) {
   try {
     body = await response.json();
   } catch (error) {
-    
+    body = null;
   }
 
   if (!response.ok || (body && body.success === false)) {
-    const reason = body && body.message ? body.message : "Server error (status " + response.status + ")";
-    throw new Error(reason);
+    const messages = getMessages(body, response.status);
+    const error = new Error(messages[0]);
+    error.messages = messages;
+    throw error;
   }
 
   if (body === null) {
@@ -697,7 +1572,6 @@ async function request(url, options) {
   return body;
 }
 
-//  GET: load products 
 async function loadProducts() {
   document.getElementById("loadingMessage").style.display = "block";
   document.getElementById("errorMessage").style.display = "none";
@@ -705,7 +1579,6 @@ async function loadProducts() {
   try {
     const result = await request(PRODUCTS_URL);
 
-    // The products are inside the "data" property.
     if (!Array.isArray(result.data)) {
       throw new Error("Unexpected response from the server: 'data' is not a list.");
     }
@@ -722,7 +1595,6 @@ async function loadProducts() {
   }
 }
 
-//Display 
 function showStats() {
   let totalUnits = 0;
   let totalValue = 0;
@@ -753,7 +1625,6 @@ function showItems() {
   const choice = document.getElementById("sortSelect").value;
   const search = document.getElementById("searchInput").value.toLowerCase();
 
-  
   const list = items.slice();
 
   if (choice === "name-az") {
@@ -781,36 +1652,44 @@ function showItems() {
   for (let i = 0; i < list.length; i++) {
     const item = list[i];
     const matchesName = String(item.name).toLowerCase().includes(search);
+    const matchesCategory = categoryOf(item).toLowerCase().includes(search);
     const matchesId = String(item.id).includes(search);
 
-    if (matchesName || matchesId) {
+    if (matchesName || matchesCategory || matchesId) {
       const status = getStatus(item);
       let statusText = "In stock";
       let statusClass = "in-stock";
+      let statusIcon = "circle-check";
 
       if (status === "low") {
         statusText = "Low stock";
         statusClass = "low-stock";
+        statusIcon = "triangle-alert";
       }
       if (status === "out") {
         statusText = "Out of stock";
         statusClass = "out-of-stock";
+        statusIcon = "circle-x";
       }
 
-      html += "<tr>";
-      html += "<td>" + escapeHtml(item.id) + "</td>";
+      const id = escapeHtml(item.id);
+
+      html += "<tr onclick=\"showDetails('" + id + "')\">";
+      html += "<td>" + id + "</td>";
       html += "<td><b>" + escapeHtml(item.name) + "</b></td>";
+      html += "<td>" + escapeHtml(categoryOf(item)) + "</td>";
       html += "<td>" + item.quantity + "</td>";
-      html += "<td><span class='badge " + statusClass + "'>" + statusText + "</span></td>";
+      html += "<td><span class='badge " + statusClass + "'><i data-lucide='" + statusIcon + "'></i>" + statusText + "</span></td>";
       html += "<td>" + formatMoney(item.price) + "</td>";
+      html += "<td><button class='edit-button' onclick=\"event.stopPropagation(); editItem('" + id + "')\"><i data-lucide='pencil'></i>Edit</button></td>";
       html += "</tr>";
       shown = shown + 1;
     }
   }
 
   document.getElementById("rows").innerHTML = html;
+  drawIcons();
 
-  
   const loading = document.getElementById("loadingMessage").style.display === "block";
   const failed = document.getElementById("errorMessage").style.display === "block";
 
@@ -831,115 +1710,289 @@ function showItems() {
   showStats();
 }
 
-//  Add product form 
-function showFormError(text) {
+function showDetails(id) {
+  const item = findItem(id);
+  if (item === null) {
+    return;
+  }
+
+  const status = getStatus(item);
+  let statusText = "In stock";
+  if (status === "low") {
+    statusText = "Low stock";
+  }
+  if (status === "out") {
+    statusText = "Out of stock";
+  }
+
+  detailsId = item.id;
+  document.getElementById("detailsName").textContent = item.name;
+
+  let html = "";
+  html += "<div><dt>ID</dt><dd>" + escapeHtml(item.id) + "</dd></div>";
+  html += "<div><dt>Category</dt><dd>" + escapeHtml(categoryOf(item)) + "</dd></div>";
+  html += "<div><dt>Status</dt><dd>" + statusText + "</dd></div>";
+  html += "<div><dt>Quantity</dt><dd>" + item.quantity + "</dd></div>";
+  html += "<div><dt>Price per item</dt><dd>" + formatMoney(item.price) + "</dd></div>";
+  html += "<div><dt>Total value</dt><dd>" + formatMoney(item.quantity * item.price) + "</dd></div>";
+  html += "<div><dt>Low stock level</dt><dd>" + lowStockOf(item) + "</dd></div>";
+  document.getElementById("detailsList").innerHTML = html;
+
+  document.getElementById("detailsModal").style.display = "flex";
+}
+
+function closeDetails() {
+  document.getElementById("detailsModal").style.display = "none";
+}
+
+function editFromDetails() {
+  closeDetails();
+  editItem(detailsId);
+}
+
+function showFormError(messages) {
   const box = document.getElementById("formError");
-  box.textContent = text;
-  box.style.display = text ? "block" : "none";
+
+  if (messages.length === 0) {
+    box.style.display = "none";
+    return;
+  }
+
+  let html = "<b><i data-lucide='triangle-alert'></i>The item could not be saved:</b><ul>";
+  for (let i = 0; i < messages.length; i++) {
+    html += "<li>" + escapeHtml(messages[i]) + "</li>";
+  }
+  html += "</ul>";
+
+  box.innerHTML = html;
+  box.style.display = "block";
+  drawIcons();
 }
 
 function openModal() {
+  editId = null;
+  document.getElementById("modalTitle").textContent = "Add item";
   document.getElementById("nameInput").value = "";
+  document.getElementById("categoryInput").value = "";
   document.getElementById("priceInput").value = "";
   document.getElementById("quantityInput").value = "";
-  showFormError("");
+  document.getElementById("lowInput").value = "";
+  showFormError([]);
   document.getElementById("modal").style.display = "flex";
 }
 
+function editItem(id) {
+  const item = findItem(id);
+  if (item === null) {
+    return;
+  }
+
+  openModal();
+  editId = item.id;
+  document.getElementById("modalTitle").textContent = "Edit item";
+  document.getElementById("nameInput").value = item.name;
+  document.getElementById("categoryInput").value = item.category || "";
+  document.getElementById("priceInput").value = item.price;
+  document.getElementById("quantityInput").value = item.quantity;
+  document.getElementById("lowInput").value = lowStockOf(item);
+}
+
 function closeModal() {
-  
   if (isSaving) {
     return;
   }
   document.getElementById("modal").style.display = "none";
 }
 
+function validateForm(name, category, priceText, quantityText, lowText) {
+  const priceParts = priceText.split(".");
 
-function validateForm(name, priceText, quantityText) {
   if (name === "") {
     return "Please enter a product name.";
   }
-  if (priceText.trim() === "" || isNaN(Number(priceText))) {
+  if (category === "") {
+    return "Please choose a category.";
+  }
+  if (priceText === "" || isNaN(Number(priceText))) {
     return "Please enter a valid price.";
   }
-  if (Number(priceText) < 0) {
-    return "Price cannot be negative.";
+  if (priceParts.length > 1 && priceParts[1].length > 2) {
+    return "Price can have at most two decimal places.";
   }
-  if (quantityText.trim() === "" || isNaN(Number(quantityText))) {
-    return "Please enter a valid quantity.";
+  if (quantityText === "") {
+    return "Please enter a quantity.";
   }
-  if (!Number.isInteger(Number(quantityText))) {
-    return "Quantity must be a whole number.";
-  }
-  if (Number(quantityText) < 0) {
-    return "Quantity cannot be negative.";
+  if (lowText === "") {
+    return "Please enter a low stock level.";
   }
   return "";
 }
 
-// POST: create a product 
 async function saveItem(event) {
   event.preventDefault();
 
-  
   if (isSaving) {
     return;
   }
 
   const name = document.getElementById("nameInput").value.trim();
+  const category = document.getElementById("categoryInput").value;
   const priceText = document.getElementById("priceInput").value;
   const quantityText = document.getElementById("quantityInput").value;
+  const lowText = document.getElementById("lowInput").value;
 
-  const problem = validateForm(name, priceText, quantityText);
+  const problem = validateForm(name, category, priceText, quantityText, lowText);
   if (problem !== "") {
-    showFormError(problem);
+    showFormError([problem]);
     return;
   }
 
-  showFormError("");
+  showFormError([]);
 
-  const newProduct = {
+  const product = {
     name: name,
-    category: "General",
+    category: category,
     price: Number(priceText),
-    quantity: Number(quantityText)
+    quantity: Number(quantityText),
+    lowStock: Number(lowText)
   };
+
+  let method = "POST";
+  let url = PRODUCTS_URL;
+  if (editId !== null) {
+    method = "PUT";
+    url = PRODUCTS_URL + "/" + encodeURIComponent(editId);
+  }
 
   isSaving = true;
   document.getElementById("saveButton").disabled = true;
   document.getElementById("cancelButton").disabled = true;
-  document.getElementById("saveButton").textContent = "Saving...";
+  document.getElementById("saveText").textContent = "Saving...";
 
   try {
-    const result = await request(PRODUCTS_URL, {
-      method: "POST",
+    await request(url, {
+      method: method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(newProduct)
+      body: JSON.stringify(product)
     });
-
-    
-    if (result.data && typeof result.data === "object" && result.data.id !== undefined) {
-      items.push(result.data);
-      showItems();
-    } else {
-      
-      await loadProducts();
-    }
 
     isSaving = false;
     closeModal();
     showPage("Inventory");
   } catch (error) {
-    showFormError("Could not save the product: " + error.message);
+    showFormError(error.messages || [error.message]);
   }
 
   isSaving = false;
   document.getElementById("saveButton").disabled = false;
   document.getElementById("cancelButton").disabled = false;
-  document.getElementById("saveButton").textContent = "Save item";
+  document.getElementById("saveText").textContent = "Save item";
 }
 
-lucide.createIcons();
+function getDefaultSettings() {
+  return {
+    theme: "light",
+    fontSize: "medium",
+    fontStyle: "Arial, sans-serif",
+    animations: "on",
+    sidebar: "open"
+  };
+}
+
+function loadSettings() {
+  const loaded = getDefaultSettings();
+
+  try {
+    const saved = JSON.parse(localStorage.getItem("stockwiseSettings"));
+    for (const key in saved) {
+      loaded[key] = saved[key];
+    }
+  } catch (error) {
+    return loaded;
+  }
+
+  return loaded;
+}
+
+let settings = loadSettings();
+
+const fontSizes = { small: "14px", medium: "16px", large: "19px" };
+
+function saveSettings() {
+  localStorage.setItem("stockwiseSettings", JSON.stringify(settings));
+}
+
+function markChoice(prefix, names, chosen) {
+  for (let i = 0; i < names.length; i++) {
+    document.getElementById(prefix + "-" + names[i]).className = "choice";
+  }
+  document.getElementById(prefix + "-" + chosen).className = "choice active";
+}
+
+function applySettings() {
+  if (settings.theme === "dark") {
+    document.body.classList.add("dark");
+  } else {
+    document.body.classList.remove("dark");
+  }
+
+  if (settings.animations === "off") {
+    document.body.classList.add("no-animations");
+  } else {
+    document.body.classList.remove("no-animations");
+  }
+
+  if (settings.sidebar === "closed") {
+    document.body.classList.add("sidebar-closed");
+  } else {
+    document.body.classList.remove("sidebar-closed");
+  }
+
+  document.documentElement.style.fontSize = fontSizes[settings.fontSize];
+  document.body.style.fontFamily = settings.fontStyle;
+  document.getElementById("fontSelect").value = settings.fontStyle;
+
+  markChoice("theme", ["light", "dark"], settings.theme);
+  markChoice("size", ["small", "medium", "large"], settings.fontSize);
+  markChoice("anim", ["on", "off"], settings.animations);
+}
+
+function changeSetting(name, value) {
+  settings[name] = value;
+  applySettings();
+  saveSettings();
+}
+
+function toggleSidebar() {
+  if (settings.sidebar === "open") {
+    changeSetting("sidebar", "closed");
+  } else {
+    changeSetting("sidebar", "open");
+  }
+}
+
+function resetSettings() {
+  settings = getDefaultSettings();
+  applySettings();
+  saveSettings();
+}
+
+applySettings();
+
+const revealItems = document.querySelectorAll(".reveal");
+const observer = new IntersectionObserver(function (entries) {
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].isIntersecting) {
+      entries[i].target.classList.add("visible");
+    }
+  }
+}, { threshold: 0.15 });
+
+for (let i = 0; i < revealItems.length; i++) {
+  observer.observe(revealItems[i]);
+}
+
+drawIcons();
 </script>
 </body>
 </html>
