@@ -1,8 +1,9 @@
-
 const express = require("express");
 const Product = require("../models/Product");
+const authMiddleware = require("../middleware/authMiddleware");
 
 const router = express.Router();
+router.use(authMiddleware);
 
 // GET all products from MongoDB
 router.get("/", async (req, res) => {
@@ -14,15 +15,15 @@ router.get("/", async (req, res) => {
             message: "Products retrieved successfully",
             data: products
         });
-   } catch (error) {
-    console.error("GET products error:", error);
+    } catch (error) {
+        console.error("GET products error:", error);
 
-    res.status(500).json({
-        success: false,
-        message: "Failed to retrieve products",
-        data: null
-    });
-}
+        res.status(500).json({
+            success: false,
+            message: "Failed to retrieve products",
+            data: null
+        });
+    }
 });
 
 // POST a new product to MongoDB
