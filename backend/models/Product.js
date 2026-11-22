@@ -41,6 +41,14 @@ const productSchema = new mongoose.Schema({
       validator: Number.isInteger,
       message: "Quantity must be a whole number"
     }
+  },
+  lowStock: {
+    type: Number,
+    min: 0,
+    validate: {
+      validator: Number.isSafeInteger,
+      message: "Low stock threshold must be a whole number"
+    }
   }
 }, {
   timestamps: true,
@@ -50,11 +58,11 @@ const productSchema = new mongoose.Schema({
     versionKey: false,
     transform(doc, result) {
       if (doc._id) {
-          result.id = doc._id.toString();
+        result.id = doc._id.toString();
       }
       delete result._id;
       return result;
-  }
+    }
   }
 });
 
